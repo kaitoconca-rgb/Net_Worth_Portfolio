@@ -40,15 +40,14 @@ st.sidebar.header("Data Management")
 uploaded_file = st.sidebar.file_uploader("Importa Portfolio CSV", type="csv")
 
 if uploaded_file is not None:
+    # Se carichi un file a mano, usa quello
     df_input = pd.read_csv(uploaded_file)
+elif os.path.exists("portfolio.csv"):
+    # Se NON carichi nulla, guarda se esiste il file 'portfolio.csv' su GitHub
+    df_input = pd.read_csv("portfolio.csv")
 else:
-    # Fallback su file locale se non caricato
-    path_csv = os.path.join(os.path.dirname(__file__), "..", "data", "portfolio.csv")
-    if os.path.exists(path_csv):
-        df_input = pd.read_csv(path_csv)
-    else:
-        st.info("Carica un file CSV per iniziare.")
-        st.stop()
+    st.info("Carica un file CSV o aggiungi portfolio.csv su GitHub per iniziare.")
+    st.stop()
 
 # Pulizia e mapping colonne
 df_input.columns = [c.strip() for c in df_input.columns]
