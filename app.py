@@ -4,7 +4,7 @@ import yfinance as yf
 import os
 import plotly.express as px
 from datetime import datetime
-from streamlit_gsheets_connection import GSheetsConnection
+from st_gsheets_connection import GSheetsConnection
 
 # --- 0. PROTEZIONE PASSWORD ---
 def check_password():
