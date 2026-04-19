@@ -85,14 +85,30 @@ df_raw = df_input[[c_date, c_isin, c_qty, c_inv]].copy()
 df_raw.columns = ['Data', 'ISIN', 'Qty', 'Inv_EUR']
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 4. ENGINE DI CALCOLO ---
+# --- 4. ENGINE DI CALCOLO (Logica Manuale su colonna 'Price') ---
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 
 with st.spinner("Aggiornamento mercati in corso..."):
-    df_raw['Price_Now'] = [get_live_data(isin) for isin in df_raw['ISIN']]
+    prices_now = []
+    for index, row in df_raw.iterrows():
+        # CONTROLLO sulla colonna 'Price' (ultimo prezzo/manuale)
+        valore_manuale = row.get('Price')
+        
+        if pd.notnull(valore_manuale) and valore_manuale != 0:
+            # Se hai scritto un prezzo manualmente in 'Price', usa quello
+            prices_now.append(float(valore_manuale))
+        else:
+            # Se la cella 'Price' è vuota, scarica da Yahoo Finance
+            prices_now.append(get_live_data(row['ISIN']))
+    
+    df_raw['Price_Now'] = prices_now
+    
+    # Calcoli finanziari
     df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
     df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
+    
+    # Nota: qui usiamo 'Inv_EUR' (che deriva dal tuo 'Precio' storico) per il calcolo del gain
     df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
     df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
     df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
