@@ -3,5 +3,3 @@ pandas
 yfinance
 plotly
 st-gsheets-connection
-
-
