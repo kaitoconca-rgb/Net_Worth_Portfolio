@@ -5,9 +5,8 @@ import os
 import plotly.express as px
 from datetime import datetime
 import st_gsheets_connection
-import streamlit as st
-# Prova questo import singolo
 from st_gsheets_connection import GSheetsConnection
+
 
 
 
