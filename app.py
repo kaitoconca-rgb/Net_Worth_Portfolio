@@ -5,6 +5,29 @@ import os
 import plotly.express as px
 from datetime import datetime
 
+# --- AGGIUNGI QUESTO PER LA PASSWORD ---
+def check_password():
+    def password_guessed():
+        if st.session_state["password"] == st.secrets["auth"]["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Inserisci Password", type="password", on_change=password_guessed, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Inserisci Password", type="password", on_change=password_guessed, key="password")
+        st.error("😕 Password errata")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()  # Ferma l'app qui se la password non è corretta
+# ---------------------------------------
+
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
