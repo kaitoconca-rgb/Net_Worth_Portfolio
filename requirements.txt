@@ -1,5 +1,6 @@
-streamlit==1.31.0
+streamlit==1.35.0
 st-gsheets-connection==0.1.0
 pandas
 plotly
 yfinance
+
