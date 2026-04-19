@@ -4,8 +4,7 @@ import yfinance as yf
 import os
 import plotly.express as px
 from datetime import datetime
-import st_gsheets_connection
-from st_gsheets_connection import GSheetsConnection
+from streamlit_gsheets_connection import GSheetsConnection
 
 
 
