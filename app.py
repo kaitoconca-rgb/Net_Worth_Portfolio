@@ -4,8 +4,9 @@ import yfinance as yf
 import os
 import plotly.express as px
 from datetime import datetime
+from streamlit_gsheets_connection import GSheetsConnection
 
-# --- AGGIUNGI QUESTO PER LA PASSWORD ---
+# --- 0. PROTEZIONE PASSWORD ---
 def check_password():
     def password_guessed():
         if st.session_state["password"] == st.secrets["auth"]["password"]:
@@ -25,10 +26,9 @@ def check_password():
         return True
 
 if not check_password():
-    st.stop()  # Ferma l'app qui se la password non è corretta
-# ---------------------------------------
+    st.stop()
 
-# --- 1. CONFIGURAZIONE ---
+# --- 1. CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
@@ -45,7 +45,8 @@ def get_live_data(isin):
     try:
         data = yf.download(ticker, period="5d", progress=False)
         if not data.empty:
-            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+            if isinstance(data.columns, pd.MultiIndex): 
+                data.columns = data.columns.get_level_values(0)
             return float(data['Close'].iloc[-1])
     except: pass
     return 10.76
@@ -54,66 +55,69 @@ def get_live_data(isin):
 def get_fx_rate():
     try:
         data = yf.download("EURAUD=X", period="5d", progress=False)
-        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        if isinstance(data.columns, pd.MultiIndex): 
+            data.columns = data.columns.get_level_values(0)
         return float(data['Close'].iloc[-1])
     except: return 1.6450
 
-
-
-from streamlit_gsheets_connection import GSheetsConnection
-
-# --- 3. IMPORT DATI (Versione Google Sheets) ---
+# --- 3. IMPORT DATI DA GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # Legge i dati direttamente dal foglio configurato nei Secrets
     df_input = conn.read()
 except Exception as e:
     st.error(f"Errore di connessione a Google Sheets: {e}")
     st.stop()
 
-# Pulizia e mapping colonne
+# Pulizia intestazioni
 df_input.columns = [c.strip() for c in df_input.columns]
+
 def find_col(keywords, df):
     for k in keywords:
         for col in df.columns:
             if k.lower() in col.lower(): return col
     return None
 
-c_date, c_isin, c_qty, c_inv = find_col(['data','fecha'], df_input), find_col(['isin'], df_input), find_col(['qty','cant'], df_input), find_col(['inv','imp','euro'], df_input)
-df_raw = df_input[[c_date, c_isin, c_qty, c_inv]].copy()
-df_raw.columns = ['Data', 'ISIN', 'Qty', 'Inv_EUR']
+# Identificazione colonne dinamica
+c_date = find_col(['data','fecha'], df_input)
+c_isin = find_col(['isin'], df_input)
+c_qty = find_col(['qty','cant'], df_input)
+c_inv = find_col(['inv','imp','euro'], df_input)
+c_manual = find_col(['price'], df_input) # Cerca la colonna 'Price'
+
+# Creazione DataFrame di lavoro
+cols_to_keep = [c for c in [c_date, c_isin, c_qty, c_inv, c_manual] if c is not None]
+df_raw = df_input[cols_to_keep].copy()
+
+# Ridenominazione per logica interna
+rename_dict = {c_date: 'Data', c_isin: 'ISIN', c_qty: 'Qty', c_inv: 'Inv_EUR'}
+if c_manual: rename_dict[c_manual] = 'Manual_Price'
+df_raw.rename(columns=rename_dict, inplace=True)
+
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 4. ENGINE DI CALCOLO (Logica Manuale su colonna 'Price') ---
+# --- 4. ENGINE DI CALCOLO ---
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 
 with st.spinner("Aggiornamento mercati in corso..."):
     prices_now = []
     for index, row in df_raw.iterrows():
-        # CONTROLLO sulla colonna 'Price' (ultimo prezzo/manuale)
-        valore_manuale = row.get('Price')
-        
-        if pd.notnull(valore_manuale) and valore_manuale != 0:
-            # Se hai scritto un prezzo manualmente in 'Price', usa quello
-            prices_now.append(float(valore_manuale))
+        # Se Manual_Price esiste ed è un numero, usa quello. Altrimenti Yahoo Finance.
+        val_m = row.get('Manual_Price')
+        if pd.notnull(val_m) and str(val_m).strip() != "" and float(val_m) != 0:
+            prices_now.append(float(val_m))
         else:
-            # Se la cella 'Price' è vuota, scarica da Yahoo Finance
             prices_now.append(get_live_data(row['ISIN']))
     
     df_raw['Price_Now'] = prices_now
-    
-    # Calcoli finanziari
     df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
     df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
-    
-    # Nota: qui usiamo 'Inv_EUR' (che deriva dal tuo 'Precio' storico) per il calcolo del gain
     df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
     df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
     df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 5. UI ---
+# --- 5. INTERFACCIA UTENTE (UI) ---
 st.title("🏛️ Claudio's Executive Portfolio")
 st.sidebar.metric("EUR/AUD Spot", f"{market_fx:.4f}")
 tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
@@ -145,23 +149,21 @@ with tab1:
 with tab2:
     st.subheader("Lotti Dettagliati & Simulatore")
     df_raw['% Vendi'] = 0
-    # FX_Acq deve essere inclusa per evitare KeyError nel calcolo dei totali
-    cols_to_edit = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'FX_Acq', '% Vendi']
+    cols_to_display = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'FX_Acq', '% Vendi']
     
     edited = st.data_editor(
-        df_raw[cols_to_edit],
+        df_raw[cols_to_display],
         hide_index=True, use_container_width=True,
         column_config={
-            "FX_Acq": None, # Nasconde la colonna ma la mantiene disponibile
+            "FX_Acq": None, 
             "Price_Now": st.column_config.NumberColumn("Price €", format="%.4f"),
             "% Vendi": st.column_config.NumberColumn("% Sel")
         }
     )
 
-    # Ricalcolo Totali Tab 2
     st.markdown("### 📈 Riepilogo Selezione")
     c_att_eur = (edited['Qty'] * edited['Price_Now']).sum()
-    c_inv_aud = (edited['Inv_EUR'] * edited['FX_Acq']).sum() # Ora FX_Acq esiste!
+    c_inv_aud = (edited['Inv_EUR'] * edited['FX_Acq']).sum()
     c_att_aud = c_att_eur * market_fx
     
     m1, m2, m3 = st.columns(3)
