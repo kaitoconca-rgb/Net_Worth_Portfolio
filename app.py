@@ -28,7 +28,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIGURAZIONE PAGINA ---
+# --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
@@ -38,62 +38,48 @@ ticker_map = {
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
 
-# --- 2. FUNZIONI CACHED ---
-@st.cache_data(ttl=3600)
+# --- 2. FUNZIONI ---
+@st.cache_data(ttl=600) # Ridotto a 10 minuti per aggiornamenti più veloci
 def get_live_data(isin):
     ticker = ticker_map.get(isin)
     try:
         data = yf.download(ticker, period="5d", progress=False)
         if not data.empty:
-            if isinstance(data.columns, pd.MultiIndex): 
-                data.columns = data.columns.get_level_values(0)
+            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             return float(data['Close'].iloc[-1])
     except: pass
     return 10.76
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def get_fx_rate():
     try:
         data = yf.download("EURAUD=X", period="5d", progress=False)
-        if isinstance(data.columns, pd.MultiIndex): 
-            data.columns = data.columns.get_level_values(0)
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         return float(data['Close'].iloc[-1])
     except: return 1.6450
 
-# --- 3. IMPORT DATI DA GOOGLE SHEETS ---
+# --- 3. IMPORT DATI (MAPPATURA PRECISA) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    df_input = conn.read()
+    # ttl=0 costringe l'app a leggere il foglio GDrive ogni volta che fai refresh
+    df_input = conn.read(ttl=0)
 except Exception as e:
-    st.error(f"Errore di connessione a Google Sheets: {e}")
+    st.error(f"Errore GSheets: {e}")
     st.stop()
 
-# Pulizia intestazioni
 df_input.columns = [c.strip() for c in df_input.columns]
 
-def find_col(keywords, df):
-    for k in keywords:
-        for col in df.columns:
-            if k.lower() in col.lower(): return col
-    return None
+# Mappatura manuale basata sulla tua immagine
+# A=Fecha Valor, B=Importe Cargado, D=ISIN, F=Cantidad, G=Price
+df_raw = pd.DataFrame()
+df_raw['Data'] = df_input['Fecha Valor']
+df_raw['ISIN'] = df_input['ISIN']
+df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
+df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
+df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 
-# Identificazione colonne dinamica
-c_date = find_col(['data','fecha'], df_input)
-c_isin = find_col(['isin'], df_input)
-c_qty = find_col(['qty','cant'], df_input)
-c_inv = find_col(['inv','imp','euro'], df_input)
-c_manual = find_col(['price'], df_input) # Cerca la colonna 'Price'
-
-# Creazione DataFrame di lavoro
-cols_to_keep = [c for c in [c_date, c_isin, c_qty, c_inv, c_manual] if c is not None]
-df_raw = df_input[cols_to_keep].copy()
-
-# Ridenominazione per logica interna
-rename_dict = {c_date: 'Data', c_isin: 'ISIN', c_qty: 'Qty', c_inv: 'Inv_EUR'}
-if c_manual: rename_dict[c_manual] = 'Manual_Price'
-df_raw.rename(columns=rename_dict, inplace=True)
-
+df_raw = df_raw.dropna(subset=['ISIN']) # Rimuove righe vuote
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 # --- 4. ENGINE DI CALCOLO ---
@@ -103,10 +89,9 @@ fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 with st.spinner("Aggiornamento mercati in corso..."):
     prices_now = []
     for index, row in df_raw.iterrows():
-        # Se Manual_Price esiste ed è un numero, usa quello. Altrimenti Yahoo Finance.
-        val_m = row.get('Manual_Price')
-        if pd.notnull(val_m) and str(val_m).strip() != "" and float(val_m) != 0:
-            prices_now.append(float(val_m))
+        # Se c'è il 15 nella colonna Price di Google Sheets, usa quello
+        if pd.notnull(row['Manual_Price']) and row['Manual_Price'] != 0:
+            prices_now.append(float(row['Manual_Price']))
         else:
             prices_now.append(get_live_data(row['ISIN']))
     
@@ -117,8 +102,14 @@ with st.spinner("Aggiornamento mercati in corso..."):
     df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
     df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 5. INTERFACCIA UTENTE (UI) ---
+# --- 5. UI ---
 st.title("🏛️ Claudio's Executive Portfolio")
+
+# Tasto per forzare il ricaricamento dei dati
+if st.sidebar.button("🔄 Forza Aggiornamento Dati"):
+    st.cache_data.clear()
+    st.rerun()
+
 st.sidebar.metric("EUR/AUD Spot", f"{market_fx:.4f}")
 tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
 
@@ -140,19 +131,15 @@ with tab1:
     
     st.divider()
     agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum', 'Att_EUR':'sum', 'Gain_AUD':'sum'}).reset_index()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(agg.style.format(precision=2, thousands="."), use_container_width=True, hide_index=True)
-    with c2:
-        st.plotly_chart(px.bar(agg, x='ISIN', y='Gain_AUD', color='Gain_AUD', color_continuous_scale='RdYlGn'), use_container_width=True)
+    st.dataframe(agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Lotti Dettagliati & Simulatore")
     df_raw['% Vendi'] = 0
-    cols_to_display = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'FX_Acq', '% Vendi']
+    cols_display = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'FX_Acq', '% Vendi']
     
     edited = st.data_editor(
-        df_raw[cols_to_display],
+        df_raw[cols_display],
         hide_index=True, use_container_width=True,
         column_config={
             "FX_Acq": None, 
@@ -186,17 +173,12 @@ with tab3:
     st.subheader("Historical Capital Evolution (€)")
     ticks = [ticker_map.get(i) for i in df_raw['ISIN'].unique() if ticker_map.get(i)]
     h_prices = yf.download(ticks, start="2025-10-01", progress=False)['Close'].ffill()
-    
     if not h_prices.empty:
         h_prices.index = pd.to_datetime(h_prices.index)
         daily_val = pd.DataFrame(index=h_prices.index)
         daily_val['Value'] = 0.0
         for date in h_prices.index:
             lots = df_raw[df_raw['Date_DT'] <= date]
-            val = 0
-            for _, r in lots.iterrows():
-                t = ticker_map.get(r['ISIN'])
-                p = h_prices.loc[date, t] if (t in h_prices.columns and not pd.isna(h_prices.loc[date, t])) else r['Price_Now']
-                val += p * r['Qty']
+            val = sum(h_prices.loc[date, ticker_map[r['ISIN']]] * r['Qty'] for _, r in lots.iterrows() if ticker_map.get(r['ISIN']) in h_prices.columns)
             daily_val.at[date, 'Value'] = val
-        st.plotly_chart(px.area(daily_val, y='Value', color_discrete_sequence=['#00CC96']), use_container_width=True)
+        st.plotly_chart(px.area(daily_val, y='Value'), use_container_width=True)
