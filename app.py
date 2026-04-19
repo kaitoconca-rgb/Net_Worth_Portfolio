@@ -58,18 +58,18 @@ def get_fx_rate():
         return float(data['Close'].iloc[-1])
     except: return 1.6450
 
-# --- 3. IMPORT DATI ---
-st.sidebar.header("Data Management")
-uploaded_file = st.sidebar.file_uploader("Importa Portfolio CSV", type="csv")
 
-if uploaded_file is not None:
-    # Se carichi un file a mano, usa quello
-    df_input = pd.read_csv(uploaded_file)
-elif os.path.exists("portfolio.csv"):
-    # Se NON carichi nulla, guarda se esiste il file 'portfolio.csv' su GitHub
-    df_input = pd.read_csv("portfolio.csv")
-else:
-    st.info("Carica un file CSV o aggiungi portfolio.csv su GitHub per iniziare.")
+
+from streamlit_gsheets_connection import GSheetsConnection
+
+# --- 3. IMPORT DATI (Versione Google Sheets) ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+try:
+    # Legge i dati direttamente dal foglio configurato nei Secrets
+    df_input = conn.read()
+except Exception as e:
+    st.error(f"Errore di connessione a Google Sheets: {e}")
     st.stop()
 
 # Pulizia e mapping colonne
