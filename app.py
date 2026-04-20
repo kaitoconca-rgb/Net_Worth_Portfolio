@@ -30,7 +30,7 @@ ticker_map = {
     "IE0032077012": "EQQQ.DE",
     "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE",
-    "IE00BFM15T99": "SJP6.DE", # Ticker Giappone 7.02€
+    "IE00BFM15T99": "SJP6.DE", # Giappone 7.02€
     "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS",
     "IE00B3VVMM84": "VFEM.DE",
@@ -64,18 +64,17 @@ df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 # --- 3. LOGICA PREZZI LIVE ---
-unique_errors = set() # Per evitare duplicati nel log
+unique_errors = set()
 
 @st.cache_data(ttl=300)
 def fetch_live_price(isin, manual_val):
     if pd.notnull(manual_val) and manual_val > 0:
         return float(manual_val)
-    
     symbol = ticker_map.get(isin)
     if symbol:
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="1d", interval="1m")
+            hist = ticker.history(period="1d")
             if not hist.empty:
                 return float(hist['Close'].iloc[-1])
         except:
@@ -108,21 +107,25 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
-    t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
-    t_gain_eur, t_gain_aud = t_att_eur - t_inv_eur, t_att_aud - t_inv_aud
+    # CALCOLI GLOBALI
+    t_inv_eur = df_raw['Inv_EUR'].sum()
+    t_att_eur = df_raw['Att_EUR'].sum()
+    t_gain_eur = t_att_eur - t_inv_eur
     roi_eur = (t_gain_eur / t_inv_eur) * 100
 
-    # 1. TABELLA RIEPILOGO GLOBALE (REINTRODOTTA)
+    t_inv_aud = df_raw['Inv_AUD'].sum()
+    t_att_aud = df_raw['Att_AUD'].sum()
+    t_gain_aud = t_att_aud - t_inv_aud
+    roi_aud = (t_gain_aud / t_inv_aud) * 100
+
     st.subheader("Riepilogo Globale Portafoglio")
-    summary_data = {
+    summary_df = pd.DataFrame({
         "Metrica": ["Total Invested", "Total Value", "Gain / Loss", "ROI %"],
         "EURO (€)": [f"€{t_inv_eur:,.2f}", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}", f"{roi_eur:.2f}%"],
-        "AUD ($)": [f"${t_inv_aud:,.2f}", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}", f"{((t_att_aud/t_inv_aud)-1)*100:.2f}%"]
-    }
-    st.table(pd.DataFrame(summary_data))
+        "AUD ($)": [f"${t_inv_aud:,.2f}", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}", f"{roi_aud:.2f}%"]
+    })
+    st.table(summary_df)
 
-    # 2. GRAFICI
     v1, v2 = st.columns([1, 2])
     with v1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
@@ -131,10 +134,9 @@ with tab1:
         fig_b = go.Figure()
         fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_p['ISIN'], y=agg_p['Gain_EUR'], marker_color='#3366CC'))
         fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_p['ISIN'], y=agg_p['Gain_AUD'], marker_color='#109618'))
-        fig_b.update_layout(title="Rendimento per Titolo (EUR vs AUD)", barmode='group')
+        fig_b.update_layout(title="Rendimento per Titolo", barmode='group')
         st.plotly_chart(fig_b, use_container_width=True)
 
-    # 3. TABELLA AGGREGATA PER ISIN
     st.subheader("Riepilogo Aggregato per Asset")
     st_agg = df_raw.groupby('ISIN').agg({
         'Qty': 'sum',
@@ -143,18 +145,22 @@ with tab1:
         'Gain_EUR': 'sum',
         'Gain_AUD': 'sum'
     }).reset_index()
+    # Calcolo ROI medio ponderato per ISIN
     st_agg['ROI %'] = (st_agg['Gain_EUR'] / st_agg['Inv_EUR']) * 100
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
+    st.subheader("Dettaglio Lotti Singoli")
+    # RIPRISTINATA COLONNA PREZZO STORICO (Prezzo_Acq)
+    st.dataframe(df_raw[['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_EUR', 'Gain_AUD']].style.format(precision=2), use_container_width=True, hide_index=True)
+
 with tab2:
-    st.subheader("Simulazione Vendita & Tasse ATO")
+    st.subheader("Simulatore Vendita & Tasse ATO")
     df_raw['% Vendi'] = 0.0
     ed_df = st.data_editor(
-        df_raw[['Data', 'ISIN', 'Qty', 'Price_Now', 'Gain_AUD', '% Vendi']],
+        df_raw[['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_AUD', '% Vendi']],
         column_config={"% Vendi": st.column_config.NumberColumn("Vendi %", min_value=0, max_value=100, format="%d%%")},
         hide_index=True, use_container_width=True
     )
-
     if ed_df['% Vendi'].sum() > 0:
         sim = ed_df[ed_df['% Vendi'] > 0].copy()
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
@@ -176,7 +182,6 @@ with tab3:
                 if not px_h.empty:
                     if isinstance(px_h, pd.DataFrame): px_h = px_h.iloc[:, 0]
                     h_data[isin] = px_h.reindex(pd.date_range(s_date, datetime.now()), method='ffill')
-        
         d_range = pd.date_range(s_date, datetime.now().date())
         vals = [sum([l['Qty'] * (h_data[l['ISIN']].asof(d) if l['ISIN'] in h_data else l['Prezzo_Acq']) for _, l in df_raw[df_raw['Date_DT'].dt.date <= d.date()].iterrows()]) for d in d_range]
         st.plotly_chart(px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore'), use_container_width=True)
@@ -184,9 +189,8 @@ with tab3:
 with tab4:
     st.subheader("System Health & Logs")
     if not unique_errors:
-        st.success("✅ Tutti i titoli sono sincronizzati correttamente con Yahoo Finance.")
+        st.success("✅ Tutti i titoli sono sincronizzati correttamente.")
     else:
-        st.error(f"Rilevati problemi di sincronizzazione per {len(unique_errors)} titoli:")
+        st.error(f"Problemi di sincronizzazione per {len(unique_errors)} titoli:")
         for isin in sorted(list(unique_errors)):
-            st.write(f"⚠️ **{isin}**: Impossibile recuperare prezzo live. Viene mostrato il prezzo storico di acquisto.")
-        st.info("💡 Se il problema persiste, inserisci il prezzo attuale nella colonna 'Price' del Google Sheet.")
+            st.write(f"⚠️ **{isin}**: Prezzo live non disponibile. Sistema in modalità 'Prezzo Storico'.")
