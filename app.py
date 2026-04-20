@@ -145,4 +145,29 @@ with tab2:
         sel['Realized_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_EUR'] * sel['FX_Acq'] * sel['% Vendi']/100)
         sel['Taxable'] = sel.apply(lambda r: r['Realized_Gain_AUD'] * 0.5 if (r['Realized_Gain_AUD'] > 0 and r['Days'] >= 365) else r['Realized_Gain_AUD'], axis=1)
         
-        v_netto = sel['Realized_Gain_AUD'].sum() - (max(0, sel['Taxable'].sum()) * tax
+        v_netto = sel['Realized_Gain_AUD'].sum() - (max(0, sel['Taxable'].sum()) * tax_rate)
+        st.success(f"💰 Netto stimato dalla vendita: **${v_netto:,.2f} AUD** (Tasse stimate: ${max(0, sel['Taxable'].sum()) * tax_rate:,.2f})")
+
+with tab3:
+    st.subheader("Capital Evolution")
+    # Scarichiamo la storia dei ticker presenti nel portafoglio
+    unique_tickers = [ticker_map[i] for i in df_raw['ISIN'].unique() if i in ticker_map]
+    hist_data = yf.download(unique_tickers, start="2025-01-01", progress=False)['Close'].ffill()
+    
+    if not hist_data.empty:
+        # Calcoliamo il valore storico del portafoglio giorno per giorno
+        daily_portfolio = pd.DataFrame(index=hist_data.index)
+        daily_portfolio['Total_Value_EUR'] = 0.0
+        
+        for d in hist_data.index:
+            active_lots = df_raw[df_raw['Date_DT'] <= d]
+            current_val = 0
+            for _, lot in active_lots.iterrows():
+                t = ticker_map.get(lot['ISIN'])
+                if t in hist_data.columns:
+                    price_at_date = hist_data.loc[d, t]
+                    current_val += price_at_date * lot['Qty']
+            daily_portfolio.loc[d, 'Total_Value_EUR'] = current_val
+            
+        fig_hist = px.area(daily_portfolio, y='Total_Value_EUR', title="Portfolio Value Evolution (€)")
+        st.plotly_chart(fig_hist, use_container_width=True)
