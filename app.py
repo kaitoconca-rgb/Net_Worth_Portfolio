@@ -26,7 +26,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIGURAZIONE & MAPPATURA ---
+# --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
@@ -36,7 +36,7 @@ ticker_map = {
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
 
-# --- 2. CARICAMENTO DATI ---
+# --- 2. FUNZIONI DATI ---
 @st.cache_data(ttl=600)
 def get_live_data(isin):
     ticker = ticker_map.get(isin)
@@ -46,7 +46,7 @@ def get_live_data(isin):
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             return float(data['Close'].iloc[-1])
     except: pass
-    return 0.0
+    return 10.76
 
 @st.cache_data(ttl=600)
 def get_fx_rate():
@@ -56,11 +56,11 @@ def get_fx_rate():
         return float(data['Close'].iloc[-1])
     except: return 1.6450
 
+# --- 3. CARICAMENTO E CALCOLI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 df_input = conn.read(ttl=0)
 df_input.columns = [c.strip() for c in df_input.columns]
 
-# Mappatura colonne
 df_raw = pd.DataFrame()
 df_raw['Data'] = df_input['Fecha Valor']
 df_raw['ISIN'] = df_input['ISIN']
@@ -70,7 +70,6 @@ df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA DI CALCOLO (AUD & EUR) ---
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 
@@ -89,10 +88,9 @@ df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
 df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 4. UI ---
+# --- 4. INTERFACCIA ---
 st.title("🏛️ Claudio's Executive Portfolio")
 
-# Sidebar
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
@@ -102,72 +100,77 @@ tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0
 tab1, tab2, tab3 = st.tabs(["📊 Performance Summary", "💸 Detail & Simulator", "📈 History"])
 
 with tab1:
+    # 1. Grafici Superiori
     c1, c2 = st.columns(2)
-    # Pie Chart - Asset Allocation EUR
     fig_pie = px.pie(df_raw, values='Att_EUR', names='ISIN', title="Allocation by Asset (€)")
     c1.plotly_chart(fig_pie, use_container_width=True)
     
-    # Bar Chart - Gain/Loss AUD (Acquisition vs Now)
     fig_bar = px.bar(df_raw, x='ISIN', y='Gain_AUD', color='Gain_AUD', 
-                     color_continuous_scale='RdYlGn', title="Net Gain/Loss per Asset ($ AUD)")
+                     color_continuous_scale='RdYlGn', title="Total Gain/Loss per Lot ($ AUD)")
     c2.plotly_chart(fig_bar, use_container_width=True)
 
-    st.divider()
-    # Tabella Summary
+    # 2. Tabella Aggregata per ISIN (Recuperata)
+    st.subheader("Asset Performance Aggregated")
+    agg = df_raw.groupby('ISIN').agg({
+        'Qty': 'sum',
+        'Inv_EUR': 'sum',
+        'Att_EUR': 'sum',
+        'Gain_EUR': 'sum',
+        'Inv_AUD': 'sum',
+        'Att_AUD': 'sum',
+        'Gain_AUD': 'sum'
+    }).reset_index()
+    st.dataframe(agg.style.format(precision=2), use_container_width=True, hide_index=True)
+
+with tab2:
+    # 1. Riassunto Gain/Loss Globale (Recuperato)
+    st.subheader("Financial Health Summary")
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
     
-    st.subheader("Global Health Score")
-    summary_data = {
-        "Currency": ["EURO (€)", "AUD ($)"],
+    summary_data = pd.DataFrame({
+        "Currency": ["EURO (€)", "AUSTRALIAN DOLLAR ($)"],
         "Invested": [f"€{t_inv_eur:,.2f}", f"${t_inv_aud:,.2f}"],
         "Current": [f"€{t_att_eur:,.2f}", f"${t_att_aud:,.2f}"],
         "Total Gain": [f"€{(t_att_eur - t_inv_eur):,.2f}", f"${(t_att_aud - t_inv_aud):,.2f}"],
         "ROI": [f"{((t_att_eur-t_inv_eur)/t_inv_eur*100):.2f}%", f"{((t_att_aud-t_inv_aud)/t_inv_aud*100):.2f}%"]
-    }
-    st.table(pd.DataFrame(summary_data))
+    })
+    st.table(summary_data)
 
-with tab2:
-    st.subheader("Asset Detail (Including EUR Gain)")
-    cols_to_show = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'FX_Acq']
+    # 2. Dettaglio Lotti con Editor
+    st.subheader("Individual Lots & Tax Simulator")
     df_raw['% Vendi'] = 0.0
+    cols_editor = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', '% Vendi']
+    edited = st.data_editor(df_raw[cols_editor], hide_index=True, use_container_width=True)
     
-    edited = st.data_editor(
-        df_raw[cols_to_show + ['% Vendi']], 
-        hide_index=True, use_container_width=True,
-        column_config={"FX_Acq": None, "Gain_EUR": st.column_config.NumberColumn("Gain €", format="%.2f")}
-    )
-    
-    # Simulatore Tasse
     if edited['% Vendi'].sum() > 0:
         sel = edited[edited['% Vendi'] > 0].copy()
+        # Calcolo tasse stimato
         sel['Days'] = (datetime.now() - pd.to_datetime(sel['Data'], dayfirst=True)).dt.days
-        sel['Realized_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_EUR'] * sel['FX_Acq'] * sel['% Vendi']/100)
-        sel['Taxable'] = sel.apply(lambda r: r['Realized_Gain_AUD'] * 0.5 if (r['Realized_Gain_AUD'] > 0 and r['Days'] >= 365) else r['Realized_Gain_AUD'], axis=1)
-        
-        v_netto = sel['Realized_Gain_AUD'].sum() - (max(0, sel['Taxable'].sum()) * tax_rate)
-        st.success(f"💰 Netto stimato dalla vendita: **${v_netto:,.2f} AUD** (Tasse stimate: ${max(0, sel['Taxable'].sum()) * tax_rate:,.2f})")
+        sel['R_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_AUD'] * sel['% Vendi']/100)
+        sel['Taxable'] = sel.apply(lambda r: r['R_Gain_AUD'] * 0.5 if (r['R_Gain_AUD'] > 0 and r['Days'] >= 365) else r['R_Gain_AUD'], axis=1)
+        tax = max(0, sel['Taxable'].sum()) * tax_rate
+        st.success(f"💰 Netto stimato: **${(sel['R_Gain_AUD'].sum() - tax):,.2f} AUD** (Tasse: ${tax:,.2f})")
 
 with tab3:
-    st.subheader("Capital Evolution")
-    # Scarichiamo la storia dei ticker presenti nel portafoglio
-    unique_tickers = [ticker_map[i] for i in df_raw['ISIN'].unique() if i in ticker_map]
-    hist_data = yf.download(unique_tickers, start="2025-01-01", progress=False)['Close'].ffill()
+    st.subheader("Historical Capital Evolution")
+    # Tickers per Yahoo Finance
+    unique_isins = df_raw['ISIN'].unique()
+    valid_tickers = [ticker_map[i] for i in unique_isins if i in ticker_map]
     
-    if not hist_data.empty:
-        # Calcoliamo il valore storico del portafoglio giorno per giorno
-        daily_portfolio = pd.DataFrame(index=hist_data.index)
-        daily_portfolio['Total_Value_EUR'] = 0.0
-        
-        for d in hist_data.index:
-            active_lots = df_raw[df_raw['Date_DT'] <= d]
-            current_val = 0
-            for _, lot in active_lots.iterrows():
-                t = ticker_map.get(lot['ISIN'])
-                if t in hist_data.columns:
-                    price_at_date = hist_data.loc[d, t]
-                    current_val += price_at_date * lot['Qty']
-            daily_portfolio.loc[d, 'Total_Value_EUR'] = current_val
-            
-        fig_hist = px.area(daily_portfolio, y='Total_Value_EUR', title="Portfolio Value Evolution (€)")
-        st.plotly_chart(fig_hist, use_container_width=True)
+    if valid_tickers:
+        h_data = yf.download(valid_tickers, start="2025-01-01", progress=False)['Close'].ffill()
+        if not h_data.empty:
+            daily_vals = pd.DataFrame(index=h_data.index)
+            daily_vals['Value'] = 0.0
+            for d in h_data.index:
+                active = df_raw[df_raw['Date_DT'] <= d]
+                val = 0
+                for _, lot in active.iterrows():
+                    tick = ticker_map.get(lot['ISIN'])
+                    if tick in h_data.columns:
+                        val += h_data.loc[d, tick] * lot['Qty']
+                daily_vals.loc[d, 'Value'] = val
+            st.plotly_chart(px.area(daily_vals, y='Value', title="Portfolio Growth (€)"), use_container_width=True)
+        else:
+            st.warning("Dati storici non disponibili al momento.")
