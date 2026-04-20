@@ -26,25 +26,25 @@ if not check_password():
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
-    "LU2885245055": "8OU9.DE",  # S&P 500 Swap
-    "IE0032077012": "EQQQ.DE",  # Nasdaq 100
-    "IE00B02KXL92": "DJMC.AS",  # DJ MidCap
-    "IE0008471009": "EXW1.DE",  # Euro Stoxx
-    "IE00BFM15T99": "ISJP.DE",  # Japan (Allineato a N26 ~7.02€)
-    "IE00B8GKDB10": "VHYL.MI",  # All-World High Div
-    "IE00B3RBWM25": "VWRL.AS",  # Vanguard All-World
-    "IE00B3VVMM84": "VFEM.DE",  # Emerging Markets
-    "IE00B3XXRP09": "VUSA.DE",  # S&P 500
-    "IE00BZ56RN96": "GGRW.MI",  # Global Quality Div
-    "IE0005042456": "IUSA.DE"   # S&P 500 (Dist)
+    "LU2885245055": "8OU9.DE",  
+    "IE0032077012": "EQQQ.DE", 
+    "IE00B02KXL92": "DJMC.AS",
+    "IE0008471009": "EXW1.DE", 
+    "IE00BFM15T99": "ISJP.DE", 
+    "IE00B8GKDB10": "VHYL.MI",
+    "IE00B3RBWM25": "VWRL.AS", 
+    "IE00B3VVMM84": "VFEM.DE", 
+    "IE00B3XXRP09": "VUSA.DE",
+    "IE00BZ56RN96": "GGRW.MI", 
+    "IE0005042456": "IUSA.DE"
 }
 
 @st.cache_data(ttl=600)
 def get_fx_rate():
     try:
-        d = yf.download("EURAUD=X", period="5d", progress=False)
-        if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
-        return float(d['Close'].iloc[-1])
+        t = yf.Ticker("EURAUD=X")
+        val = t.fast_info['last_price']
+        return float(val) if val else 1.6450
     except: return 1.6450
 
 # --- 2. CARICAMENTO E ELABORAZIONE DATI ---
@@ -58,27 +58,39 @@ df_raw['ISIN'] = df_input['ISIN']
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
 df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') 
+df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-manual_prices = pd.to_numeric(df_input['Price'], errors='coerce')
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-# Prezzi Correnti (Live o Manuale)
-prices_now = []
-for i, row in df_raw.iterrows():
-    if i < len(manual_prices) and pd.notnull(manual_prices[i]) and manual_prices[i] > 0:
-        prices_now.append(float(manual_prices[i]))
-    else:
+# Funzione di recupero prezzo migliorata
+def get_current_price(isin, manual_val, buy_price):
+    # 1. Se c'è un valore manuale nel foglio, ha la precedenza
+    if pd.notnull(manual_val) and manual_val > 0:
+        return float(manual_val)
+    
+    # 2. Altrimenti prova Yahoo Finance
+    ticker_symbol = ticker_map.get(isin)
+    if ticker_symbol:
         try:
-            t = ticker_map.get(row['ISIN'])
-            d_l = yf.download(t, period="5d", progress=False)
-            if isinstance(d_l.columns, pd.MultiIndex): d_l.columns = d_l.columns.get_level_values(0)
-            prices_now.append(float(d_l['Close'].iloc[-1]))
+            t = yf.Ticker(ticker_symbol)
+            live_p = t.fast_info['last_price']
+            if live_p and live_p > 0:
+                return float(live_p)
         except:
-            prices_now.append(float(row['Prezzo_Acq']))
+            pass
+            
+    # 3. Fallback finale: Prezzo di acquisto (per non avere mai None)
+    return float(buy_price)
+
+# Applichiamo la logica
+prices_now = []
+for _, row in df_raw.iterrows():
+    p = get_current_price(row['ISIN'], row['Manual_Override'], row['Prezzo_Acq'])
+    prices_now.append(p)
 
 df_raw['Price_Now'] = prices_now
 df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
@@ -88,7 +100,7 @@ df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
 df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 3. INTERFACCIA UTENTE ---
+# --- 3. INTERFACCIA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
 
 tab1, tab2, tab3 = st.tabs(["📊 Riepilogo & Grafici", "💸 Analisi & Simulatore", "📈 Storia Evolutiva"])
@@ -121,7 +133,7 @@ with tab1:
         fig_b.update_layout(title="Rendimento per ISIN (EUR vs AUD)", barmode='group')
         st.plotly_chart(fig_b, use_container_width=True)
 
-    st.subheader("Performance Aggregata per Titolo")
+    st.subheader("Dettaglio Posizioni Aggregato")
     st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum','Gain_AUD':'sum'}).reset_index()
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
@@ -142,11 +154,8 @@ with tab2:
         sim['Inv_EUR_Lot'] = df_raw.loc[sim.index, 'Inv_EUR']
         sim['Inv_AUD_Lot'] = df_raw.loc[sim.index, 'Inv_AUD']
 
-        # Calcolo Gain Realizzato EUR e AUD
         sim['G_EUR_Sim'] = (sim['Qty'] * sim['Price_Now'] * sim['% Vendi']/100) - (sim['Inv_EUR_Lot'] * sim['% Vendi']/100)
         sim['G_AUD_Sim'] = (sim['Qty'] * sim['Price_Now'] * market_fx * sim['% Vendi']/100) - (sim['Inv_AUD_Lot'] * sim['% Vendi']/100)
-
-        # Logica Tasse ATO (Sconto 50% CGT se > 365gg)
         sim['Taxable_AUD'] = sim.apply(lambda r: r['G_AUD_Sim'] * 0.5 if (r['G_AUD_Sim'] > 0 and r['Days'] >= 365) else r['G_AUD_Sim'], axis=1)
 
         t_gain_eur = sim['G_EUR_Sim'].sum()
@@ -155,20 +164,19 @@ with tab2:
         t_tax_eur = t_tax_aud / market_fx
 
         st.markdown("---")
-        st.subheader("📊 Totali Simulazione Vendita")
+        st.subheader("📊 Riepilogo Vendita (Simulazione)")
         res_data = {
             "Valuta": ["EURO (€)", "AUD ($)"],
-            "Gain Lordo Realizzato": [f"€{t_gain_eur:,.2f}", f"${t_gain_aud:,.2f}"],
+            "Gain Lordo": [f"€{t_gain_eur:,.2f}", f"${t_gain_aud:,.2f}"],
             "Tasse Stimate (47%)": [f"€{t_tax_eur:,.2f}", f"- ${t_tax_aud:,.2f}"],
-            "Netto Stimato in Tasca": [f"€{(t_gain_eur - t_tax_eur):,.2f}", f"${(t_gain_aud - t_tax_aud):,.2f}"]
+            "Netto Stimato": [f"€{(t_gain_eur - t_tax_eur):,.2f}", f"${(t_gain_aud - t_tax_aud):,.2f}"]
         }
         st.table(pd.DataFrame(res_data))
 
 with tab3:
-    st.subheader("Evoluzione Storica del Valore (€)")
+    st.subheader("Evoluzione Storica (Valore in €)")
     s_date = df_raw['Date_DT'].min()
-
-    with st.spinner("Calcolo cronologia prezzi..."):
+    with st.spinner("Recupero dati storici..."):
         h_data = {}
         for isin in df_raw['ISIN'].unique():
             tk = ticker_map.get(isin)
@@ -177,18 +185,13 @@ with tab3:
                 if not px_h.empty:
                     if isinstance(px_h, pd.DataFrame): px_h = px_h.iloc[:, 0]
                     h_data[isin] = px_h.reindex(pd.date_range(s_date, datetime.now()), method='ffill')
-
+        
         d_range = pd.date_range(s_date, datetime.now().date())
         vals = []
         for d in d_range:
             active = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
-            day_sum = 0
-            for _, l in active.iterrows():
-                p = h_data[l['ISIN']].asof(d) if l['ISIN'] in h_data else None
-                if pd.isna(p) or p <= 0: p = float(l['Prezzo_Acq'])
-                day_sum += float(p) * float(l['Qty'])
+            day_sum = sum([l['Qty'] * (h_data[l['ISIN']].asof(d) if l['ISIN'] in h_data else l['Prezzo_Acq']) for _, l in active.iterrows()])
             vals.append(day_sum)
-
-        fig_h = px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore', title="Patrimonio Totale in Euro")
-        fig_h.update_traces(line_shape='hv', line_color='#1f77b4')
+        
+        fig_h = px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore')
         st.plotly_chart(fig_h, use_container_width=True)
