@@ -30,7 +30,7 @@ ticker_map = {
     "IE0032077012": "EQQQ.DE",
     "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE",
-    "IE00BFM15T99": "SJP6.DE", # Japan 7.02€
+    "IE00BFM15T99": "SJP6.DE", # Ticker Giappone 7.02€
     "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS",
     "IE00B3VVMM84": "VFEM.DE",
@@ -64,8 +64,9 @@ df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 # --- 3. LOGICA PREZZI LIVE ---
-error_logs = []
+unique_errors = set() # Per evitare duplicati nel log
 
+@st.cache_data(ttl=300)
 def fetch_live_price(isin, manual_val):
     if pd.notnull(manual_val) and manual_val > 0:
         return float(manual_val)
@@ -84,13 +85,13 @@ def fetch_live_price(isin, manual_val):
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Sincronizzazione mercati..."):
+with st.spinner("Aggiornamento mercati..."):
     prices_now = []
     for _, row in df_raw.iterrows():
         p = fetch_live_price(row['ISIN'], row['Manual_Override'])
         if p is None:
             p = float(row['Prezzo_Acq'])
-            error_logs.append(f"⚠️ {row['ISIN']}: Dati live non disponibili. Usato prezzo storico.")
+            unique_errors.add(row['ISIN'])
         prices_now.append(p)
 
 df_raw['Price_Now'] = prices_now
@@ -109,19 +110,19 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
+    t_gain_eur, t_gain_aud = t_att_eur - t_inv_eur, t_att_aud - t_inv_aud
+    roi_eur = (t_gain_eur / t_inv_eur) * 100
 
-    # Stato del sistema rapido
-    if not error_logs:
-        st.caption("✅ Tutti i dati sono aggiornati in tempo reale")
-    else:
-        st.caption("⚠️ Alcuni dati usano prezzi storici (vedi tab System Logs)")
+    # 1. TABELLA RIEPILOGO GLOBALE (REINTRODOTTA)
+    st.subheader("Riepilogo Globale Portafoglio")
+    summary_data = {
+        "Metrica": ["Total Invested", "Total Value", "Gain / Loss", "ROI %"],
+        "EURO (€)": [f"€{t_inv_eur:,.2f}", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}", f"{roi_eur:.2f}%"],
+        "AUD ($)": [f"${t_inv_aud:,.2f}", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}", f"{((t_att_aud/t_inv_aud)-1)*100:.2f}%"]
+    }
+    st.table(pd.DataFrame(summary_data))
 
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        st.metric("Patrimonio in Euro", f"€{t_att_eur:,.2f}", f"€{(t_att_eur-t_inv_eur):,.2f}")
-    with col_m2:
-        st.metric("Patrimonio in AUD", f"${t_att_aud:,.2f}", f"${(t_att_aud-t_inv_aud):,.2f}")
-
+    # 2. GRAFICI
     v1, v2 = st.columns([1, 2])
     with v1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
@@ -133,7 +134,8 @@ with tab1:
         fig_b.update_layout(title="Rendimento per Titolo (EUR vs AUD)", barmode='group')
         st.plotly_chart(fig_b, use_container_width=True)
 
-    st.subheader("Riepilogo Aggregato")
+    # 3. TABELLA AGGREGATA PER ISIN
+    st.subheader("Riepilogo Aggregato per Asset")
     st_agg = df_raw.groupby('ISIN').agg({
         'Qty': 'sum',
         'Inv_EUR': 'sum',
@@ -158,14 +160,14 @@ with tab2:
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
         sim['G_AUD_Sim'] = sim['Gain_AUD'] * (sim['% Vendi'] / 100)
         sim['Taxable_AUD'] = sim.apply(lambda r: r['G_AUD_Sim'] * 0.5 if (r['G_AUD_Sim'] > 0 and r['Days'] >= 365) else r['G_AUD_Sim'], axis=1)
-        t_gain_aud = sim['G_AUD_Sim'].sum()
+        t_gain_aud_sim = sim['G_AUD_Sim'].sum()
         t_tax_aud = max(0, sim['Taxable_AUD'].sum()) * 0.47
-        st.success(f"**Plusvalenza Lorda:** ${t_gain_aud:,.2f} AUD | **Tasse ATO stimate:** ${t_tax_aud:,.2f} AUD | **Netto:** ${(t_gain_aud-t_tax_aud):,.2f} AUD")
+        st.success(f"**Gain Lordo:** ${t_gain_aud_sim:,.2f} AUD | **Tasse Stimate:** ${t_tax_aud:,.2f} AUD | **Netto:** ${(t_gain_aud_sim-t_tax_aud):,.2f} AUD")
 
 with tab3:
-    st.subheader("Evoluzione Storica Patrimoniale")
+    st.subheader("Evoluzione Storica")
     s_date = df_raw['Date_DT'].min()
-    with st.spinner("Generazione grafico storico..."):
+    with st.spinner("Generazione grafico..."):
         h_data = {}
         for isin in df_raw['ISIN'].unique():
             tk = ticker_map.get(isin)
@@ -180,11 +182,11 @@ with tab3:
         st.plotly_chart(px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore'), use_container_width=True)
 
 with tab4:
-    st.subheader("Stato della Sincronizzazione Dati")
-    if not error_logs:
-        st.success("🚀 Tutti i sistemi sono nominali. I prezzi sono aggiornati tramite Yahoo Finance o Override manuale.")
+    st.subheader("System Health & Logs")
+    if not unique_errors:
+        st.success("✅ Tutti i titoli sono sincronizzati correttamente con Yahoo Finance.")
     else:
-        st.error("Rilevati problemi di sincronizzazione per i seguenti asset:")
-        for log in error_logs:
-            st.write(log)
-        st.info("💡 Suggerimento: Se un errore persiste, puoi inserire il prezzo manualmente nella colonna 'Price' del Google Sheet.")
+        st.error(f"Rilevati problemi di sincronizzazione per {len(unique_errors)} titoli:")
+        for isin in sorted(list(unique_errors)):
+            st.write(f"⚠️ **{isin}**: Impossibile recuperare prezzo live. Viene mostrato il prezzo storico di acquisto.")
+        st.info("💡 Se il problema persiste, inserisci il prezzo attuale nella colonna 'Price' del Google Sheet.")
