@@ -26,17 +26,17 @@ if not check_password():
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
-    "LU2885245055": "8OU9.DE",  # S&P 500 Swap
-    "IE0032077012": "EQQQ.DE",  # Nasdaq 100
-    "IE00B02KXL92": "DJMC.AS",  # DJ MidCap
-    "IE0008471009": "EXW1.DE",  # Euro Stoxx 50
-    "IE00BFM15T99": "SJP6.DE",  # Japan (Mirato a 7.02€)
-    "IE00B8GKDB10": "VHYL.MI",  # All-World High Div
-    "IE00B3RBWM25": "VWRL.AS",  # Vanguard All-World
-    "IE00B3VVMM84": "VFEM.DE",  # Emerging Markets
-    "IE00B3XXRP09": "VUSA.DE",  # S&P 500
-    "IE00BZ56RN96": "GGRW.MI",  # Global Quality Div
-    "IE0005042456": "IUSA.DE"   # S&P 500 Dist
+    "LU2885245055": "8OU9.DE",
+    "IE0032077012": "EQQQ.DE",
+    "IE00B02KXL92": "DJMC.AS",
+    "IE0008471009": "EXW1.DE",
+    "IE00BFM15T99": "SJP6.DE", # Japan 7.02€
+    "IE00B8GKDB10": "VHYL.MI",
+    "IE00B3RBWM25": "VWRL.AS",
+    "IE00B3VVMM84": "VFEM.DE",
+    "IE00B3XXRP09": "VUSA.DE",
+    "IE00BZ56RN96": "GGRW.MI",
+    "IE0005042456": "IUSA.DE"
 }
 
 @st.cache_data(ttl=600)
@@ -63,33 +63,34 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE CON RETRY ---
+# --- 3. LOGICA PREZZI LIVE ---
+error_logs = []
+
 def fetch_live_price(isin, manual_val):
     if pd.notnull(manual_val) and manual_val > 0:
         return float(manual_val)
     
     symbol = ticker_map.get(isin)
     if symbol:
-        for _ in range(2): # Prova 2 volte in caso di errore di rete
-            try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="1d", interval="1m")
-                if not hist.empty:
-                    return float(hist['Close'].iloc[-1])
-            except:
-                continue
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d", interval="1m")
+            if not hist.empty:
+                return float(hist['Close'].iloc[-1])
+        except:
+            pass
     return None
 
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Sincronizzazione mercati in corso..."):
+with st.spinner("Sincronizzazione mercati..."):
     prices_now = []
     for _, row in df_raw.iterrows():
         p = fetch_live_price(row['ISIN'], row['Manual_Override'])
         if p is None:
             p = float(row['Prezzo_Acq'])
-            st.warning(f"⚠️ Dati non disponibili per {row['ISIN']}. Utilizzato ultimo prezzo noto.")
+            error_logs.append(f"⚠️ {row['ISIN']}: Dati live non disponibili. Usato prezzo storico.")
         prices_now.append(p)
 
 df_raw['Price_Now'] = prices_now
@@ -103,11 +104,17 @@ df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 # --- 4. INTERFACCIA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
 
-tab1, tab2, tab3 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
+
+    # Stato del sistema rapido
+    if not error_logs:
+        st.caption("✅ Tutti i dati sono aggiornati in tempo reale")
+    else:
+        st.caption("⚠️ Alcuni dati usano prezzi storici (vedi tab System Logs)")
 
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -115,14 +122,30 @@ with tab1:
     with col_m2:
         st.metric("Patrimonio in AUD", f"${t_att_aud:,.2f}", f"${(t_att_aud-t_inv_aud):,.2f}")
 
-    st.subheader("Asset Allocation")
-    st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4), use_container_width=True)
+    v1, v2 = st.columns([1, 2])
+    with v1:
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
+    with v2:
+        agg_p = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
+        fig_b = go.Figure()
+        fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_p['ISIN'], y=agg_p['Gain_EUR'], marker_color='#3366CC'))
+        fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_p['ISIN'], y=agg_p['Gain_AUD'], marker_color='#109618'))
+        fig_b.update_layout(title="Rendimento per Titolo (EUR vs AUD)", barmode='group')
+        st.plotly_chart(fig_b, use_container_width=True)
 
-    st.subheader("Dettaglio Portafoglio")
-    st.dataframe(df_raw[['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_EUR', 'Gain_AUD']].style.format(precision=2), use_container_width=True, hide_index=True)
+    st.subheader("Riepilogo Aggregato")
+    st_agg = df_raw.groupby('ISIN').agg({
+        'Qty': 'sum',
+        'Inv_EUR': 'sum',
+        'Att_EUR': 'sum',
+        'Gain_EUR': 'sum',
+        'Gain_AUD': 'sum'
+    }).reset_index()
+    st_agg['ROI %'] = (st_agg['Gain_EUR'] / st_agg['Inv_EUR']) * 100
+    st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
-    st.subheader("Simulazione Vendita Lotti")
+    st.subheader("Simulazione Vendita & Tasse ATO")
     df_raw['% Vendi'] = 0.0
     ed_df = st.data_editor(
         df_raw[['Data', 'ISIN', 'Qty', 'Price_Now', 'Gain_AUD', '% Vendi']],
@@ -135,14 +158,12 @@ with tab2:
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
         sim['G_AUD_Sim'] = sim['Gain_AUD'] * (sim['% Vendi'] / 100)
         sim['Taxable_AUD'] = sim.apply(lambda r: r['G_AUD_Sim'] * 0.5 if (r['G_AUD_Sim'] > 0 and r['Days'] >= 365) else r['G_AUD_Sim'], axis=1)
-        
         t_gain_aud = sim['G_AUD_Sim'].sum()
         t_tax_aud = max(0, sim['Taxable_AUD'].sum()) * 0.47
-        
         st.success(f"**Plusvalenza Lorda:** ${t_gain_aud:,.2f} AUD | **Tasse ATO stimate:** ${t_tax_aud:,.2f} AUD | **Netto:** ${(t_gain_aud-t_tax_aud):,.2f} AUD")
 
 with tab3:
-    st.subheader("Evoluzione Totale Patrimonio (€)")
+    st.subheader("Evoluzione Storica Patrimoniale")
     s_date = df_raw['Date_DT'].min()
     with st.spinner("Generazione grafico storico..."):
         h_data = {}
@@ -157,3 +178,13 @@ with tab3:
         d_range = pd.date_range(s_date, datetime.now().date())
         vals = [sum([l['Qty'] * (h_data[l['ISIN']].asof(d) if l['ISIN'] in h_data else l['Prezzo_Acq']) for _, l in df_raw[df_raw['Date_DT'].dt.date <= d.date()].iterrows()]) for d in d_range]
         st.plotly_chart(px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore'), use_container_width=True)
+
+with tab4:
+    st.subheader("Stato della Sincronizzazione Dati")
+    if not error_logs:
+        st.success("🚀 Tutti i sistemi sono nominali. I prezzi sono aggiornati tramite Yahoo Finance o Override manuale.")
+    else:
+        st.error("Rilevati problemi di sincronizzazione per i seguenti asset:")
+        for log in error_logs:
+            st.write(log)
+        st.info("💡 Suggerimento: Se un errore persiste, puoi inserire il prezzo manualmente nella colonna 'Price' del Google Sheet.")
