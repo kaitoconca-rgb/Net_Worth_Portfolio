@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- 0. PROTEZIONE PASSWORD ---
@@ -66,11 +66,11 @@ df_raw['ISIN'] = df_input['ISIN']
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
-df_raw = df_raw.dropna(subset=['ISIN'])
+df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 market_fx = get_fx_rate()
-fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
+fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
 prices_now = []
 for _, row in df_raw.iterrows():
@@ -87,7 +87,7 @@ df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
 df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 4. INTERFACCIA ---
+# --- 4. UI ---
 st.title("🏛️ Claudio's Executive Portfolio")
 
 if st.sidebar.button("🔄 Refresh Data"):
@@ -136,50 +136,50 @@ with tab2:
 with tab3:
     st.subheader("Historical Capital Evolution")
     
-    with st.spinner("Ricostruzione storica accurata..."):
+    # Inizio forzato a quando hai effettivamente iniziato (Ottobre 2025)
+    start_date = "2025-10-01"
+    
+    with st.spinner("Calcolo storico progressivo..."):
         all_h_prices = {}
-        unique_isins = df_raw['ISIN'].unique()
-        
-        for isin in unique_isins:
+        for isin in df_raw['ISIN'].unique():
             t = ticker_map.get(isin)
             if t:
-                h = yf.download(t, start="2025-10-01", progress=False)['Close']
+                h = yf.download(t, start=start_date, progress=False)['Close']
                 if not h.empty:
                     if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                    # Riordiniamo e riempiamo i buchi dei giorni festivi (ffill)
-                    h = h.reindex(pd.date_range(start="2025-10-01", end=datetime.now()), method='ffill')
-                    all_h_prices[isin] = h
+                    # Riempiamo i buchi dei festivi con l'ultimo prezzo noto
+                    all_h_prices[isin] = h.reindex(pd.date_range(start=start_date, end=datetime.now()), method='ffill')
         
         if all_h_prices:
-            # Creiamo un range di date continuo da Ottobre ad oggi
-            date_range = pd.date_range(start="2025-10-01", end=datetime.now().date())
-            hist_df = pd.DataFrame(index=date_range)
-            hist_df['Total_Value_EUR'] = 0.0
+            dates = pd.date_range(start=start_date, end=datetime.now().date())
+            history = []
             
-            for d in date_range:
-                lots_until_today = df_raw[df_raw['Date_DT'] <= d]
-                daily_total = 0.0
-                for _, lot in lots_until_today.iterrows():
-                    if lot['ISIN'] in all_h_prices:
-                        prices = all_h_prices[lot['ISIN']]
-                        # Cerchiamo il prezzo per quella data (o l'ultimo disponibile)
-                        try:
-                            price_val = prices.asof(d)
-                            if pd.notnull(price_val):
-                                daily_total += float(price_val) * lot['Qty']
-                        except: pass
-                hist_df.at[d, 'Total_Value_EUR'] = daily_total
+            for d in dates:
+                # Prendiamo solo i lotti acquistati fino alla data 'd'
+                current_assets = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
+                daily_val = 0.0
+                if not current_assets.empty:
+                    for _, lot in current_assets.iterrows():
+                        if lot['ISIN'] in all_h_prices:
+                            # Prendi il prezzo di quel giorno (o l'ultimo disponibile)
+                            price_series = all_h_prices[lot['ISIN']]
+                            try:
+                                price = price_series.asof(d)
+                                if pd.notnull(price):
+                                    daily_val += price * lot['Qty']
+                            except: continue
+                history.append(daily_val)
             
-            # FORZA SINCRONIZZAZIONE: L'ultimo punto deve essere uguale al totale attuale
-            hist_df.iloc[-1] = df_raw['Att_EUR'].sum()
-            
-            # Rimuoviamo i valori a zero iniziali
-            hist_df = hist_df[hist_df['Total_Value_EUR'] > 0]
+            hist_df = pd.DataFrame({'Date': dates, 'Value': history})
+            # Rimuoviamo i giorni iniziali prima del primissimo acquisto
+            hist_df = hist_df[hist_df['Value'] > 0]
             
             if not hist_df.empty:
-                fig_hist = px.area(hist_df, y='Total_Value_EUR', 
-                                 title=f"Evoluzione Patrimonio (€) - Target Attuale: €{df_raw['Att_EUR'].sum():,.2f}",
-                                 labels={'Total_Value_EUR': 'Valore (€)', 'index': 'Data'})
-                st.plotly_chart(fig_hist, use_container_width=True)
+                # Allineamento finale con il valore "Live" per coerenza totale
+                hist_df.iloc[-1, hist_df.columns.get_loc('Value')] = df_raw['Att_EUR'].sum()
+                
+                fig = px.area(hist_df, x='Date', y='Value', title="Portfolio Growth (€)")
+                fig.update_xaxes(range=[start_date, datetime.now().strftime("%Y-%m-%d")])
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Dati storici non pronti. Verifica le date nel foglio Google.")
+                st.info("Dati insufficienti per il periodo selezionato.")
