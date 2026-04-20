@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
@@ -98,13 +99,37 @@ tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0
 tab1, tab2, tab3 = st.tabs(["📊 Performance Summary", "💸 Detail & Simulator", "📈 History"])
 
 with tab1:
-    c1, c2 = st.columns(2)
-    c1.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', title="Allocation by Asset (€)"), use_container_width=True)
-    c2.plotly_chart(px.bar(df_raw, x='ISIN', y='Gain_AUD', color='Gain_AUD', color_continuous_scale='RdYlGn', title="Total Gain/Loss per Lot ($ AUD)"), use_container_width=True)
+    # Grafico 1: Asset Allocation
+    c1, c2 = st.columns([1, 2])
+    c1.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', title="Allocation (€)"), use_container_width=True)
+    
+    # Grafico 2: CONFRONTO GAIN EUR VS AUD (Nuova Richiesta)
+    # Aggreghiamo per ISIN per vedere il totale
+    agg_plot = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
+    
+    fig_comp = go.Figure()
+    fig_comp.add_trace(go.Bar(name='Gain/Loss EUR (€)', x=agg_plot['ISIN'], y=agg_plot['Gain_EUR'], marker_color='#3366CC'))
+    fig_comp.add_trace(go.Bar(name='Gain/Loss AUD ($)', x=agg_plot['ISIN'], y=agg_plot['Gain_AUD'], marker_color='#109618'))
+    
+    fig_comp.update_layout(
+        title="Comparison: Realized Gain/Loss if Sold Today (EUR vs AUD)",
+        barmode='group',
+        yaxis_title="Profit/Loss",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    c2.plotly_chart(fig_comp, use_container_width=True)
 
     st.subheader("Asset Performance Aggregated")
-    agg = df_raw.groupby('ISIN').agg({'Qty': 'sum', 'Inv_EUR': 'sum', 'Att_EUR': 'sum', 'Gain_EUR': 'sum', 'Inv_AUD': 'sum', 'Att_AUD': 'sum', 'Gain_AUD': 'sum'}).reset_index()
-    st.dataframe(agg.style.format(precision=2), use_container_width=True, hide_index=True)
+    agg_table = df_raw.groupby('ISIN').agg({
+        'Qty': 'sum', 
+        'Inv_EUR': 'sum', 
+        'Att_EUR': 'sum', 
+        'Gain_EUR': 'sum', 
+        'Inv_AUD': 'sum', 
+        'Att_AUD': 'sum', 
+        'Gain_AUD': 'sum'
+    }).reset_index()
+    st.dataframe(agg_table.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Financial Health Summary")
@@ -135,13 +160,10 @@ with tab2:
 
 with tab3:
     st.subheader("Historical Capital Evolution")
-    
-    # Troviamo la data del primo acquisto reale
     first_purchase = df_raw['Date_DT'].min()
-    if pd.isnull(first_purchase):
-        first_purchase = pd.Timestamp("2025-10-01")
+    if pd.isnull(first_purchase): first_purchase = pd.Timestamp("2025-10-01")
         
-    with st.spinner(f"Ricostruzione storica dal {first_purchase.strftime('%d/%m/%Y')}..."):
+    with st.spinner("Calcolo storico progressivo..."):
         all_h_prices = {}
         for isin in df_raw['ISIN'].unique():
             t = ticker_map.get(isin)
@@ -149,38 +171,13 @@ with tab3:
                 h = yf.download(t, start=first_purchase, progress=False)['Close']
                 if not h.empty:
                     if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                    # Riempiamo i buchi dei festivi
                     all_h_prices[isin] = h.reindex(pd.date_range(start=first_purchase, end=datetime.now()), method='ffill')
         
         if all_h_prices:
-            # Creiamo il calendario dal giorno del primo acquisto ad oggi
             dates = pd.date_range(start=first_purchase, end=datetime.now().date())
-            history = []
-            
-            for d in dates:
-                # Selezioniamo i lotti posseduti a quella data specifica 'd'
-                active_lots = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
-                daily_val = 0.0
-                for _, lot in active_lots.iterrows():
-                    if lot['ISIN'] in all_h_prices:
-                        price_series = all_h_prices[lot['ISIN']]
-                        try:
-                            # Prendi il prezzo di quel giorno (o l'ultimo disponibile prima di 'd')
-                            p = price_series.asof(pd.Timestamp(d))
-                            if pd.notnull(p):
-                                daily_val += float(p) * lot['Qty']
-                        except: continue
-                history.append(daily_val)
-            
+            history = [sum(all_h_prices[lot['ISIN']].asof(pd.Timestamp(d)) * lot['Qty'] for _, lot in df_raw[df_raw['Date_DT'].dt.date <= d.date()].iterrows() if lot['ISIN'] in all_h_prices) for d in dates]
             hist_df = pd.DataFrame({'Date': dates, 'Value': history})
-            
-            # Allineamento finale con il valore calcolato nelle tabelle per coerenza
             if not hist_df.empty:
                 hist_df.iloc[-1, hist_df.columns.get_loc('Value')] = df_raw['Att_EUR'].sum()
-                
-                fig = px.area(hist_df, x='Date', y='Value', 
-                             title=f"Crescita Portafoglio (€) - Valore Attuale: €{df_raw['Att_EUR'].sum():,.2f}")
-                
-                # Impostiamo l'asse X per partire esattamente dal primo acquisto
-                fig.update_xaxes(range=[first_purchase, datetime.now()])
+                fig = px.area(hist_df, x='Date', y='Value', title="Portfolio Growth (€)")
                 st.plotly_chart(fig, use_container_width=True)
