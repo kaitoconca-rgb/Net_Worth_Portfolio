@@ -26,10 +26,17 @@ if not check_password():
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
-    "LU2885245055": "X062.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
-    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "ISJP.DE", "IE00B8GKDB10": "VHYL.MI",
-    "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
-    "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
+    "LU2885245055": "8OU9.DE",  # S&P 500 Swap
+    "IE0032077012": "EQQQ.DE",  # Nasdaq 100
+    "IE00B02KXL92": "DJMC.AS",  # DJ MidCap
+    "IE0008471009": "EXW1.DE",  # Euro Stoxx
+    "IE00BFM15T99": "ISJP.DE",  # Japan (Allineato a N26 ~7.02€)
+    "IE00B8GKDB10": "VHYL.MI",  # All-World High Div
+    "IE00B3RBWM25": "VWRL.AS",  # Vanguard All-World
+    "IE00B3VVMM84": "VFEM.DE",  # Emerging Markets
+    "IE00B3XXRP09": "VUSA.DE",  # S&P 500
+    "IE00BZ56RN96": "GGRW.MI",  # Global Quality Div
+    "IE0005042456": "IUSA.DE"   # S&P 500 (Dist)
 }
 
 @st.cache_data(ttl=600)
@@ -59,7 +66,7 @@ manual_prices = pd.to_numeric(df_input['Price'], errors='coerce')
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-# Prezzi Correnti
+# Prezzi Correnti (Live o Manuale)
 prices_now = []
 for i, row in df_raw.iterrows():
     if i < len(manual_prices) and pd.notnull(manual_prices[i]) and manual_prices[i] > 0:
@@ -90,7 +97,7 @@ with tab1:
     st.subheader("Performance Globale")
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
-    
+
     c_m1, c_m2 = st.columns(2)
     with c_m1:
         st.table(pd.DataFrame({
@@ -121,48 +128,46 @@ with tab1:
 with tab2:
     st.subheader("Dettaglio Lotti & Simulatore Vendita")
     df_raw['% Vendi'] = 0.0
-    # Aggiunta colonna Gain_EUR come richiesto
     cols_to_show = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_EUR', 'Gain_AUD', '% Vendi']
-    
+
     ed_df = st.data_editor(
         df_raw[cols_to_show],
         column_config={"% Vendi": st.column_config.NumberColumn("Vendi %", min_value=0, max_value=100, format="%d%%")},
         hide_index=True, use_container_width=True
     )
-    
+
     if ed_df['% Vendi'].sum() > 0:
         sim = ed_df[ed_df['% Vendi'] > 0].copy()
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
         sim['Inv_EUR_Lot'] = df_raw.loc[sim.index, 'Inv_EUR']
         sim['Inv_AUD_Lot'] = df_raw.loc[sim.index, 'Inv_AUD']
-        
+
         # Calcolo Gain Realizzato EUR e AUD
         sim['G_EUR_Sim'] = (sim['Qty'] * sim['Price_Now'] * sim['% Vendi']/100) - (sim['Inv_EUR_Lot'] * sim['% Vendi']/100)
         sim['G_AUD_Sim'] = (sim['Qty'] * sim['Price_Now'] * market_fx * sim['% Vendi']/100) - (sim['Inv_AUD_Lot'] * sim['% Vendi']/100)
-        
+
         # Logica Tasse ATO (Sconto 50% CGT se > 365gg)
         sim['Taxable_AUD'] = sim.apply(lambda r: r['G_AUD_Sim'] * 0.5 if (r['G_AUD_Sim'] > 0 and r['Days'] >= 365) else r['G_AUD_Sim'], axis=1)
-        
+
         t_gain_eur = sim['G_EUR_Sim'].sum()
         t_gain_aud = sim['G_AUD_Sim'].sum()
         t_tax_aud = max(0, sim['Taxable_AUD'].sum()) * 0.47
         t_tax_eur = t_tax_aud / market_fx
-        
+
         st.markdown("---")
         st.subheader("📊 Totali Simulazione Vendita")
-        
         res_data = {
             "Valuta": ["EURO (€)", "AUD ($)"],
-            "Gain Lordo": [f"€{t_gain_eur:,.2f}", f"${t_gain_aud:,.2f}"],
+            "Gain Lordo Realizzato": [f"€{t_gain_eur:,.2f}", f"${t_gain_aud:,.2f}"],
             "Tasse Stimate (47%)": [f"€{t_tax_eur:,.2f}", f"- ${t_tax_aud:,.2f}"],
-            "Netto Stimato": [f"€{(t_gain_eur - t_tax_eur):,.2f}", f"${(t_gain_aud - t_tax_aud):,.2f}"]
+            "Netto Stimato in Tasca": [f"€{(t_gain_eur - t_tax_eur):,.2f}", f"${(t_gain_aud - t_tax_aud):,.2f}"]
         }
         st.table(pd.DataFrame(res_data))
 
 with tab3:
     st.subheader("Evoluzione Storica del Valore (€)")
     s_date = df_raw['Date_DT'].min()
-    
+
     with st.spinner("Calcolo cronologia prezzi..."):
         h_data = {}
         for isin in df_raw['ISIN'].unique():
@@ -183,7 +188,7 @@ with tab3:
                 if pd.isna(p) or p <= 0: p = float(l['Prezzo_Acq'])
                 day_sum += float(p) * float(l['Qty'])
             vals.append(day_sum)
-        
+
         fig_h = px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore', title="Patrimonio Totale in Euro")
         fig_h.update_traces(line_shape='hv', line_color='#1f77b4')
         st.plotly_chart(fig_h, use_container_width=True)
