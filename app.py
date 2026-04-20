@@ -136,50 +136,51 @@ with tab2:
 with tab3:
     st.subheader("Historical Capital Evolution")
     
-    # Inizio forzato a quando hai effettivamente iniziato (Ottobre 2025)
-    start_date = "2025-10-01"
-    
-    with st.spinner("Calcolo storico progressivo..."):
+    # Troviamo la data del primo acquisto reale
+    first_purchase = df_raw['Date_DT'].min()
+    if pd.isnull(first_purchase):
+        first_purchase = pd.Timestamp("2025-10-01")
+        
+    with st.spinner(f"Ricostruzione storica dal {first_purchase.strftime('%d/%m/%Y')}..."):
         all_h_prices = {}
         for isin in df_raw['ISIN'].unique():
             t = ticker_map.get(isin)
             if t:
-                h = yf.download(t, start=start_date, progress=False)['Close']
+                h = yf.download(t, start=first_purchase, progress=False)['Close']
                 if not h.empty:
                     if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                    # Riempiamo i buchi dei festivi con l'ultimo prezzo noto
-                    all_h_prices[isin] = h.reindex(pd.date_range(start=start_date, end=datetime.now()), method='ffill')
+                    # Riempiamo i buchi dei festivi
+                    all_h_prices[isin] = h.reindex(pd.date_range(start=first_purchase, end=datetime.now()), method='ffill')
         
         if all_h_prices:
-            dates = pd.date_range(start=start_date, end=datetime.now().date())
+            # Creiamo il calendario dal giorno del primo acquisto ad oggi
+            dates = pd.date_range(start=first_purchase, end=datetime.now().date())
             history = []
             
             for d in dates:
-                # Prendiamo solo i lotti acquistati fino alla data 'd'
-                current_assets = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
+                # Selezioniamo i lotti posseduti a quella data specifica 'd'
+                active_lots = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
                 daily_val = 0.0
-                if not current_assets.empty:
-                    for _, lot in current_assets.iterrows():
-                        if lot['ISIN'] in all_h_prices:
-                            # Prendi il prezzo di quel giorno (o l'ultimo disponibile)
-                            price_series = all_h_prices[lot['ISIN']]
-                            try:
-                                price = price_series.asof(d)
-                                if pd.notnull(price):
-                                    daily_val += price * lot['Qty']
-                            except: continue
+                for _, lot in active_lots.iterrows():
+                    if lot['ISIN'] in all_h_prices:
+                        price_series = all_h_prices[lot['ISIN']]
+                        try:
+                            # Prendi il prezzo di quel giorno (o l'ultimo disponibile prima di 'd')
+                            p = price_series.asof(pd.Timestamp(d))
+                            if pd.notnull(p):
+                                daily_val += float(p) * lot['Qty']
+                        except: continue
                 history.append(daily_val)
             
             hist_df = pd.DataFrame({'Date': dates, 'Value': history})
-            # Rimuoviamo i giorni iniziali prima del primissimo acquisto
-            hist_df = hist_df[hist_df['Value'] > 0]
             
+            # Allineamento finale con il valore calcolato nelle tabelle per coerenza
             if not hist_df.empty:
-                # Allineamento finale con il valore "Live" per coerenza totale
                 hist_df.iloc[-1, hist_df.columns.get_loc('Value')] = df_raw['Att_EUR'].sum()
                 
-                fig = px.area(hist_df, x='Date', y='Value', title="Portfolio Growth (€)")
-                fig.update_xaxes(range=[start_date, datetime.now().strftime("%Y-%m-%d")])
+                fig = px.area(hist_df, x='Date', y='Value', 
+                             title=f"Crescita Portafoglio (€) - Valore Attuale: €{df_raw['Att_EUR'].sum():,.2f}")
+                
+                # Impostiamo l'asse X per partire esattamente dal primo acquisto
+                fig.update_xaxes(range=[first_purchase, datetime.now()])
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Dati insufficienti per il periodo selezionato.")
