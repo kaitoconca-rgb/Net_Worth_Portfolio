@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # --- 0. PROTEZIONE PASSWORD ---
@@ -70,7 +70,6 @@ df_raw = df_raw.dropna(subset=['ISIN'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 market_fx = get_fx_rate()
-# FX Storico per calcolo Gain AUD
 fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 
 prices_now = []
@@ -94,6 +93,7 @@ st.title("🏛️ Claudio's Executive Portfolio")
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
+tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
 
 tab1, tab2, tab3 = st.tabs(["📊 Performance Summary", "💸 Detail & Simulator", "📈 History"])
 
@@ -129,7 +129,6 @@ with tab2:
         sel = edited[edited['% Vendi'] > 0].copy()
         sel['Days'] = (datetime.now() - pd.to_datetime(sel['Data'], dayfirst=True)).dt.days
         sel['R_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_AUD'] * sel['% Vendi']/100)
-        tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
         sel['Taxable'] = sel.apply(lambda r: r['R_Gain_AUD'] * 0.5 if (r['R_Gain_AUD'] > 0 and r['Days'] >= 365) else r['R_Gain_AUD'], axis=1)
         tax = max(0, sel['Taxable'].sum()) * tax_rate
         st.success(f"💰 Netto stimato: **${(sel['R_Gain_AUD'].sum() - tax):,.2f} AUD** (Tasse: ${tax:,.2f})")
@@ -137,43 +136,50 @@ with tab2:
 with tab3:
     st.subheader("Historical Capital Evolution")
     
-    with st.spinner("Ricostruzione storica (da Ottobre 2025)..."):
+    with st.spinner("Ricostruzione storica accurata..."):
         all_h_prices = {}
-        for isin in df_raw['ISIN'].unique():
+        unique_isins = df_raw['ISIN'].unique()
+        
+        for isin in unique_isins:
             t = ticker_map.get(isin)
             if t:
-                # Partenza forzata a Ottobre 2025
                 h = yf.download(t, start="2025-10-01", progress=False)['Close']
                 if not h.empty:
                     if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                    # Riordiniamo e riempiamo i buchi dei giorni festivi (ffill)
+                    h = h.reindex(pd.date_range(start="2025-10-01", end=datetime.now()), method='ffill')
                     all_h_prices[isin] = h
         
         if all_h_prices:
-            # Crea l'indice date basato sui dati scaricati (che ora partono da Ottobre)
-            common_dates = next(iter(all_h_prices.values())).index
-            hist_df = pd.DataFrame(index=common_dates)
+            # Creiamo un range di date continuo da Ottobre ad oggi
+            date_range = pd.date_range(start="2025-10-01", end=datetime.now().date())
+            hist_df = pd.DataFrame(index=date_range)
             hist_df['Total_Value_EUR'] = 0.0
             
-            for d in common_dates:
+            for d in date_range:
                 lots_until_today = df_raw[df_raw['Date_DT'] <= d]
                 daily_total = 0.0
                 for _, lot in lots_until_today.iterrows():
                     if lot['ISIN'] in all_h_prices:
                         prices = all_h_prices[lot['ISIN']]
-                        if d in prices.index:
-                            daily_total += float(prices.loc[d]) * lot['Qty']
+                        # Cerchiamo il prezzo per quella data (o l'ultimo disponibile)
+                        try:
+                            price_val = prices.asof(d)
+                            if pd.notnull(price_val):
+                                daily_total += float(price_val) * lot['Qty']
+                        except: pass
                 hist_df.at[d, 'Total_Value_EUR'] = daily_total
             
+            # FORZA SINCRONIZZAZIONE: L'ultimo punto deve essere uguale al totale attuale
+            hist_df.iloc[-1] = df_raw['Att_EUR'].sum()
+            
+            # Rimuoviamo i valori a zero iniziali
             hist_df = hist_df[hist_df['Total_Value_EUR'] > 0]
             
             if not hist_df.empty:
                 fig_hist = px.area(hist_df, y='Total_Value_EUR', 
-                                 title="Evoluzione Patrimonio (€) - Da Ottobre 2025",
-                                 labels={'Total_Value_EUR': 'Valore Totale (€)', 'index': 'Data'})
-                # Forza l'asse X a partire da Ottobre 2025 per sicurezza visiva
-                fig_hist.update_xaxes(range=["2025-10-01", datetime.now().strftime("%Y-%m-%d")])
+                                 title=f"Evoluzione Patrimonio (€) - Target Attuale: €{df_raw['Att_EUR'].sum():,.2f}",
+                                 labels={'Total_Value_EUR': 'Valore (€)', 'index': 'Data'})
                 st.plotly_chart(fig_hist, use_container_width=True)
             else:
-                st.info("Nessun dato trovato a partire da Ottobre 2025.")
-        else:
-            st.error("Errore nel recupero dei dati storici.")
+                st.info("Dati storici non pronti. Verifica le date nel foglio Google.")
