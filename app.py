@@ -50,14 +50,16 @@ df_raw['Data'] = df_input['Fecha Valor']
 df_raw['ISIN'] = df_input['ISIN']
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
-df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') # PRECIO storico
+df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') 
 
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# Logica Prezzo Attuale (Live o Override colonna Price)
+# Prezzo Attuale (Override colonna Price o Live Yahoo)
 manual_prices = pd.to_numeric(df_input['Price'], errors='coerce')
 market_fx = get_fx_rate()
+# FX Storico per calcolare l'investito reale in AUD (alla data di acquisto)
+fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
 prices_now = []
 for i, row in df_raw.iterrows():
@@ -74,9 +76,14 @@ for i, row in df_raw.iterrows():
             prices_now.append(float(row['Prezzo_Acq']))
 
 df_raw['Price_Now'] = prices_now
+df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
+
+# Calcoli Performance
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
+df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
+df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
 # --- 3. UI ---
 st.title("🏛️ Claudio's Executive Portfolio")
@@ -90,29 +97,34 @@ with tab1:
     m2.metric("Valore (€)", f"€{df_raw['Att_EUR'].sum():,.0f}")
     m3.metric("Valore (AUD)", f"${df_raw['Att_AUD'].sum():,.0f}")
     roi = ((df_raw['Att_EUR'].sum()/df_raw['Inv_EUR'].sum())-1)*100
-    m4.metric("ROI Globale", f"{roi:.2f}%", delta=f"{roi:.2f}%")
+    m4.metric("ROI Globale (EUR)", f"{roi:.2f}%")
 
     # Grafici
     c1, c2 = st.columns([1, 2])
     with c1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
     with c2:
-        agg = df_raw.groupby('ISIN')['Gain_EUR'].sum().reset_index()
-        st.plotly_chart(px.bar(agg, x='ISIN', y='Gain_EUR', title="Guadagno/Perdita per Titolo (€)", color='Gain_EUR', color_continuous_scale='RdYlGn'), use_container_width=True)
+        # Ripristino grafico barre comparativo EUR vs AUD
+        agg_plot = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(name='Gain/Loss EUR (€)', x=agg_plot['ISIN'], y=agg_plot['Gain_EUR'], marker_color='#3366CC'))
+        fig_comp.add_trace(go.Bar(name='Gain/Loss AUD ($)', x=agg_plot['ISIN'], y=agg_plot['Gain_AUD'], marker_color='#109618'))
+        fig_comp.update_layout(title="Confronto Guadagno/Perdita (EUR vs AUD)", barmode='group', legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig_comp, use_container_width=True)
     
     st.subheader("Performance Aggregata")
-    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).reset_index()
+    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum','Gain_AUD':'sum'}).reset_index()
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Dettaglio Analitico per Lotto")
-    st.data_editor(df_raw[['Data','ISIN','Qty','Prezzo_Acq','Price_Now','Att_EUR','Gain_EUR']], use_container_width=True, hide_index=True)
+    st.data_editor(df_raw[['Data','ISIN','Qty','Prezzo_Acq','Price_Now','Att_EUR','Gain_EUR','Gain_AUD']], use_container_width=True, hide_index=True)
 
 with tab3:
     st.subheader("Evoluzione del Capitale (€)")
     start_date = df_raw['Date_DT'].min()
     
-    with st.spinner("Calcolo cronologico in corso..."):
+    with st.spinner("Ricostruzione cronologica..."):
         all_hist = {}
         for isin in df_raw['ISIN'].unique():
             t = ticker_map.get(isin)
@@ -130,21 +142,13 @@ with tab3:
             for _, lot in current_df.iterrows():
                 isin = lot['ISIN']
                 p_series = all_hist.get(isin)
-                p = None
-                if p_series is not None:
-                    try:
-                        p = p_series.asof(d)
-                    except: p = None
-                
-                # Se il prezzo non esiste per quel giorno o è nullo, usa il Prezzo di Acquisto
+                p = p_series.asof(d) if p_series is not None else None
                 if pd.isna(p) or p <= 0:
                     p = float(lot['Prezzo_Acq'])
-                
                 total_day += float(p) * float(lot['Qty'])
             history_values.append(total_day)
         
         hist_df = pd.DataFrame({'Data': dates, 'Valore': history_values})
-        fig_hist = px.area(hist_df, x='Data', y='Valore', title="Andamento del Portafoglio (€) - Da Ottobre ad oggi")
+        fig_hist = px.area(hist_df, x='Data', y='Valore', title="Andamento del Portafoglio (€)")
         fig_hist.update_traces(line_shape='hv', line_color='#1f77b4')
-        fig_hist.update_layout(hovermode="x unified", yaxis_title="Valore di Mercato (€)")
         st.plotly_chart(fig_hist, use_container_width=True)
