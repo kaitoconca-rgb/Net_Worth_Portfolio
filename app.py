@@ -30,7 +30,7 @@ ticker_map = {
     "IE0032077012": "EQQQ.DE", 
     "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE", 
-    "IE00BFM15T99": "ISJP.DE", 
+    "IE00BFM15T99": "79W.DE",   # Ticker Japan alternativo più stabile per Yahoo
     "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS", 
     "IE00B3VVMM84": "VFEM.DE", 
@@ -42,9 +42,8 @@ ticker_map = {
 @st.cache_data(ttl=600)
 def get_fx_rate():
     try:
-        t = yf.Ticker("EURAUD=X")
-        val = t.fast_info['last_price']
-        return float(val) if val else 1.6450
+        d = yf.download("EURAUD=X", period="1d", progress=False)
+        return float(d['Close'].iloc[-1])
     except: return 1.6450
 
 # --- 2. CARICAMENTO E ELABORAZIONE DATI ---
@@ -66,31 +65,38 @@ df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-# Funzione di recupero prezzo migliorata
+# Funzione di recupero prezzo ad alta affidabilità
 def get_current_price(isin, manual_val, buy_price):
-    # 1. Se c'è un valore manuale nel foglio, ha la precedenza
+    # 1. Priorità: Valore manuale nel foglio
     if pd.notnull(manual_val) and manual_val > 0:
         return float(manual_val)
     
-    # 2. Altrimenti prova Yahoo Finance
+    # 2. Automazione: Yahoo Finance con metodo download (più robusto)
     ticker_symbol = ticker_map.get(isin)
     if ticker_symbol:
         try:
-            t = yf.Ticker(ticker_symbol)
-            live_p = t.fast_info['last_price']
-            if live_p and live_p > 0:
-                return float(live_p)
-        except:
+            data = yf.download(ticker_symbol, period="1d", progress=False)
+            if not data.empty:
+                # Gestione DataFrame multi-index o standard
+                if isinstance(data.columns, pd.MultiIndex):
+                    val = data['Close'].iloc[-1].values[0]
+                else:
+                    val = data['Close'].iloc[-1]
+                
+                if pd.notnull(val) and val > 0:
+                    return float(val)
+        except Exception as e:
             pass
             
-    # 3. Fallback finale: Prezzo di acquisto (per non avere mai None)
+    # 3. Fallback: Prezzo di acquisto
     return float(buy_price)
 
-# Applichiamo la logica
-prices_now = []
-for _, row in df_raw.iterrows():
-    p = get_current_price(row['ISIN'], row['Manual_Override'], row['Prezzo_Acq'])
-    prices_now.append(p)
+# Elaborazione prezzi
+with st.spinner("Aggiornamento prezzi di mercato..."):
+    prices_now = []
+    for _, row in df_raw.iterrows():
+        p = get_current_price(row['ISIN'], row['Manual_Override'], row['Prezzo_Acq'])
+        prices_now.append(p)
 
 df_raw['Price_Now'] = prices_now
 df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
