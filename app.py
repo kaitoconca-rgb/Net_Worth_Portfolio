@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
@@ -71,6 +70,7 @@ df_raw = df_raw.dropna(subset=['ISIN'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 market_fx = get_fx_rate()
+# FX Storico per calcolo Gain AUD
 fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 
 prices_now = []
@@ -94,50 +94,32 @@ st.title("🏛️ Claudio's Executive Portfolio")
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
-st.sidebar.metric("EUR/AUD Spot", f"{market_fx:.4f}")
-tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
 
 tab1, tab2, tab3 = st.tabs(["📊 Performance Summary", "💸 Detail & Simulator", "📈 History"])
 
 with tab1:
-    # 1. Grafici Superiori
     c1, c2 = st.columns(2)
-    fig_pie = px.pie(df_raw, values='Att_EUR', names='ISIN', title="Allocation by Asset (€)")
-    c1.plotly_chart(fig_pie, use_container_width=True)
-    
-    fig_bar = px.bar(df_raw, x='ISIN', y='Gain_AUD', color='Gain_AUD', 
-                     color_continuous_scale='RdYlGn', title="Total Gain/Loss per Lot ($ AUD)")
-    c2.plotly_chart(fig_bar, use_container_width=True)
+    c1.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', title="Allocation by Asset (€)"), use_container_width=True)
+    c2.plotly_chart(px.bar(df_raw, x='ISIN', y='Gain_AUD', color='Gain_AUD', color_continuous_scale='RdYlGn', title="Total Gain/Loss per Lot ($ AUD)"), use_container_width=True)
 
-    # 2. Tabella Aggregata per ISIN (Recuperata)
     st.subheader("Asset Performance Aggregated")
-    agg = df_raw.groupby('ISIN').agg({
-        'Qty': 'sum',
-        'Inv_EUR': 'sum',
-        'Att_EUR': 'sum',
-        'Gain_EUR': 'sum',
-        'Inv_AUD': 'sum',
-        'Att_AUD': 'sum',
-        'Gain_AUD': 'sum'
-    }).reset_index()
+    agg = df_raw.groupby('ISIN').agg({'Qty': 'sum', 'Inv_EUR': 'sum', 'Att_EUR': 'sum', 'Gain_EUR': 'sum', 'Inv_AUD': 'sum', 'Att_AUD': 'sum', 'Gain_AUD': 'sum'}).reset_index()
     st.dataframe(agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
-    # 1. Riassunto Gain/Loss Globale (Recuperato)
     st.subheader("Financial Health Summary")
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
     
-    summary_data = pd.DataFrame({
-        "Currency": ["EURO (€)", "AUSTRALIAN DOLLAR ($)"],
+    summary_df = pd.DataFrame({
+        "Currency": ["EURO (€)", "AUD ($)"],
         "Invested": [f"€{t_inv_eur:,.2f}", f"${t_inv_aud:,.2f}"],
         "Current": [f"€{t_att_eur:,.2f}", f"${t_att_aud:,.2f}"],
         "Total Gain": [f"€{(t_att_eur - t_inv_eur):,.2f}", f"${(t_att_aud - t_inv_aud):,.2f}"],
         "ROI": [f"{((t_att_eur-t_inv_eur)/t_inv_eur*100):.2f}%", f"{((t_att_aud-t_inv_aud)/t_inv_aud*100):.2f}%"]
     })
-    st.table(summary_data)
+    st.table(summary_df)
 
-    # 2. Dettaglio Lotti con Editor
     st.subheader("Individual Lots & Tax Simulator")
     df_raw['% Vendi'] = 0.0
     cols_editor = ['Data', 'ISIN', 'Qty', 'Inv_EUR', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', '% Vendi']
@@ -145,32 +127,53 @@ with tab2:
     
     if edited['% Vendi'].sum() > 0:
         sel = edited[edited['% Vendi'] > 0].copy()
-        # Calcolo tasse stimato
         sel['Days'] = (datetime.now() - pd.to_datetime(sel['Data'], dayfirst=True)).dt.days
         sel['R_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_AUD'] * sel['% Vendi']/100)
+        tax_rate = st.sidebar.select_slider("Aliquota ATO", options=[0.19, 0.32, 0.37, 0.45, 0.47], value=0.47)
         sel['Taxable'] = sel.apply(lambda r: r['R_Gain_AUD'] * 0.5 if (r['R_Gain_AUD'] > 0 and r['Days'] >= 365) else r['R_Gain_AUD'], axis=1)
         tax = max(0, sel['Taxable'].sum()) * tax_rate
         st.success(f"💰 Netto stimato: **${(sel['R_Gain_AUD'].sum() - tax):,.2f} AUD** (Tasse: ${tax:,.2f})")
 
 with tab3:
     st.subheader("Historical Capital Evolution")
-    # Tickers per Yahoo Finance
-    unique_isins = df_raw['ISIN'].unique()
-    valid_tickers = [ticker_map[i] for i in unique_isins if i in ticker_map]
     
-    if valid_tickers:
-        h_data = yf.download(valid_tickers, start="2025-01-01", progress=False)['Close'].ffill()
-        if not h_data.empty:
-            daily_vals = pd.DataFrame(index=h_data.index)
-            daily_vals['Value'] = 0.0
-            for d in h_data.index:
-                active = df_raw[df_raw['Date_DT'] <= d]
-                val = 0
-                for _, lot in active.iterrows():
-                    tick = ticker_map.get(lot['ISIN'])
-                    if tick in h_data.columns:
-                        val += h_data.loc[d, tick] * lot['Qty']
-                daily_vals.loc[d, 'Value'] = val
-            st.plotly_chart(px.area(daily_vals, y='Value', title="Portfolio Growth (€)"), use_container_width=True)
+    with st.spinner("Ricostruzione storica (da Ottobre 2025)..."):
+        all_h_prices = {}
+        for isin in df_raw['ISIN'].unique():
+            t = ticker_map.get(isin)
+            if t:
+                # Partenza forzata a Ottobre 2025
+                h = yf.download(t, start="2025-10-01", progress=False)['Close']
+                if not h.empty:
+                    if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                    all_h_prices[isin] = h
+        
+        if all_h_prices:
+            # Crea l'indice date basato sui dati scaricati (che ora partono da Ottobre)
+            common_dates = next(iter(all_h_prices.values())).index
+            hist_df = pd.DataFrame(index=common_dates)
+            hist_df['Total_Value_EUR'] = 0.0
+            
+            for d in common_dates:
+                lots_until_today = df_raw[df_raw['Date_DT'] <= d]
+                daily_total = 0.0
+                for _, lot in lots_until_today.iterrows():
+                    if lot['ISIN'] in all_h_prices:
+                        prices = all_h_prices[lot['ISIN']]
+                        if d in prices.index:
+                            daily_total += float(prices.loc[d]) * lot['Qty']
+                hist_df.at[d, 'Total_Value_EUR'] = daily_total
+            
+            hist_df = hist_df[hist_df['Total_Value_EUR'] > 0]
+            
+            if not hist_df.empty:
+                fig_hist = px.area(hist_df, y='Total_Value_EUR', 
+                                 title="Evoluzione Patrimonio (€) - Da Ottobre 2025",
+                                 labels={'Total_Value_EUR': 'Valore Totale (€)', 'index': 'Data'})
+                # Forza l'asse X a partire da Ottobre 2025 per sicurezza visiva
+                fig_hist.update_xaxes(range=["2025-10-01", datetime.now().strftime("%Y-%m-%d")])
+                st.plotly_chart(fig_hist, use_container_width=True)
+            else:
+                st.info("Nessun dato trovato a partire da Ottobre 2025.")
         else:
-            st.warning("Dati storici non disponibili al momento.")
+            st.error("Errore nel recupero dei dati storici.")
