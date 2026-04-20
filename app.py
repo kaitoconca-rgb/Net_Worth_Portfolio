@@ -153,4 +153,43 @@ with tab1:
 with tab2:
     st.subheader("Analisi Singoli Lotti & Simulatore")
     df_raw['% Vendi'] = 0.0
-    cols_display = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Gain_AUD
+    cols_display = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Gain_AUD', '% Vendi']
+    
+    edited = st.data_editor(
+        df_raw[cols_display], 
+        column_config={
+            "Prezzo_Acq": st.column_config.NumberColumn("Prezzo Acq (Precio)", format="€%.4f"),
+            "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (Live)", format="€%.4f"),
+        },
+        hide_index=True, 
+        use_container_width=True
+    )
+    
+    if edited['% Vendi'].sum() > 0:
+        sel = edited[edited['% Vendi'] > 0].copy()
+        sel['Days'] = (datetime.now() - pd.to_datetime(sel['Data'], dayfirst=True)).dt.days
+        sel['Inv_AUD_Orig'] = df_raw.loc[sel.index, 'Inv_AUD']
+        sel['R_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_AUD_Orig'] * sel['% Vendi']/100)
+        sel['Taxable'] = sel.apply(lambda r: r['R_Gain_AUD'] * 0.5 if (r['R_Gain_AUD'] > 0 and r['Days'] >= 365) else r['R_Gain_AUD'], axis=1)
+        tax = max(0, sel['Taxable'].sum()) * 0.47
+        st.success(f"💰 Netto stimato vendita: **${(sel['R_Gain_AUD'].sum() - tax):,.2f} AUD**")
+
+with tab3:
+    st.subheader("Evoluzione Storica Portafoglio")
+    first_p = df_raw['Date_DT'].min() if not df_raw.empty else pd.Timestamp("2025-10-01")
+        
+    with st.spinner("Calcolo storico..."):
+        all_h_prices = {}
+        for isin in df_raw['ISIN'].unique():
+            t = ticker_map.get(isin)
+            if t:
+                h = yf.download(t, start=first_p, progress=False)['Close']
+                if not h.empty:
+                    if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                    all_h_prices[isin] = h.reindex(pd.date_range(start=first_p, end=datetime.now()), method='ffill')
+        
+        if all_h_prices:
+            dates = pd.date_range(start=first_p, end=datetime.now().date())
+            history = [sum(all_h_prices[l['ISIN']].asof(pd.Timestamp(d)) * l['Qty'] for _, l in df_raw[df_raw['Date_DT'].dt.date <= d.date()].iterrows() if l['ISIN'] in all_h_prices) for d in dates]
+            hist_df = pd.DataFrame({'Data': dates, 'Valore': history})
+            st.plotly_chart(px.area(hist_df, x='Data', y='Valore', title="Crescita Portafoglio (€)"), use_container_width=True)
