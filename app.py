@@ -4,10 +4,7 @@ import yfinance as yf
 import os
 import plotly.express as px
 from datetime import datetime
-from streamlit_gsheets_connection import GSheetsConnection
-
-
-
+from streamlit_gsheets import GSheetsConnection
 
 # --- 0. PROTEZIONE PASSWORD ---
 def check_password():
@@ -42,7 +39,7 @@ ticker_map = {
 }
 
 # --- 2. FUNZIONI ---
-@st.cache_data(ttl=600) # Ridotto a 10 minuti per aggiornamenti più veloci
+@st.cache_data(ttl=600)
 def get_live_data(isin):
     ticker = ticker_map.get(isin)
     try:
@@ -61,11 +58,11 @@ def get_fx_rate():
         return float(data['Close'].iloc[-1])
     except: return 1.6450
 
-# --- 3. IMPORT DATI (MAPPATURA PRECISA) ---
+# --- 3. IMPORT DATI (GOOGLE SHEETS) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # ttl=0 costringe l'app a leggere il foglio GDrive ogni volta che fai refresh
+    # ttl=0 per leggere sempre i dati freschi dal foglio
     df_input = conn.read(ttl=0)
 except Exception as e:
     st.error(f"Errore GSheets: {e}")
@@ -73,8 +70,7 @@ except Exception as e:
 
 df_input.columns = [c.strip() for c in df_input.columns]
 
-# Mappatura manuale basata sulla tua immagine
-# A=Fecha Valor, B=Importe Cargado, D=ISIN, F=Cantidad, G=Price
+# Mappatura basata sulle tue colonne GSheets
 df_raw = pd.DataFrame()
 df_raw['Data'] = df_input['Fecha Valor']
 df_raw['ISIN'] = df_input['ISIN']
@@ -82,7 +78,7 @@ df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 
-df_raw = df_raw.dropna(subset=['ISIN']) # Rimuove righe vuote
+df_raw = df_raw.dropna(subset=['ISIN'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 # --- 4. ENGINE DI CALCOLO ---
@@ -92,7 +88,7 @@ fx_hist = yf.download("EURAUD=X", start="2025-01-01", progress=False)['Close']
 with st.spinner("Aggiornamento mercati in corso..."):
     prices_now = []
     for index, row in df_raw.iterrows():
-        # Se c'è il 15 nella colonna Price di Google Sheets, usa quello
+        # Se hai scritto un prezzo (es. 15) nel foglio Google, usa quello
         if pd.notnull(row['Manual_Price']) and row['Manual_Price'] != 0:
             prices_now.append(float(row['Manual_Price']))
         else:
@@ -108,7 +104,6 @@ with st.spinner("Aggiornamento mercati in corso..."):
 # --- 5. UI ---
 st.title("🏛️ Claudio's Executive Portfolio")
 
-# Tasto per forzare il ricaricamento dei dati
 if st.sidebar.button("🔄 Forza Aggiornamento Dati"):
     st.cache_data.clear()
     st.rerun()
