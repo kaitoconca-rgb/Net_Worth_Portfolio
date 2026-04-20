@@ -26,20 +26,29 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIGURAZIONE ---
+# --- 1. CONFIGURAZIONE & TICKERS ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
+# Mapping con ticker alternativi per LU (Amundi MSCI World)
 ticker_map = {
-    "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS", 
-    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "SJPD.AS", "IE00B8GKDB10": "VHYL.MI", 
-    "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE", 
-    "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
+    "LU2885245055": "X062.DE", # Ticker primario più stabile
+    "IE0032077012": "EQQQ.DE",
+    "IE00B02KXL92": "DJMC.AS",
+    "IE0008471009": "EXW1.DE",
+    "IE00BFM15T99": "SJPD.AS",
+    "IE00B8GKDB10": "VHYL.MI",
+    "IE00B3RBWM25": "VWRL.AS",
+    "IE00B3VVMM84": "VFEM.DE",
+    "IE00B3XXRP09": "VUSA.DE",
+    "IE00BZ56RN96": "GGRW.MI",
+    "IE0005042456": "IUSA.DE"
 }
 
 # --- 2. FUNZIONI DATI ---
 @st.cache_data(ttl=600)
 def get_live_data(isin):
     ticker = ticker_map.get(isin)
+    if not ticker: return 0.0
     try:
         data = yf.download(ticker, period="5d", progress=False)
         if not data.empty:
@@ -66,26 +75,27 @@ df_raw['Data'] = df_input['Fecha Valor']
 df_raw['ISIN'] = df_input['ISIN']
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
-
-# 1. PREZZO STORICO (dalla colonna Precio)
-df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
+df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') # Storico
 
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# 2. LOGICA OVERRIDE / LIVE DATA (dalla colonna Price)
 manual_prices = pd.to_numeric(df_input['Price'], errors='coerce')
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
 prices_now = []
 for i, row in df_raw.iterrows():
-    # Se la colonna 'Price' ha un valore, usa quello (Override)
+    # A. Priorità 1: Override manuale (colonna Price)
     if i < len(manual_prices) and pd.notnull(manual_prices[i]) and manual_prices[i] > 0:
         prices_now.append(float(manual_prices[i]))
     else:
-        # Altrimenti scarica da Yahoo
-        prices_now.append(get_live_data(row['ISIN']))
+        # B. Priorità 2: Yahoo Finance
+        val = get_live_data(row['ISIN'])
+        # C. Priorità 3: Fallback su Prezzo di Acquisto (EVITA LO ZERO)
+        if val <= 0:
+            val = float(row['Prezzo_Acq']) if pd.notnull(row['Prezzo_Acq']) else 10.0
+        prices_now.append(val)
 
 df_raw['Price_Now'] = prices_now
 
@@ -100,7 +110,7 @@ df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 # --- 4. UI ---
 st.title("🏛️ Claudio's Executive Portfolio")
 
-if st.sidebar.button("🔄 Refresh Market Data"):
+if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
@@ -120,34 +130,24 @@ with tab1:
 with tab2:
     st.subheader("Analisi Singoli Lotti")
     df_raw['% Vendi'] = 0.0
-    cols_display = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'Gain_AUD', '% Vendi']
+    cols_display = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Att_EUR', 'Gain_EUR', 'Gain_AUD', '% Vendi']
     
-    edited = st.data_editor(
+    st.data_editor(
         df_raw[cols_display], 
         column_config={
-            "Prezzo_Acq": st.column_config.NumberColumn("Prezzo Acq (Storico)", format="€%.4f"),
-            "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (Live/Override)", format="€%.4f"),
+            "Prezzo_Acq": st.column_config.NumberColumn("Prezzo Acq (Precio)", format="€%.4f"),
+            "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (Live)", format="€%.4f"),
         },
         hide_index=True, 
         use_container_width=True
     )
-    
-    if edited['% Vendi'].sum() > 0:
-        sel = edited[edited['% Vendi'] > 0].copy()
-        # Calcolo tasse semplificato
-        sel['Days'] = (datetime.now() - pd.to_datetime(sel['Data'], dayfirst=True)).dt.days
-        sel['Inv_AUD_Orig'] = df_raw.loc[sel.index, 'Inv_AUD']
-        sel['R_Gain_AUD'] = (sel['Qty'] * sel['Price_Now'] * market_fx * sel['% Vendi']/100) - (sel['Inv_AUD_Orig'] * sel['% Vendi']/100)
-        sel['Taxable'] = sel.apply(lambda r: r['R_Gain_AUD'] * 0.5 if (r['R_Gain_AUD'] > 0 and r['Days'] >= 365) else r['R_Gain_AUD'], axis=1)
-        tax = max(0, sel['Taxable'].sum()) * 0.47
-        st.success(f"💰 Netto stimato: **${(sel['R_Gain_AUD'].sum() - tax):,.2f} AUD**")
 
 with tab3:
     st.subheader("Evoluzione Storica")
-    first_p = df_raw['Date_DT'].min()
-    if pd.isnull(first_p): first_p = pd.Timestamp("2025-10-01")
+    # Partenza dal tuo investimento di Ottobre
+    first_p = df_raw['Date_DT'].min() if not df_raw.empty else pd.Timestamp("2025-10-01")
         
-    with st.spinner("Caricamento storico..."):
+    with st.spinner("Calcolo storico..."):
         all_h_prices = {}
         for isin in df_raw['ISIN'].unique():
             t = ticker_map.get(isin)
@@ -159,7 +159,11 @@ with tab3:
         
         if all_h_prices:
             dates = pd.date_range(start=first_p, end=datetime.now().date())
-            history = [sum(all_h_prices[lot['ISIN']].asof(pd.Timestamp(d)) * lot['Qty'] for _, lot in df_raw[df_raw['Date_DT'].dt.date <= d.date()].iterrows() if lot['ISIN'] in all_h_prices) for d in dates]
+            history = []
+            for d in dates:
+                active_lots = df_raw[df_raw['Date_DT'].dt.date <= d.date()]
+                val = sum(all_h_prices[l['ISIN']].asof(pd.Timestamp(d)) * l['Qty'] for _, l in active_lots.iterrows() if l['ISIN'] in all_h_prices)
+                history.append(val)
+            
             hist_df = pd.DataFrame({'Data': dates, 'Valore': history})
-            fig = px.area(hist_df, x='Data', y='Valore', title="Crescita Portafoglio (€)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(px.area(hist_df, x='Data', y='Valore', title="Crescita Portafoglio (€)"), use_container_width=True)
