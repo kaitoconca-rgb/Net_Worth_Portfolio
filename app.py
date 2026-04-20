@@ -87,7 +87,6 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3 = st.tabs(["📊 Riepilogo & Grafici", "💸 Analisi & Simulatore", "📈 Storia Evolutiva"])
 
 with tab1:
-    # 1. Metriche Principali
     st.subheader("Performance Globale")
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
@@ -104,7 +103,6 @@ with tab1:
             "Dettaglio": [f"${t_inv_aud:,.2f}", f"${t_att_aud:,.2f}", f"${(t_att_aud-t_inv_aud):,.2f}", f"{((t_att_aud/t_inv_aud)-1)*100:.2f}%"]
         }))
 
-    # 2. Visualizzazioni
     v1, v2 = st.columns([1, 2])
     with v1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocazione Asset"), use_container_width=True)
@@ -116,7 +114,6 @@ with tab1:
         fig_b.update_layout(title="Rendimento per ISIN (EUR vs AUD)", barmode='group')
         st.plotly_chart(fig_b, use_container_width=True)
 
-    # 3. Tabella Riepilogo
     st.subheader("Performance Aggregata per Titolo")
     st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum','Gain_AUD':'sum'}).reset_index()
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
@@ -124,7 +121,8 @@ with tab1:
 with tab2:
     st.subheader("Dettaglio Lotti & Simulatore Vendita")
     df_raw['% Vendi'] = 0.0
-    cols_to_show = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_AUD', '% Vendi']
+    # Aggiunta colonna Gain_EUR come richiesto
+    cols_to_show = ['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_EUR', 'Gain_AUD', '% Vendi']
     
     ed_df = st.data_editor(
         df_raw[cols_to_show],
@@ -135,17 +133,31 @@ with tab2:
     if ed_df['% Vendi'].sum() > 0:
         sim = ed_df[ed_df['% Vendi'] > 0].copy()
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
+        sim['Inv_EUR_Lot'] = df_raw.loc[sim.index, 'Inv_EUR']
         sim['Inv_AUD_Lot'] = df_raw.loc[sim.index, 'Inv_AUD']
-        sim['G_AUD'] = (sim['Qty'] * sim['Price_Now'] * market_fx * sim['% Vendi']/100) - (sim['Inv_AUD_Lot'] * sim['% Vendi']/100)
-        sim['Taxable'] = sim.apply(lambda r: r['G_AUD'] * 0.5 if (r['G_AUD'] > 0 and r['Days'] >= 365) else r['G_AUD'], axis=1)
         
-        t_gain = sim['G_AUD'].sum()
-        t_tax = max(0, sim['Taxable'].sum()) * 0.47
+        # Calcolo Gain Realizzato EUR e AUD
+        sim['G_EUR_Sim'] = (sim['Qty'] * sim['Price_Now'] * sim['% Vendi']/100) - (sim['Inv_EUR_Lot'] * sim['% Vendi']/100)
+        sim['G_AUD_Sim'] = (sim['Qty'] * sim['Price_Now'] * market_fx * sim['% Vendi']/100) - (sim['Inv_AUD_Lot'] * sim['% Vendi']/100)
         
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Gain Lordo Realizzato", f"${t_gain:,.2f} AUD")
-        s2.metric("Tasse Stimate (ATO 47%)", f"- ${t_tax:,.2f} AUD")
-        s3.metric("Netto Stimato", f"${(t_gain - t_tax):,.2f} AUD")
+        # Logica Tasse ATO (Sconto 50% CGT se > 365gg)
+        sim['Taxable_AUD'] = sim.apply(lambda r: r['G_AUD_Sim'] * 0.5 if (r['G_AUD_Sim'] > 0 and r['Days'] >= 365) else r['G_AUD_Sim'], axis=1)
+        
+        t_gain_eur = sim['G_EUR_Sim'].sum()
+        t_gain_aud = sim['G_AUD_Sim'].sum()
+        t_tax_aud = max(0, sim['Taxable_AUD'].sum()) * 0.47
+        t_tax_eur = t_tax_aud / market_fx
+        
+        st.markdown("---")
+        st.subheader("📊 Totali Simulazione Vendita")
+        
+        res_data = {
+            "Valuta": ["EURO (€)", "AUD ($)"],
+            "Gain Lordo": [f"€{t_gain_eur:,.2f}", f"${t_gain_aud:,.2f}"],
+            "Tasse Stimate (47%)": [f"€{t_tax_eur:,.2f}", f"- ${t_tax_aud:,.2f}"],
+            "Netto Stimato": [f"€{(t_gain_eur - t_tax_eur):,.2f}", f"${(t_gain_aud - t_tax_aud):,.2f}"]
+        }
+        st.table(pd.DataFrame(res_data))
 
 with tab3:
     st.subheader("Evoluzione Storica del Valore (€)")
