@@ -58,26 +58,27 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO ---
+# --- 3. PREZZI E STORICO (CACHE AGGIORNATA) ---
 @st.cache_data(ttl=3600)
-def get_full_market_context(isins_list):
+def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
-        symbol = ticker_map.get(isin)
+        symbol = current_ticker_map.get(isin)
         try:
             h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
             if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
             if not h.empty:
                 prices_hist[isin] = h
-                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": "Yahoo"}
+                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": f"Yahoo ({symbol})"}
             else: raise ValueError()
         except:
             prices_hist[isin] = None
             logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
     return prices_hist, logs
 
-hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist())
+# Passiamo ticker_map per invalidare la cache se cambiamo un ticker
+hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
     if pd.notnull(row['Manual_Price']) and row['Manual_Price'] > 0: return row['Manual_Price']
@@ -142,7 +143,6 @@ with tab2:
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    # Aggiunte colonne Prezzo Storico e Prezzo Attuale (Richiesto)
     ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
     
     sel = ed[ed['% Vendi'] > 0].copy()
