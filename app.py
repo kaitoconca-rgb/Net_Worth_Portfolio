@@ -64,7 +64,7 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE & DIAGNOSTICA ---
+# --- 3. LOGICA PREZZI LIVE & DIAGNOSTICA (SOLO TAB 4) ---
 ticker_diag = {}
 
 def fetch_live_price_diag(isin, manual_val):
@@ -95,7 +95,7 @@ market_fx = get_fx_rate()
 fx_hist_raw = yf.download("EURAUD=X", start="2024-09-01", progress=False)['Close']
 fx_hist = fx_hist_raw.iloc[:, 0] if isinstance(fx_hist_raw, pd.DataFrame) else fx_hist_raw
 
-with st.spinner("Sincronizzazione finale..."):
+with st.spinner("Sincronizzazione..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -107,7 +107,6 @@ with st.spinner("Sincronizzazione finale..."):
 
 df_raw['Price_Now'] = prices_now
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
-df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 
 def get_historical_fx(dt):
     try:
@@ -124,53 +123,44 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "
 
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
-    
     st.metric("Valore Portafoglio (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation"), use_container_width=True)
-    with c2:
-        agg_p = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
-        fig_b = go.Figure()
-        fig_b.add_trace(go.Bar(name='Gain EUR', x=agg_p['ISIN'], y=agg_p['Gain_EUR']))
-        st.plotly_chart(fig_b, use_container_width=True)
-
-    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum','Gain_AUD':'sum'}).reset_index()
+    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum'}).reset_index()
+    st_agg['Gain (€)'] = st_agg['Att_EUR'] - st_agg['Inv_EUR']
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Simulatore CGT (ATO)")
     df_raw['% Vendi'] = 0.0
+    # Prezzo_Acq ripristinato per visibilità
     ed_df = st.data_editor(df_raw[['Data', 'ISIN', 'Qty', 'Prezzo_Acq', 'Price_Now', 'Gain_AUD', '% Vendi']], hide_index=True)
     if ed_df['% Vendi'].sum() > 0:
         sim = ed_df[ed_df['% Vendi'] > 0].copy()
         sim['Days'] = (datetime.now() - pd.to_datetime(sim['Data'], dayfirst=True)).dt.days
         sim['G_Sim'] = sim['Gain_AUD'] * (sim['% Vendi'] / 100)
         taxable = sim.apply(lambda r: r['G_Sim'] * 0.5 if (r['G_Sim'] > 0 and r['Days'] >= 365) else r['G_Sim'], axis=1).sum()
-        st.success(f"Imponibile Stimato AUD: ${max(0, taxable):,.2f}")
+        st.success(f"Imponibile stimato: ${max(0, taxable):,.2f} AUD")
 
 with tab3:
-    st.subheader("Crescita del Portafoglio (€)")
-    # LOGICA GRAFICO CORRETTA
+    st.subheader("Evoluzione Storica Portafoglio (€)")
+    # CORREZIONE LOGICA GRAFICO:
+    # 1. Ordiniamo per data
     h_df = df_raw.sort_values('Date_DT').copy()
+    # 2. Somma cumulata dell'investito
     h_df['Investito_Cum'] = h_df['Inv_EUR'].cumsum()
-    # Calcoliamo il valore di mercato nel tempo come (Quantità cumulata in quella data * Prezzo attuale)
-    # Questa è l'unica visualizzazione logica con i dati a disposizione
-    h_df['Qty_Cum'] = h_df.groupby('ISIN')['Qty'].cumsum()
+    # 3. Somma cumulata del valore attuale (riga per riga l'ultimo valore coincide con il totale)
+    h_df['Valore_Cum'] = h_df['Att_EUR'].cumsum()
     
-    # Creiamo un dataset temporale pulito per il grafico
-    plot_data = h_df[['Date_DT', 'Investito_Cum', 'Att_EUR']].copy()
-    plot_data['Market_Value_Cum'] = h_df['Att_EUR'].cumsum() 
-
     fig_h = go.Figure()
-    fig_h.add_trace(go.Scatter(x=plot_data['Date_DT'], y=plot_data['Investito_Cum'], name="Capitale Investito", fill='tozeroy', line_color='gray'))
-    fig_h.add_trace(go.Scatter(x=plot_data['Date_DT'], y=plot_data['Market_Value_Cum'], name="Valore di Mercato Attuale", fill='tonexty', line_color='blue'))
+    fig_h.add_trace(go.Scatter(x=h_df['Date_DT'], y=h_df['Investito_Cum'], name="Capitale Investito", fill='tozeroy', line_color='gray'))
+    fig_h.add_trace(go.Scatter(x=h_df['Date_DT'], y=h_df['Valore_Cum'], name="Valore Corrente", fill='tonexty', line_color='blue'))
+    
+    # Assicuriamoci che l'asse Y mostri correttamente il totale a 214k
+    fig_h.update_layout(yaxis=dict(range=[0, t_att_eur * 1.1]))
     st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
-    st.subheader("🛠️ Diagnostica Live")
+    st.subheader("🛠️ Diagnostica Dati")
     diag_list = []
     for k, v in ticker_diag.items():
         p_val = cache_prezzi.get(k)
