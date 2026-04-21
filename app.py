@@ -23,7 +23,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIGURAZIONE & MAPPING ---
+# --- 1. CONFIGURAZIONE & MAPPING (RIPRISTINATO MILANO) ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
@@ -36,7 +36,7 @@ ticker_map = {
     "IE00B3RBWM25": "VWRL.AS",
     "IE00B3VVMM84": "VFEM.DE",
     "IE00B3XXRP09": "VUSA.DE",
-    "IE00BZ56RN96": "GGRW.DE",
+    "IE00BZ56RN96": "GGRW.MI", # RIPRISTINATO ticker precedente
     "IE0005042456": "IUSA.DE"
 }
 
@@ -64,43 +64,54 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE ---
+# --- 3. LOGICA PREZZI LIVE CON ANALISI RITARDO ---
 ticker_diag = {}
 
 def fetch_live_price_diag(isin, manual_val):
     symbol = ticker_map.get(isin)
+    now_utc = datetime.now(pytz.utc)
+    
     if pd.notnull(manual_val) and manual_val > 0:
-        ticker_diag[isin] = {"status": "MANUALE", "msg": "Priorità manuale"}
+        ticker_diag[isin] = {"status": "MANUALE", "delay": "0 min", "msg": "Priorità Sheet"}
         return float(manual_val)
     
     if not symbol: return None
     
     try:
         t = yf.Ticker(symbol)
-        info = t.fast_info
-        current = info['last_price']
+        f_info = t.fast_info
+        current = f_info['last_price']
+        last_market_time = f_info.get('last_market_time')
         
-        # Estrazione ora ultimo scambio reale (Market Time)
-        last_trade_dt = info.get('last_market_time')
-        if last_trade_dt:
-            # Convertiamo in orario Sydney per tua comodità
-            trade_time = last_trade_dt.astimezone(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')
-            ticker_diag[isin] = {"status": "LIVE", "msg": f"Ultimo scambio: {trade_time}"}
-        else:
-            ticker_diag[isin] = {"status": "FERMO", "msg": "Mercato Chiuso/No Scambi"}
-            
+        delay_str = "N/D"
+        status = "LIVE"
+        
+        if last_market_time:
+            diff = now_utc - last_market_time.astimezone(pytz.utc)
+            minutes = int(diff.total_seconds() / 60)
+            if minutes > 1440:
+                delay_str = f"{minutes // 1440} giorni"
+                status = "FERMO"
+            elif minutes > 60:
+                delay_str = f"{minutes // 60} ore"
+                status = "FERMO"
+            else:
+                delay_str = f"{minutes} min"
+                status = "LIVE" if minutes < 30 else "RITARDO"
+
+        ticker_diag[isin] = {"status": status, "delay": delay_str, "msg": f"Ticker: {symbol}"}
         return float(current) if current else None
     except:
         if isin == "IE00BFM15T99": 
-            ticker_diag[isin] = {"status": "FIX", "msg": "Emergency Fix 7.02"}
+            ticker_diag[isin] = {"status": "FIX", "delay": "N/D", "msg": "Emergency 7.02"}
             return 7.02
-        ticker_diag[isin] = {"status": "ERRORE", "msg": "Yahoo No Response"}
+        ticker_diag[isin] = {"status": "ERRORE", "delay": "∞", "msg": "Errore Connessione"}
         return None
 
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Sincronizzazione dati..."):
+with st.spinner("Riconnessione mercati..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -112,11 +123,8 @@ with st.spinner("Sincronizzazione dati..."):
 
 df_raw['Price_Now'] = prices_now
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
-df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
-df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
-df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['FX_Acq']
+df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
-df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
 # --- 4. INTERFACCIA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
@@ -125,35 +133,36 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "
 
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    st.metric("Patrimonio Totale (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
+    st.metric("Valore Reale Portafoglio (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
     
-    st.subheader("Riepilogo Aggregato")
-    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).reset_index()
+    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum'}).reset_index()
+    st_agg['Gain (€)'] = st_agg['Att_EUR'] - st_agg['Inv_EUR']
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("🛠️ Diagnostica Stato Mercati")
+    st.subheader("🛠️ Monitoraggio Flussi Dati (Ticker Ripristinati)")
     
-    diag_data = []
+    diag_list = []
     for isin, info in ticker_diag.items():
-        diag_data.append({
+        diag_list.append({
             "ISIN": isin,
-            "Ticker": ticker_map.get(isin),
             "Stato": info['status'],
-            "Dettaglio Scambio": info['msg'],
-            "Prezzo (€)": f"{cache_prezzi.get(isin):.2f}" if cache_prezzi.get(isin) else "N/A"
+            "Ritardo": info['delay'],
+            "Prezzo": f"{cache_prezzi.get(isin):.2f} €" if cache_prezzi.get(isin) else "N/A",
+            "Dettaglio": info['msg']
         })
     
-    df_diag = pd.DataFrame(diag_data)
+    df_diag = pd.DataFrame(diag_list)
 
-    def style_status(val):
-        if val == 'LIVE': return 'background-color: #90EE90; color: black'
-        if val == 'FERMO': return 'background-color: #FFD700; color: black'
-        if val == 'ERRORE': return 'background-color: #FFB6C1; color: black'
-        return ''
+    def style_row(row):
+        color = ''
+        if row.Stato == 'LIVE': color = 'background-color: #d4edda; color: black'
+        elif row.Stato == 'FERMO': color = 'background-color: #fff3cd; color: black'
+        elif row.Stato == 'ERRORE': color = 'background-color: #f8d7da; color: black'
+        return [color] * len(row)
 
-    st.table(df_diag.style.map(style_status, subset=['Stato']))
+    st.table(df_diag.style.apply(style_row, axis=1))
     
-    now_au = datetime.now(pytz.timezone('Australia/Sydney'))
+    now_syd = datetime.now(pytz.timezone('Australia/Sydney'))
     st.divider()
-    st.write(f"Sincronizzazione eseguita: {now_au.strftime('%H:%M:%S')} Sydney Time")
+    st.caption(f"Ultimo Refresh: {now_syd.strftime('%H:%M:%S')} (Sydney)")
