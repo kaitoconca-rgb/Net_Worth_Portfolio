@@ -47,8 +47,7 @@ def get_historical_fx_series():
         if isinstance(fx_raw, pd.DataFrame):
             return fx_raw.iloc[:, 0]
         return fx_raw
-    except:
-        return None
+    except: return None
 
 # --- 2. DATI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -98,7 +97,7 @@ def get_fx_at_date(dt):
         return float(val) if not pd.isna(val) else 1.6450
     except: return 1.6450
 
-with st.spinner("Sincronizzazione Dati..."):
+with st.spinner("Sincronizzazione..."):
     for isin in df_raw['ISIN'].unique():
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
@@ -115,7 +114,6 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
-    # Metriche principali
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_gain_eur = t_att_eur - t_inv_eur
     t_roi = (t_gain_eur / t_inv_eur) * 100 if t_inv_eur > 0 else 0
@@ -136,32 +134,24 @@ with tab1:
         fig_b.update_layout(barmode='group', title="Gain/Loss per Asset (EUR vs AUD)")
         st.plotly_chart(fig_b, use_container_width=True)
 
-    # --- RIPRISTINO TABELLA DI SINTESI ---
     st.subheader("Tabella di Sintesi Performance")
     agg_table = df_raw.groupby('ISIN').agg({
-        'Qty': 'sum',
-        'Inv_EUR': 'sum',
-        'Att_EUR': 'sum',
-        'Gain_EUR': 'sum',
-        'Inv_AUD': 'sum',
-        'Att_AUD': 'sum',
-        'Gain_AUD': 'sum'
+        'Qty': 'sum', 'Inv_EUR': 'sum', 'Att_EUR': 'sum', 'Gain_EUR': 'sum',
+        'Inv_AUD': 'sum', 'Att_AUD': 'sum', 'Gain_AUD': 'sum'
     }).reset_index()
-    
     agg_table['ROI %'] = (agg_table['Gain_EUR'] / agg_table['Inv_EUR']) * 100
     
-    # Riordinamento e rinomina per chiarezza
-    display_table = agg_table[[
-        'ISIN', 'Qty', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'ROI %', 'Inv_AUD', 'Att_AUD', 'Gain_AUD'
-    ]]
-    
+    # FIX PER AttributeError: uso di .map() invece di .applymap() per lo stile
+    def color_negative_red(val):
+        color = 'red' if val < 0 else 'green' if val > 0 else 'white'
+        return f'color: {color}'
+
     st.dataframe(
-        display_table.style.format({
+        agg_table.style.format({
             'Qty': '{:,.2f}', 'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 
             'Gain_EUR': '€{:,.2f}', 'ROI %': '{:.2f}%',
             'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
-        }).applymap(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
-                    subset=['Gain_EUR', 'Gain_AUD', 'ROI %']),
+        }).map(color_negative_red, subset=['Gain_EUR', 'Gain_AUD', 'ROI %']),
         use_container_width=True, hide_index=True
     )
 
@@ -179,6 +169,7 @@ with tab3:
     st.subheader("Evoluzione Storica")
     h = df_raw.sort_values('Date_DT').copy()
     h['Inv_Cum'] = h['Inv_EUR'].cumsum()
+    # Logica per totale finale 214k
     h['Valore_Cum'] = h['Att_EUR'].cumsum()
     fig_h = go.Figure()
     fig_h.add_trace(go.Scatter(x=h['Date_DT'], y=h['Inv_Cum'], name="Investito", fill='tozeroy', line_color='gray'))
@@ -186,9 +177,5 @@ with tab3:
     st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
-    rows = []
-    for k, v in ticker_diag.items():
-        val = cache_prezzi.get(k)
-        p_str = f"{val:.2f} €" if val is not None else "N/D"
-        rows.append({"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": p_str})
+    rows = [{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache_prezzi.get(k):.2f} €" if cache_prezzi.get(k) else "N/D"} for k, v in ticker_diag.items()]
     st.table(pd.DataFrame(rows))
