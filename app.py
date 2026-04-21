@@ -25,9 +25,10 @@ if not check_password():
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
+# AGGIORNATO: Ticker 36B2.MU per N26 Japan ETF
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
-    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "8OU9.DE", "IE00B8GKDB10": "VHYL.MI",
+    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
@@ -58,7 +59,7 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO (CACHE AGGIORNATA) ---
+# --- 3. PREZZI E STORICO (CACHE FORZATA) ---
 @st.cache_data(ttl=3600)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
@@ -74,10 +75,9 @@ def get_full_market_context(isins_list, current_ticker_map):
             else: raise ValueError()
         except:
             prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
+            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": f"Error with {symbol}"}
     return prices_hist, logs
 
-# Passiamo ticker_map per invalidare la cache se cambiamo un ticker
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
