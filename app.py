@@ -34,11 +34,22 @@ ticker_map = {
 }
 
 @st.cache_data(ttl=600)
-def get_fx_rate():
+def get_current_fx():
     try:
         t = yf.Ticker("EURAUD=X")
         return float(t.fast_info['last_price'])
     except: return 1.6450
+
+# Scarico storico FX una sola volta per i calcoli cronologici
+@st.cache_data(ttl=3600)
+def get_historical_fx_series():
+    try:
+        fx_raw = yf.download("EURAUD=X", start="2023-01-01", progress=False)['Close']
+        if isinstance(fx_raw, pd.DataFrame):
+            return fx_raw.iloc[:, 0]
+        return fx_raw
+    except:
+        return None
 
 # --- 2. DATI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -55,7 +66,7 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. PREZZI & DIAGNOSTICA ---
+# --- 3. PREZZI & CAMBI LOGICA CORE ---
 ticker_diag = {}
 cache_prezzi = {}
 
@@ -78,18 +89,33 @@ def fetch_price(isin, manual_val):
         ticker_diag[isin] = {"status": "ERRORE", "delay": "∞"}
         return None
 
-fx_now = get_fx_rate()
-with st.spinner("Sincronizzazione..."):
+fx_now = get_current_fx()
+fx_history = get_historical_fx_series()
+
+def get_fx_at_date(dt):
+    if fx_history is None: return 1.6450
+    try:
+        val = fx_history.asof(dt)
+        return float(val) if not pd.isna(val) else 1.6450
+    except: 
+        return 1.6450
+
+with st.spinner("Sincronizzazione Prezzi e Cambi Storici..."):
     for isin in df_raw['ISIN'].unique():
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
 
 # Applichiamo i prezzi
 df_raw['Price_Now'] = df_raw['ISIN'].map(cache_prezzi).fillna(df_raw['Prezzo_Acq'])
+
+# Calcoli in EUR
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
+
+# Calcoli in AUD (Logica Storica per Rischio Cambio)
+df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_fx_at_date)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * fx_now
-df_raw['Gain_AUD'] = df_raw['Gain_EUR'] * fx_now 
+df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
 # --- 4. INTERFACCIA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
@@ -103,15 +129,16 @@ with tab1:
     with col1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation"), use_container_width=True)
     with col2:
-        # RIPRISTINO DOPPIO SET DI BARRE (EUR vs AUD)
+        # Grafico Corretto: Gain/Loss reale considerando l'impatto valutario
         agg_bar = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
         fig_b = go.Figure()
-        fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR']))
-        fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD']))
-        fig_b.update_layout(barmode='group', title="Performance per Asset (EUR vs AUD)")
+        fig_b.add_trace(go.Bar(name='Gain/Loss EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
+        fig_b.add_trace(go.Bar(name='Gain/Loss AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
+        fig_b.update_layout(barmode='group', title=f"Impatto Rischio Cambio (FX Oggi: {fx_now:.4f})")
         st.plotly_chart(fig_b, use_container_width=True)
     
-    st.dataframe(df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).style.format(precision=2), use_container_width=True)
+    # Tabella Riepilogativa 
+    st.dataframe(df_raw.groupby('ISIN').agg({'Qty':'sum', 'Inv_EUR':'sum', 'Att_EUR':'sum', 'Gain_EUR':'sum', 'Gain_AUD':'sum'}).style.format(precision=2), use_container_width=True)
 
 with tab2:
     st.subheader("Simulatore CGT (ATO)")
@@ -125,7 +152,6 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Storica")
-    # Logica per far coincidere il totale finale a ~214k
     h = df_raw.sort_values('Date_DT').copy()
     h['Inv_Cum'] = h['Inv_EUR'].cumsum()
     h['Valore_Cum'] = h['Att_EUR'].cumsum()
@@ -140,7 +166,6 @@ with tab4:
     rows = []
     for k, v in ticker_diag.items():
         val = cache_prezzi.get(k)
-        # Gestione errore formattazione se val è None
         p_str = f"{val:.2f} €" if val is not None else "N/D"
         rows.append({"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": p_str})
     st.table(pd.DataFrame(rows))
