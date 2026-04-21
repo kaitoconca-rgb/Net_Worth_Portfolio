@@ -64,7 +64,25 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA CORE ---
+# --- 3. LOGICA PREZZI (FIXED CACHING) ---
+@st.cache_data(ttl=600)
+def get_all_prices(isins_list): # Riceve una lista, non un array numpy
+    prices = {}
+    for isin in isins_list:
+        symbol = ticker_map.get(isin)
+        try:
+            t = yf.Ticker(symbol)
+            prices[isin] = float(t.fast_info['last_price'])
+        except: prices[isin] = None
+    return prices
+
+# FIX: convertiamo l'output di unique() in lista per evitare UnhashableParamError
+isins_to_fetch = df_raw['ISIN'].unique().tolist()
+prices_now = get_all_prices(isins_to_fetch)
+
+df_raw['Price_Now'] = df_raw['ISIN'].map(prices_now).fillna(df_raw['Prezzo_Acq'])
+
+# Calcoli Valutari
 fx_now = get_current_fx()
 fx_history = get_historical_fx_series()
 
@@ -75,21 +93,6 @@ def get_fx_at_date(dt):
         return float(val) if not pd.isna(val) else 1.6450
     except: return 1.6450
 
-@st.cache_data(ttl=600)
-def get_all_prices(isins):
-    prices = {}
-    for isin in isins:
-        symbol = ticker_map.get(isin)
-        try:
-            t = yf.Ticker(symbol)
-            prices[isin] = float(t.fast_info['last_price'])
-        except: prices[isin] = None
-    return prices
-
-prices_now = get_all_prices(df_raw['ISIN'].unique())
-df_raw['Price_Now'] = df_raw['ISIN'].map(prices_now).fillna(df_raw['Prezzo_Acq'])
-
-# Calcoli base
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_fx_at_date)
@@ -101,7 +104,7 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
-    # Totali per allineamento summary
+    # Calcolo Totali
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_gain_eur = t_att_eur - t_inv_eur
     t_roi_eur = (t_gain_eur / t_inv_eur) * 100 if t_inv_eur > 0 else 0
@@ -110,106 +113,108 @@ with tab1:
     t_gain_aud = t_att_aud - t_inv_aud
     t_roi_aud = (t_gain_aud / t_inv_aud) * 100 if t_inv_aud > 0 else 0
 
-    # Summary On Top Allineata
-    col_eur, col_aud, col_fx = st.columns([1.2, 1.2, 0.6])
-    with col_eur:
-        st.subheader("Performance EUR")
-        st.metric("Valore Totale", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}")
-        st.metric("ROI Totale EUR", f"{t_roi_eur:.2f}%")
-    with col_aud:
-        st.subheader("Performance AUD")
-        st.metric("Valore Totale", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}")
-        st.metric("ROI Totale AUD", f"{t_roi_aud:.2f}%")
-    with col_fx:
-        st.subheader("Market")
-        st.metric("EUR/AUD", f"{fx_now:.4f}")
-        st.caption(f"Aggiornato: {datetime.now().strftime('%H:%M:%S')}")
+    # Summary On Top Migliorata
+    m_col1, m_col2, m_col3 = st.columns(3)
+    with m_col1:
+        st.metric("Totale Portafoglio EUR", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}")
+        st.metric("ROI Globale EUR", f"{t_roi_eur:.2f}%")
+    with m_col2:
+        st.metric("Totale Portafoglio AUD", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}")
+        st.metric("ROI Globale AUD", f"{t_roi_aud:.2f}%")
+    with m_col3:
+        st.metric("FX Rate EUR/AUD", f"{fx_now:.4f}")
+        st.info(f"Dati aggiornati al {datetime.now().strftime('%d/%m %H:%M')}")
 
     st.divider()
     
-    # Grafici
+    # Grafici e Tabella di Sintesi
     c1, c2 = st.columns([1, 2])
     with c1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
     with c2:
         agg_bar = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
         fig = go.Figure()
-        fig.add_trace(go.Bar(name='Gain EUR', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
-        fig.add_trace(go.Bar(name='Gain AUD', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
-        fig.update_layout(barmode='group', title="Delta Gain: EUR vs AUD (FX Impact)")
+        fig.add_trace(go.Bar(name='Gain EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
+        fig.add_trace(go.Bar(name='Gain AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
+        fig.update_layout(barmode='group', title="Impatto Cambio su Gain/Loss")
         st.plotly_chart(fig, use_container_width=True)
 
-    # Tabella blindata
+    # Tabella Analitica
+    st.subheader("Dettaglio Asset")
+    df_table = df_raw.groupby('ISIN').agg({
+        'Qty':'sum', 'Inv_EUR':'sum', 'Att_EUR':'sum', 'Gain_EUR':'sum',
+        'Inv_AUD':'sum', 'Att_AUD':'sum', 'Gain_AUD':'sum'
+    }).reset_index()
+    
+    def color_negative_red(val):
+        color = 'red' if val < 0 else 'green' if val > 0 else 'inherit'
+        return f'color: {color}'
+
     st.dataframe(
-        df_raw.groupby('ISIN').agg({
-            'Inv_EUR':'sum', 'Att_EUR':'sum', 'Gain_EUR':'sum',
-            'Inv_AUD':'sum', 'Att_AUD':'sum', 'Gain_AUD':'sum'
-        }).style.format("€{:,.2f}").format({"Inv_AUD":"${:,.2f}", "Att_AUD":"${:,.2f}", "Gain_AUD":"${:,.2f}"}),
-        use_container_width=True
+        df_table.style.format({
+            'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}',
+            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
+        }).map(color_negative_red, subset=['Gain_EUR', 'Gain_AUD']),
+        use_container_width=True, hide_index=True
     )
 
 with tab2:
-    st.subheader("Simulatore Vendita & Impatto Fiscale (ATO)")
+    st.subheader("Simulatore Vendita & Capital Gain (ATO)")
     
-    col_sim1, col_sim2 = st.columns([1, 3])
-    with col_sim1:
-        tax_rate = st.slider("Marginal Tax Rate (%)", 0, 45, 37, step=1)
-        st.info("Nota: Gli asset detenuti da >1 anno godono del 50% di sconto CGT.")
-
-    # Data Editor per simulazione
+    s_col1, s_col2 = st.columns([1, 3])
+    with s_col1:
+        tax_rate = st.slider("Your Marginal Tax Rate (%)", 0.0, 45.0, 37.0, 0.5)
+    
+    # Preparazione dati simulazione
     df_sim = df_raw.copy()
     df_sim['% Vendita'] = 0.0
     
-    edited_df = st.data_editor(
+    # Editor interattivo
+    edited_sim = st.data_editor(
         df_sim[['ISIN', 'Data', 'Qty', 'Att_EUR', 'Gain_EUR', 'Att_AUD', 'Gain_AUD', '% Vendita']],
-        hide_index=True,
-        column_config={
-            "% Vendita": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100)
-        },
-        use_container_width=True
+        column_config={"% Vendita": st.column_config.NumberColumn(format="%d%%", min_value=0, max_value=100)},
+        hide_index=True, use_container_width=True
     )
 
-    # Calcolo Impatto
-    sel = edited_df[edited_df['% Vendita'] > 0].copy()
-    if not sel.empty:
-        sel['EUR_Realizzato'] = sel['Att_EUR'] * (sel['% Vendita'] / 100)
-        sel['AUD_Realizzato'] = sel['Att_AUD'] * (sel['% Vendita'] / 100)
-        sel['Gain_AUD_Sim'] = sel['Gain_AUD'] * (sel['% Vendita'] / 100)
+    # Calcolo Risultati Simulazione
+    selling = edited_sim[edited_sim['% Vendita'] > 0].copy()
+    if not selling.empty:
+        selling['EUR_Out'] = selling['Att_EUR'] * (selling['% Vendita'] / 100)
+        selling['AUD_Out'] = selling['Att_AUD'] * (selling['% Vendita'] / 100)
+        selling['Gain_AUD_Sim'] = selling['Gain_AUD'] * (selling['% Vendita'] / 100)
         
-        # Logica CGT Discount (12 mesi)
-        def calc_tax(row):
+        # Logica Fiscale Australia (Discount 50% se > 12 mesi)
+        def apply_tax(row):
+            if row['Gain_AUD_Sim'] <= 0: return 0.0
             days = (datetime.now() - pd.to_datetime(row['Data'], dayfirst=True)).days
-            taxable_gain = row['Gain_AUD_Sim']
-            if taxable_gain <= 0: return 0.0
-            if days >= 365: taxable_gain *= 0.5
-            return taxable_gain * (tax_rate / 100)
+            base_gain = row['Gain_AUD_Sim']
+            if days >= 365: base_gain *= 0.5
+            return base_gain * (tax_rate / 100)
 
-        sel['Tax_AUD'] = sel.apply(calc_tax, axis=1)
+        selling['Tax_Est'] = selling.apply(apply_tax, axis=1)
         
-        # Visualizzazione Risultati
-        res_eur = sel['EUR_Realizzato'].sum()
-        res_aud = sel['AUD_Realizzato'].sum()
-        total_tax = sel['Tax_AUD'].sum()
-        net_aud = res_aud - total_tax
+        total_eur = selling['EUR_Out'].sum()
+        total_aud = selling['AUD_Out'].sum()
+        total_tax = selling['Tax_Est'].sum()
 
         st.divider()
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Liquidità EUR", f"€{res_eur:,.2f}")
-        r2.metric("Liquidità AUD (Lorda)", f"${res_aud:,.2f}")
+        r1.metric("Cash-out EUR", f"€{total_eur:,.2f}")
+        r2.metric("Cash-out AUD (Lordo)", f"${total_aud:,.2f}")
         r3.metric("Tasse Stimate (AUD)", f"-${total_tax:,.2f}", delta_color="inverse")
-        r4.metric("Netto AUD (Post-Tax)", f"${net_aud:,.2f}")
+        r4.metric("Netto AUD (Post-Tax)", f"${(total_aud - total_tax):,.2f}")
     else:
-        st.write("Inserisci una percentuale di vendita nella tabella sopra per vedere l'impatto.")
+        st.info("Trascina o scrivi una percentuale nella colonna '% Vendita' per iniziare.")
 
 with tab3:
-    st.subheader("Evoluzione Storica Portafoglio")
-    # Logica semplificata per grafico storico
-    h = df_raw.sort_values('Date_DT').copy()
-    h['Inv_Cum'] = h['Inv_EUR'].cumsum()
-    h['Valore_Cum'] = h['Att_EUR'].cumsum()
-    fig_h = px.area(h, x='Date_DT', y=['Inv_Cum', 'Valore_Cum'], title="Trend Investito vs Attuale (€)")
+    st.subheader("Trend Storico Investimento")
+    h_data = df_raw.sort_values('Date_DT').copy()
+    h_data['Inv_Cum'] = h_data['Inv_EUR'].cumsum()
+    h_data['Val_Cum'] = h_data['Att_EUR'].cumsum()
+    fig_h = px.line(h_data, x='Date_DT', y=['Inv_Cum', 'Val_Cum'], 
+                    labels={'value': 'EUR', 'Date_DT': 'Data'}, title="Crescita Portafoglio (€)")
     st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
-    st.write("Diagnostica Prezzi Live")
-    st.json(prices_now)
+    st.write("Diagnostica Prezzi")
+    st.write(prices_now)
