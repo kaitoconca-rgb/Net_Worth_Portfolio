@@ -93,26 +93,22 @@ def fetch_live_price_diag(isin, manual_val):
         return None
 
 market_fx = get_fx_rate()
-fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
+fx_hist_raw = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
+fx_hist = fx_hist_raw.iloc[:, 0] if isinstance(fx_hist_raw, pd.DataFrame) else fx_hist_raw
 
-# CORREZIONE VALUERROR: Assicuriamoci che fx_hist sia una Series pulita
-if isinstance(fx_hist, pd.DataFrame):
-    fx_hist = fx_hist.iloc[:, 0]
-
-with st.spinner("Sincronizzazione..."):
+with st.spinner("Sincronizzazione di sicurezza..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
         isin = row['ISIN']
         if isin not in cache_prezzi:
             cache_prezzi[isin] = fetch_live_price_diag(isin, row['Manual_Override'])
-        p = cache_prezzi[isin] if cache_prezzi[isin] else float(row['Prezzo_Acq'])
+        p = cache_prezzi[isin] if cache_prezzi[isin] is not None else float(row['Prezzo_Acq'])
         prices_now.append(p)
 
 df_raw['Price_Now'] = prices_now
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 
-# Calcolo FX Storico corretto riga per riga per evitare il ValueError
 def get_historical_fx(dt):
     try:
         val = fx_hist.asof(dt)
@@ -135,6 +131,17 @@ with tab1:
 
 with tab4:
     st.subheader("🛠️ Diagnostica Dati")
-    diag_list = [{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache_prezzi.get(k):.2f} €"} for k, v in ticker_diag.items()]
+    # CORREZIONE TYPEERROR: Controllo esplicito se il prezzo è nullo prima della formattazione
+    diag_list = []
+    for k, v in ticker_diag.items():
+        p_val = cache_prezzi.get(k)
+        p_str = f"{p_val:.2f} €" if p_val is not None else "N/D (Usato Storico)"
+        diag_list.append({
+            "ISIN": k, 
+            "Stato": v["status"], 
+            "Ritardo": v["delay"], 
+            "Prezzo Attuale": p_str
+        })
+    
     st.table(pd.DataFrame(diag_list))
     st.caption(f"Refresh: {datetime.now(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')} Sydney")
