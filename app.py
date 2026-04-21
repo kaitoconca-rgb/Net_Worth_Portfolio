@@ -96,7 +96,7 @@ market_fx = get_fx_rate()
 fx_hist_raw = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 fx_hist = fx_hist_raw.iloc[:, 0] if isinstance(fx_hist_raw, pd.DataFrame) else fx_hist_raw
 
-with st.spinner("Sincronizzazione di sicurezza..."):
+with st.spinner("Ripristino interfaccia in corso..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -108,6 +108,7 @@ with st.spinner("Sincronizzazione di sicurezza..."):
 
 df_raw['Price_Now'] = prices_now
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
+df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 
 def get_historical_fx(dt):
     try:
@@ -117,31 +118,59 @@ def get_historical_fx(dt):
 
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_historical_fx)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
+df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
 
-# --- 4. INTERFACCIA ---
+# --- 4. INTERFACCIA RIPRISTINATA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    st.metric("Valore Portafoglio (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
-    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum'}).reset_index()
-    st_agg['Gain (€)'] = st_agg['Att_EUR'] - st_agg['Inv_EUR']
+    t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
+    
+    st.subheader("Riepilogo Globale")
+    col1, col2 = st.columns(2)
+    col1.metric("Valore Totale (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
+    col2.metric("Valore Totale (AUD)", f"${t_att_aud:,.2f}", f"${(t_att_aud - t_inv_aud):,.2f}")
+
+    st.divider()
+    v1, v2 = st.columns([1, 2])
+    with v1:
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Asset Allocation"), use_container_width=True)
+    with v2:
+        agg_p = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
+        fig_b = go.Figure()
+        fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_p['ISIN'], y=agg_p['Gain_EUR']))
+        fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_p['ISIN'], y=agg_p['Gain_AUD']))
+        st.plotly_chart(fig_b, use_container_width=True)
+
+    st.subheader("Dettaglio Asset Aggregati")
+    st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).reset_index()
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
+
+with tab2:
+    st.subheader("Simulatore Vendita & Tasse ATO")
+    df_raw['% Vendi'] = 0.0
+    ed_df = st.data_editor(df_raw[['Data', 'ISIN', 'Qty', 'Price_Now', 'Gain_AUD', '% Vendi']], hide_index=True, use_container_width=True)
+    if ed_df['% Vendi'].sum() > 0:
+        sim = ed_df[ed_df['% Vendi'] > 0].copy()
+        sim['G_AUD_Sim'] = sim['Gain_AUD'] * (sim['% Vendi'] / 100)
+        st.success(f"Profitto Lordo Simulato: ${sim['G_AUD_Sim'].sum():,.2f} AUD")
+
+with tab3:
+    st.subheader("Evoluzione Storica (€)")
+    # Logica semplificata per il grafico storico basata sui prezzi di acquisizione e live
+    hist_df = df_raw.sort_values('Date_DT')
+    hist_df['Cum_Inv'] = hist_df['Inv_EUR'].cumsum()
+    hist_df['Cum_Att'] = hist_df['Att_EUR'].cumsum()
+    fig_h = px.area(hist_df, x='Date_DT', y=['Cum_Inv', 'Cum_Att'], title="Crescita Portafoglio")
+    st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
     st.subheader("🛠️ Diagnostica Dati")
-    # CORREZIONE TYPEERROR: Controllo esplicito se il prezzo è nullo prima della formattazione
     diag_list = []
     for k, v in ticker_diag.items():
         p_val = cache_prezzi.get(k)
-        p_str = f"{p_val:.2f} €" if p_val is not None else "N/D (Usato Storico)"
-        diag_list.append({
-            "ISIN": k, 
-            "Stato": v["status"], 
-            "Ritardo": v["delay"], 
-            "Prezzo Attuale": p_str
-        })
-    
+        p_str = f"{p_val:.2f} €" if p_val is not None else "N/D"
+        diag_list.append({"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": p_str})
     st.table(pd.DataFrame(diag_list))
-    st.caption(f"Refresh: {datetime.now(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')} Sydney")
