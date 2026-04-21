@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from streamlit_gsheets import GSheetsConnection
 
@@ -36,7 +36,7 @@ ticker_map = {
     "IE00B3RBWM25": "VWRL.AS",
     "IE00B3VVMM84": "VFEM.DE",
     "IE00B3XXRP09": "VUSA.DE",
-    "IE00BZ56RN96": "GGRW.DE", # Cambiato in Xetra per maggiore precisione
+    "IE00BZ56RN96": "GGRW.DE",
     "IE0005042456": "IUSA.DE"
 }
 
@@ -64,13 +64,13 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE CON DIAGNOSTICA ---
+# --- 3. LOGICA PREZZI LIVE ---
 ticker_diag = {}
 
 def fetch_live_price_diag(isin, manual_val):
     symbol = ticker_map.get(isin)
     if pd.notnull(manual_val) and manual_val > 0:
-        ticker_diag[isin] = {"status": "MANUALE", "msg": "Dato inserito da utente"}
+        ticker_diag[isin] = {"status": "MANUALE", "msg": "Priorità manuale"}
         return float(manual_val)
     
     if not symbol: return None
@@ -79,26 +79,28 @@ def fetch_live_price_diag(isin, manual_val):
         t = yf.Ticker(symbol)
         info = t.fast_info
         current = info['last_price']
-        prev_close = info['previous_close']
         
-        # Se il prezzo è identico alla chiusura precedente, potrebbe essere un dato fermo
-        if current == prev_close:
-            ticker_diag[isin] = {"status": "FERMO", "msg": "Prezzo uguale a chiusura (Mercato chiuso o ritardo)"}
+        # Estraiamo l'ora dell'ultimo scambio reale
+        last_trade_dt = info.get('last_market_time')
+        if last_trade_dt:
+            # Convertiamo in orario leggibile (AU)
+            trade_time = last_trade_dt.astimezone(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')
+            ticker_diag[isin] = {"status": "LIVE", "msg": f"Ultimo scambio: {trade_time}"}
         else:
-            ticker_diag[isin] = {"status": "LIVE", "msg": f"Variazione intraday: {((current/prev_close)-1)*100:.2f}%"}
+            ticker_diag[isin] = {"status": "FERMO", "msg": "Orario scambio non pervenuto"}
             
         return float(current) if current else None
     except:
         if isin == "IE00BFM15T99": 
             ticker_diag[isin] = {"status": "FIX", "msg": "Emergency Fix 7.02"}
             return 7.02
-        ticker_diag[isin] = {"status": "ERRORE", "msg": "Impossibile contattare Yahoo"}
+        ticker_diag[isin] = {"status": "ERRORE", "msg": "Yahoo No Response"}
         return None
 
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Diagnostica mercati..."):
+with st.spinner("Aggiornamento sincronizzato..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -122,20 +124,15 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
-    # Totale intorno ai 214k
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    summary_df = pd.DataFrame({
-        "Metrica": ["Total Invested", "Total Value", "Gain / Loss", "ROI %"],
-        "EURO (€)": [f"€{t_inv_eur:,.2f}", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}", f"{((t_att_eur/t_inv_eur)-1)*100:.2f}%"],
-        "AUD ($)": [f"${df_raw['Inv_AUD'].sum():,.2f}", f"${df_raw['Att_AUD'].sum():,.2f}", f"${(df_raw['Att_AUD'].sum()-df_raw['Inv_AUD'].sum()):,.2f}", f"{((df_raw['Att_AUD'].sum()/df_raw['Inv_AUD'].sum())-1)*100:.2f}%"]
-    })
-    st.table(summary_df)
+    st.metric("Patrimonio Totale (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
+    
     st.subheader("Riepilogo Aggregato")
     st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).reset_index()
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("🛠️ Diagnostica Avanzata Prezzi Live")
+    st.subheader("🛠️ Diagnostica Stato Mercati")
     
     diag_data = []
     for isin, info in ticker_diag.items():
@@ -143,22 +140,20 @@ with tab4:
             "ISIN": isin,
             "Ticker": ticker_map.get(isin),
             "Stato": info['status'],
-            "Dettaglio Tecnico": info['msg'],
-            "Prezzo in Uso": f"€ {cache_prezzi.get(isin):.2f}" if cache_prezzi.get(isin) else "N/A"
+            "Dettaglio Scambio": info['msg'],
+            "Prezzo (€)": f"{cache_prezzi.get(isin):.2f}" if cache_prezzi.get(isin) else "N/A"
         })
     
     df_diag = pd.DataFrame(diag_data)
-    
-    def color_status(val):
-        color = 'white'
-        if val == 'LIVE': color = '#90EE90' # Verde chiaro
-        elif val == 'FERMO': color = '#FFD700' # Oro
-        elif val == 'ERRORE': color = '#FFB6C1' # Rosso chiaro
-        return f'background-color: {color}; color: black'
 
-    st.table(df_diag.style.applymap(color_status, subset=['Stato']))
+    # Correzione dell'errore tecnico: usiamo map invece di applymap
+    def style_status(val):
+        if val == 'LIVE': return 'background-color: #90EE90; color: black'
+        if val == 'FERMO': return 'background-color: #FFD700; color: black'
+        if val == 'ERRORE': return 'background-color: #FFB6C1; color: black'
+        return ''
+
+    st.table(df_diag.style.map(style_status, subset=['Stato']))
     
-    st.divider()
     now = datetime.now(pytz.timezone('Australia/Sydney'))
-    st.write(f"Ultima scansione sistema: {now.strftime('%d/%m/%Y %H:%M:%S')} Sydney Time")
-    st.info("Nota: Se lo Stato è 'FERMO', Yahoo sta riportando il prezzo di chiusura. Questo accade se il mercato è chiuso o se non ci sono stati scambi recenti sul ticker selezionato.")
+    st.write(f"Sincronizzazione eseguita: {now.strftime('%H:%M:%S')} Sydney Time")
