@@ -80,14 +80,14 @@ def fetch_live_price_diag(isin, manual_val):
         info = t.fast_info
         current = info['last_price']
         
-        # Estraiamo l'ora dell'ultimo scambio reale
+        # Estrazione ora ultimo scambio reale (Market Time)
         last_trade_dt = info.get('last_market_time')
         if last_trade_dt:
-            # Convertiamo in orario leggibile (AU)
+            # Convertiamo in orario Sydney per tua comodità
             trade_time = last_trade_dt.astimezone(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')
             ticker_diag[isin] = {"status": "LIVE", "msg": f"Ultimo scambio: {trade_time}"}
         else:
-            ticker_diag[isin] = {"status": "FERMO", "msg": "Orario scambio non pervenuto"}
+            ticker_diag[isin] = {"status": "FERMO", "msg": "Mercato Chiuso/No Scambi"}
             
         return float(current) if current else None
     except:
@@ -100,7 +100,7 @@ def fetch_live_price_diag(isin, manual_val):
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Aggiornamento sincronizzato..."):
+with st.spinner("Sincronizzazione dati..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -146,7 +146,6 @@ with tab4:
     
     df_diag = pd.DataFrame(diag_data)
 
-    # Correzione dell'errore tecnico: usiamo map invece di applymap
     def style_status(val):
         if val == 'LIVE': return 'background-color: #90EE90; color: black'
         if val == 'FERMO': return 'background-color: #FFD700; color: black'
@@ -155,5 +154,6 @@ with tab4:
 
     st.table(df_diag.style.map(style_status, subset=['Stato']))
     
-    now = datetime.now(pytz.timezone('Australia/Sydney'))
-    st.write(f"Sincronizzazione eseguita: {now.strftime('%H:%M:%S')} Sydney Time")
+    now_au = datetime.now(pytz.timezone('Australia/Sydney'))
+    st.divider()
+    st.write(f"Sincronizzazione eseguita: {now_au.strftime('%H:%M:%S')} Sydney Time")
