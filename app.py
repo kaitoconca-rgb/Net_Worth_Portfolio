@@ -40,7 +40,6 @@ def get_current_fx():
         return float(t.fast_info['last_price'])
     except: return 1.6450
 
-# Scarico storico FX una sola volta per i calcoli cronologici
 @st.cache_data(ttl=3600)
 def get_historical_fx_series():
     try:
@@ -66,7 +65,7 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. PREZZI & CAMBI LOGICA CORE ---
+# --- 3. LOGICA PREZZI & CAMBI ---
 ticker_diag = {}
 cache_prezzi = {}
 
@@ -97,22 +96,16 @@ def get_fx_at_date(dt):
     try:
         val = fx_history.asof(dt)
         return float(val) if not pd.isna(val) else 1.6450
-    except: 
-        return 1.6450
+    except: return 1.6450
 
-with st.spinner("Sincronizzazione Prezzi e Cambi Storici..."):
+with st.spinner("Sincronizzazione Dati..."):
     for isin in df_raw['ISIN'].unique():
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
 
-# Applichiamo i prezzi
 df_raw['Price_Now'] = df_raw['ISIN'].map(cache_prezzi).fillna(df_raw['Prezzo_Acq'])
-
-# Calcoli in EUR
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
-
-# Calcoli in AUD (Logica Storica per Rischio Cambio)
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_fx_at_date)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * fx_now
 df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
@@ -122,23 +115,55 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
-    t_inv, t_att = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    st.metric("Valore Portafoglio (€)", f"€{t_att:,.2f}", f"€{(t_att - t_inv):,.2f}")
+    # Metriche principali
+    t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
+    t_gain_eur = t_att_eur - t_inv_eur
+    t_roi = (t_gain_eur / t_inv_eur) * 100 if t_inv_eur > 0 else 0
     
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Valore Portafoglio", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}")
+    m2.metric("ROI Totale", f"{t_roi:.2f}%")
+    m3.metric("Cambio EUR/AUD", f"{fx_now:.4f}")
+
     col1, col2 = st.columns([1, 2])
     with col1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation"), use_container_width=True)
     with col2:
-        # Grafico Corretto: Gain/Loss reale considerando l'impatto valutario
         agg_bar = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
         fig_b = go.Figure()
-        fig_b.add_trace(go.Bar(name='Gain/Loss EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
-        fig_b.add_trace(go.Bar(name='Gain/Loss AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
-        fig_b.update_layout(barmode='group', title=f"Impatto Rischio Cambio (FX Oggi: {fx_now:.4f})")
+        fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
+        fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
+        fig_b.update_layout(barmode='group', title="Gain/Loss per Asset (EUR vs AUD)")
         st.plotly_chart(fig_b, use_container_width=True)
+
+    # --- RIPRISTINO TABELLA DI SINTESI ---
+    st.subheader("Tabella di Sintesi Performance")
+    agg_table = df_raw.groupby('ISIN').agg({
+        'Qty': 'sum',
+        'Inv_EUR': 'sum',
+        'Att_EUR': 'sum',
+        'Gain_EUR': 'sum',
+        'Inv_AUD': 'sum',
+        'Att_AUD': 'sum',
+        'Gain_AUD': 'sum'
+    }).reset_index()
     
-    # Tabella Riepilogativa 
-    st.dataframe(df_raw.groupby('ISIN').agg({'Qty':'sum', 'Inv_EUR':'sum', 'Att_EUR':'sum', 'Gain_EUR':'sum', 'Gain_AUD':'sum'}).style.format(precision=2), use_container_width=True)
+    agg_table['ROI %'] = (agg_table['Gain_EUR'] / agg_table['Inv_EUR']) * 100
+    
+    # Riordinamento e rinomina per chiarezza
+    display_table = agg_table[[
+        'ISIN', 'Qty', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'ROI %', 'Inv_AUD', 'Att_AUD', 'Gain_AUD'
+    ]]
+    
+    st.dataframe(
+        display_table.style.format({
+            'Qty': '{:,.2f}', 'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 
+            'Gain_EUR': '€{:,.2f}', 'ROI %': '{:.2f}%',
+            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
+        }).applymap(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
+                    subset=['Gain_EUR', 'Gain_AUD', 'ROI %']),
+        use_container_width=True, hide_index=True
+    )
 
 with tab2:
     st.subheader("Simulatore CGT (ATO)")
@@ -155,14 +180,12 @@ with tab3:
     h = df_raw.sort_values('Date_DT').copy()
     h['Inv_Cum'] = h['Inv_EUR'].cumsum()
     h['Valore_Cum'] = h['Att_EUR'].cumsum()
-    
     fig_h = go.Figure()
     fig_h.add_trace(go.Scatter(x=h['Date_DT'], y=h['Inv_Cum'], name="Investito", fill='tozeroy', line_color='gray'))
     fig_h.add_trace(go.Scatter(x=h['Date_DT'], y=h['Valore_Cum'], name="Valore Corrente", fill='tonexty', line_color='blue'))
     st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
-    st.subheader("🛠️ Diagnostica Dati")
     rows = []
     for k, v in ticker_diag.items():
         val = cache_prezzi.get(k)
