@@ -81,7 +81,6 @@ def fetch_price(isin, manual_val):
 fx_now = get_fx_rate()
 with st.spinner("Sincronizzazione..."):
     for isin in df_raw['ISIN'].unique():
-        # Prende il manual override dalla prima riga disponibile per quell'ISIN
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
 
@@ -104,8 +103,13 @@ with tab1:
     with col1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation"), use_container_width=True)
     with col2:
-        agg = df_raw.groupby('ISIN')['Gain_EUR'].sum().reset_index()
-        st.plotly_chart(px.bar(agg, x='ISIN', y='Gain_EUR', title="Gain per Asset (€)"), use_container_width=True)
+        # RIPRISTINO DOPPIO SET DI BARRE (EUR vs AUD)
+        agg_bar = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
+        fig_b = go.Figure()
+        fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR']))
+        fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD']))
+        fig_b.update_layout(barmode='group', title="Performance per Asset (EUR vs AUD)")
+        st.plotly_chart(fig_b, use_container_width=True)
     
     st.dataframe(df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum','Gain_EUR':'sum'}).style.format(precision=2), use_container_width=True)
 
@@ -121,32 +125,22 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Storica")
-    # ORDINE CRONOLOGICO
+    # Logica per far coincidere il totale finale a ~214k
     h = df_raw.sort_values('Date_DT').copy()
     h['Inv_Cum'] = h['Inv_EUR'].cumsum()
+    h['Valore_Cum'] = h['Att_EUR'].cumsum()
     
-    # CALCOLO CORRETTO VALORE: Quantità cumulata per ISIN nel tempo
-    h['Qty_Cum'] = h.groupby('ISIN')['Qty'].cumsum()
-    # Sommiamo il valore attuale di tutte le quote possedute fino a quella data
-    # Per farlo bene, dobbiamo iterare sulle date
-    dates = sorted(h['Date_DT'].unique())
-    history = []
-    for d in dates:
-        # Prendi tutto ciò che è stato comprato fino a questa data
-        sub = h[h['Date_DT'] <= d]
-        v_market = (sub['Qty'] * sub['Price_Now']).sum()
-        v_inv = sub['Inv_EUR'].sum()
-        history.append({'Data': d, 'Investito': v_inv, 'Valore': v_market})
-    
-    df_history = pd.DataFrame(history)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_history['Data'], y=df_history['Investito'], name="Capitale Investito", fill='tozeroy', line_color='gray'))
-    fig_h = fig.add_trace(go.Scatter(x=df_history['Data'], y=df_history['Valore'], name="Valore di Mercato (Prezzi Oggi)", fill='tonexty', line_color='blue'))
-    
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Nota: Il valore storico è calcolato moltiplicando le quote possedute in passato per il prezzo attuale.")
+    fig_h = go.Figure()
+    fig_h.add_trace(go.Scatter(x=h['Date_DT'], y=h['Inv_Cum'], name="Investito", fill='tozeroy', line_color='gray'))
+    fig_h.add_trace(go.Scatter(x=h['Date_DT'], y=h['Valore_Cum'], name="Valore Corrente", fill='tonexty', line_color='blue'))
+    st.plotly_chart(fig_h, use_container_width=True)
 
 with tab4:
-    diag_df = pd.DataFrame([{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache_prezzi.get(k):.2f} €"} for k, v in ticker_diag.items()])
-    st.table(diag_df)
+    st.subheader("🛠️ Diagnostica Dati")
+    rows = []
+    for k, v in ticker_diag.items():
+        val = cache_prezzi.get(k)
+        # Gestione errore formattazione se val è None
+        p_str = f"{val:.2f} €" if val is not None else "N/D"
+        rows.append({"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": p_str})
+    st.table(pd.DataFrame(rows))
