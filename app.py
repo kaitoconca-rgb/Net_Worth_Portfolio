@@ -23,7 +23,7 @@ if not check_password():
     st.stop()
 
 # --- 1. CONFIGURAZIONE ---
-st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
+st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
@@ -58,27 +58,23 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO (ROBUSTO) ---
+# --- 3. PREZZI E STORICO ---
 @st.cache_data(ttl=3600)
 def get_full_market_context(isins_list):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
         symbol = ticker_map.get(isin)
-        if symbol:
-            try:
-                h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
-                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                if not h.empty:
-                    prices_hist[isin] = h
-                    logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": "Yahoo"}
-                else: raise ValueError("Empty")
-            except:
-                prices_hist[isin] = None
-                logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
-        else:
+        try:
+            h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
+            if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+            if not h.empty:
+                prices_hist[isin] = h
+                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": "Yahoo"}
+            else: raise ValueError()
+        except:
             prices_hist[isin] = None
-            logs[isin] = {"status": "MANUAL", "updated": "-", "source": "GSheets"}
+            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
     return prices_hist, logs
 
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist())
@@ -91,7 +87,6 @@ def get_current_price(row):
 
 df_raw['Price_Now'] = df_raw.apply(get_current_price, axis=1)
 
-# Calcoli FX Storici
 def get_fx_at(dt):
     try: return float(fx_hist.asof(dt))
     except: return 1.6500
@@ -108,44 +103,59 @@ with tab1:
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
     
     m1, m2, m3 = st.columns(3)
-    m1.metric("Capitale EUR", f"€{t_att_eur:,.0f}", f"Net: €{t_att_eur - t_inv_eur:,.0f}")
-    m2.metric("Capitale AUD", f"${t_att_aud:,.0f}", f"Net: ${t_att_aud - t_inv_aud:,.0f}")
-    m3.metric("ROI Totale", f"{(t_att_eur/t_inv_eur-1)*100:.1f}% (EUR)", f"{(t_att_aud/t_inv_aud-1)*100:.1f}% (AUD)")
+    m1.metric("Investito EUR", f"€{t_inv_eur:,.0f}")
+    m1.metric("Valore Attuale EUR", f"€{t_att_eur:,.0f}", f"€{t_att_eur - t_inv_eur:,.0f}")
+    
+    m2.metric("Investito AUD (Storico)", f"${t_inv_aud:,.0f}")
+    m2.metric("Valore Attuale AUD", f"${t_att_aud:,.0f}", f"${t_att_aud - t_inv_aud:,.0f}")
+    
+    m3.metric("ROI Totale (EUR)", f"{(t_att_eur/t_inv_eur-1)*100:.2f}%")
+    m3.metric("ROI Totale (AUD)", f"{(t_att_aud/t_inv_aud-1)*100:.2f}%")
 
     st.divider()
-    # Grafico FX Impact
-    agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
-    agg['Gain_EUR'] = agg['Att_EUR'] - agg['Inv_EUR']
-    agg['Gain_AUD'] = agg['Att_AUD'] - agg['Inv_AUD']
-    
-    fig_fx = go.Figure(data=[
-        go.Bar(name='Profit EUR (€)', x=agg['ISIN'], y=agg['Gain_EUR'], marker_color='#1f77b4'),
-        go.Bar(name='Profit AUD ($)', x=agg['ISIN'], y=agg['Gain_AUD'], marker_color='#2ca02c')
-    ])
-    fig_fx.update_layout(title="Confronto Profitto Reale (EUR vs AUD) - Evidenzia erosione valutaria", barmode='group')
-    st.plotly_chart(fig_fx, use_container_width=True)
+
+    # Grafici
+    g1, g2 = st.columns([1, 1.5])
+    with g1:
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
+    with g2:
+        agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
+        agg['Gain_EUR'] = agg['Att_EUR'] - agg['Inv_EUR']
+        agg['Gain_AUD'] = agg['Att_AUD'] - agg['Inv_AUD']
+        fig_fx = go.Figure(data=[
+            go.Bar(name='Profit EUR (€)', x=agg['ISIN'], y=agg['Gain_EUR'], marker_color='#1f77b4'),
+            go.Bar(name='Profit AUD ($)', x=agg['ISIN'], y=agg['Gain_AUD'], marker_color='#2ca02c')
+        ])
+        fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
+        st.plotly_chart(fig_fx, use_container_width=True)
+
+    # Tabella di Sintesi ISIN (Ripristinata)
+    st.subheader("Dettaglio Asset")
+    st.dataframe(
+        agg.style.format({
+            'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}',
+            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
+        }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
+               subset=['Gain_EUR', 'Gain_AUD']),
+        use_container_width=True, hide_index=True
+    )
 
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse")
     tax_r = st.slider("Marginal Tax Rate (%)", 0.0, 45.0, 37.0)
-    
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
     ed = st.data_editor(df_sim[['ISIN','Data','Qty','Att_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
-    
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
         sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
         sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
         sel['G_AUD'] = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
-        
         def cgt_calc(row):
             if row['G_AUD'] <= 0: return 0.0
             mult = 0.5 if (datetime.now() - row['Data'].to_pydatetime()).days > 365 else 1.0
             return row['G_AUD'] * mult * (tax_r/100)
-        
         total_tax = sel.apply(cgt_calc, axis=1).sum()
-        
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("Cash EUR", f"€{sel['E_Out'].sum():,.2f}")
         r2.metric("Cash AUD (Lordo)", f"${sel['A_Out'].sum():,.2f}")
@@ -154,30 +164,20 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
-    # Ricostruzione giornaliera basata su quantità storiche e prezzi storici
-    start_point = date(2024, 10, 1)
-    end_point = date.today()
-    date_range = pd.date_range(start_point, end_point)
-    
+    date_range = pd.date_range(date(2024, 10, 1), date.today())
     daily_history = []
     for d in date_range:
-        # 1. Filtra asset posseduti in questa data
         posizioni = df_raw[df_raw['Data'].dt.date <= d.date()]
         valore_giorno = 0
         for _, pos in posizioni.iterrows():
-            # 2. Cerca prezzo storico ISIN
             h = hist_map.get(pos['ISIN'])
             p_hist = h.asof(d) if (h is not None and not h.empty) else pos['Prezzo_Acq']
             valore_giorno += pos['Qty'] * p_hist
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
-    
     df_h = pd.DataFrame(daily_history)
-    fig_h = px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2024 ad Oggi (€)")
-    fig_h.update_yaxes(title="Valore di Mercato Totale (€)")
-    st.plotly_chart(fig_h, use_container_width=True)
+    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2024 ad Oggi (€)"), use_container_width=True)
 
 with tab4:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now}")
-    d_df = pd.DataFrame.from_dict(diag_logs, orient='index')
-    st.table(d_df)
+    st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
