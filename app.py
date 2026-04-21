@@ -142,11 +142,11 @@ with tab2:
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
+    # Aggiunte colonne Prezzo Storico e Prezzo Attuale (Richiesto)
+    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
     
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
-        # Calcoli di Gain per riga
         sel['EUR_Gain_Realizzato'] = (sel['Att_EUR'] - sel['Inv_EUR']) * (sel['% Vendi']/100)
         sel['AUD_Gain_Realizzato'] = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
         sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
@@ -161,14 +161,12 @@ with tab2:
         sel['Tassa_Asset'] = sel.apply(cgt_calc_row, axis=1)
         
         st.divider()
-        # Header Totali
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("Cash out EUR", f"€{sel['E_Out'].sum():,.2f}")
         r2.metric("Cash out AUD (Lordo)", f"${sel['A_Out'].sum():,.2f}")
         r3.metric("Tasse ATO (AUD)", f"-${sel['Tassa_Asset'].sum():,.2f}", delta_color="inverse")
         r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - sel['Tassa_Asset'].sum()):,.2f}")
 
-        # Nuova Sezione: Dettaglio Gain Asset (Richiesto)
         st.write("### Dettaglio Gain Realizzato")
         dettaglio_gain = sel[['ISIN', 'Data', '% Vendi', 'EUR_Gain_Realizzato', 'AUD_Gain_Realizzato', 'Tassa_Asset']]
         st.dataframe(
