@@ -92,7 +92,7 @@ def get_fx_at_date(dt):
         return float(val) if not pd.isna(val) else 1.6450
     except: return 1.6450
 
-with st.spinner("Calcolo in corso..."):
+with st.spinner("Calcolo Performance Multi-Currency..."):
     for isin in df_raw['ISIN'].unique():
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
@@ -101,7 +101,7 @@ df_raw['Price_Now'] = df_raw['ISIN'].map(cache_prezzi).fillna(df_raw['Prezzo_Acq
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 
-# Calcolo AUD con logica storica (cambio acquisto vs cambio oggi)
+# Calcolo AUD con logica storica per evidenziare erosione/guadagno cambio
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_fx_at_date)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * fx_now
 df_raw['Gain_AUD'] = df_raw['Att_AUD'] - df_raw['Inv_AUD']
@@ -111,61 +111,68 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
+    # --- METRICHE TOTALI (EUR & AUD) ---
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_gain_eur = t_att_eur - t_inv_eur
-    t_roi = (t_gain_eur / t_inv_eur) * 100 if t_inv_eur > 0 else 0
-    
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Valore Portafoglio", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}")
-    m2.metric("ROI Totale (EUR)", f"{t_roi:.2f}%")
-    m3.metric("Cambio EUR/AUD", f"{fx_now:.4f}")
+    t_roi_eur = (t_gain_eur / t_inv_eur) * 100 if t_inv_eur > 0 else 0
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation"), use_container_width=True)
-    with col2:
+    t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
+    t_gain_aud = t_att_aud - t_inv_aud
+    t_roi_aud = (t_gain_aud / t_inv_aud) * 100 if t_inv_aud > 0 else 0
+    
+    # RIGA 1: Valori Totali
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Valore Portafoglio (EUR)", f"€{t_att_eur:,.2f}", f"€{t_gain_eur:,.2f}")
+    c2.metric("Valore Portafoglio (AUD)", f"${t_att_aud:,.2f}", f"${t_gain_aud:,.2f}")
+    c3.metric("Cambio Attuale EUR/AUD", f"{fx_now:.4f}")
+
+    # RIGA 2: ROI & Performance
+    c4, c5 = st.columns(2)
+    c4.metric("ROI Totale (EUR)", f"{t_roi_eur:.2f}%")
+    c5.metric("ROI Totale (AUD)", f"{t_roi_aud:.2f}%")
+
+    st.divider()
+
+    col_pie, col_bar = st.columns([1, 2])
+    with col_pie:
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation (€)"), use_container_width=True)
+    with col_bar:
         agg_bar = df_raw.groupby('ISIN').agg({'Gain_EUR': 'sum', 'Gain_AUD': 'sum'}).reset_index()
         fig_b = go.Figure()
         fig_b.add_trace(go.Bar(name='Gain EUR (€)', x=agg_bar['ISIN'], y=agg_bar['Gain_EUR'], marker_color='#1f77b4'))
         fig_b.add_trace(go.Bar(name='Gain AUD ($)', x=agg_bar['ISIN'], y=agg_bar['Gain_AUD'], marker_color='#2ca02c'))
-        fig_b.update_layout(barmode='group', title="Gain/Loss per Asset (EUR vs AUD)")
+        fig_b.update_layout(barmode='group', title="Gain/Loss per Asset: EUR vs AUD")
         st.plotly_chart(fig_b, use_container_width=True)
 
-    st.subheader("Tabella di Sintesi Performance (EUR & AUD)")
+    # --- TABELLA DI SINTESI COMPLETA ---
+    st.subheader("Riepilogo Analitico Asset")
     
-    # Aggregazione finale per ISIN
     agg_table = df_raw.groupby('ISIN').agg({
         'Qty': 'sum',
-        'Inv_EUR': 'sum',
-        'Att_EUR': 'sum',
-        'Gain_EUR': 'sum',
-        'Inv_AUD': 'sum',
-        'Att_AUD': 'sum',
-        'Gain_AUD': 'sum'
+        'Inv_EUR': 'sum', 'Att_EUR': 'sum', 'Gain_EUR': 'sum',
+        'Inv_AUD': 'sum', 'Att_AUD': 'sum', 'Gain_AUD': 'sum'
     }).reset_index()
     
     agg_table['ROI % (EUR)'] = (agg_table['Gain_EUR'] / agg_table['Inv_EUR']) * 100
+    agg_table['ROI % (AUD)'] = (agg_table['Gain_AUD'] / agg_table['Inv_AUD']) * 100
     
-    # Ordinamento colonne per confronto immediato
     display_cols = [
         'ISIN', 'Qty', 
         'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'ROI % (EUR)', 
-        'Inv_AUD', 'Att_AUD', 'Gain_AUD'
+        'Inv_AUD', 'Att_AUD', 'Gain_AUD', 'ROI % (AUD)'
     ]
     
     def color_values(val):
         if isinstance(val, (int, float)):
-            color = 'red' if val < 0 else 'green' if val > 0 else '#ccc'
-            return f'color: {color}'
+            return 'color: red' if val < 0 else 'color: green' if val > 0 else ''
         return ''
 
     st.dataframe(
         agg_table[display_cols].style.format({
             'Qty': '{:,.2f}', 
-            'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}', 
-            'ROI % (EUR)': '{:.2f}%',
-            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
-        }).map(color_values, subset=['Gain_EUR', 'Gain_AUD', 'ROI % (EUR)']),
+            'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}', 'ROI % (EUR)': '{:.2f}%',
+            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}', 'ROI % (AUD)': '{:.2f}%'
+        }).map(color_values, subset=['Gain_EUR', 'Gain_AUD', 'ROI % (EUR)', 'ROI % (AUD)']),
         use_container_width=True, hide_index=True
     )
 
