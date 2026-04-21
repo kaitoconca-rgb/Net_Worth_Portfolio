@@ -23,7 +23,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIGURAZIONE & MAPPING (RIPRISTINATO MILANO) ---
+# --- 1. CONFIGURAZIONE & MAPPING ---
 st.set_page_config(page_title="Executive Portfolio Console", layout="wide")
 
 ticker_map = {
@@ -36,7 +36,7 @@ ticker_map = {
     "IE00B3RBWM25": "VWRL.AS",
     "IE00B3VVMM84": "VFEM.DE",
     "IE00B3XXRP09": "VUSA.DE",
-    "IE00BZ56RN96": "GGRW.MI", # RIPRISTINATO ticker precedente
+    "IE00BZ56RN96": "GGRW.MI", 
     "IE0005042456": "IUSA.DE"
 }
 
@@ -64,54 +64,42 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE CON ANALISI RITARDO ---
+# --- 3. LOGICA PREZZI LIVE ---
 ticker_diag = {}
 
 def fetch_live_price_diag(isin, manual_val):
     symbol = ticker_map.get(isin)
     now_utc = datetime.now(pytz.utc)
-    
     if pd.notnull(manual_val) and manual_val > 0:
-        ticker_diag[isin] = {"status": "MANUALE", "delay": "0 min", "msg": "Priorità Sheet"}
+        ticker_diag[isin] = {"status": "MANUALE", "delay": "0 min"}
         return float(manual_val)
-    
     if not symbol: return None
-    
     try:
         t = yf.Ticker(symbol)
         f_info = t.fast_info
         current = f_info['last_price']
-        last_market_time = f_info.get('last_market_time')
-        
-        delay_str = "N/D"
+        lmt = f_info.get('last_market_time')
+        delay = "N/D"
         status = "LIVE"
-        
-        if last_market_time:
-            diff = now_utc - last_market_time.astimezone(pytz.utc)
-            minutes = int(diff.total_seconds() / 60)
-            if minutes > 1440:
-                delay_str = f"{minutes // 1440} giorni"
-                status = "FERMO"
-            elif minutes > 60:
-                delay_str = f"{minutes // 60} ore"
-                status = "FERMO"
-            else:
-                delay_str = f"{minutes} min"
-                status = "LIVE" if minutes < 30 else "RITARDO"
-
-        ticker_diag[isin] = {"status": status, "delay": delay_str, "msg": f"Ticker: {symbol}"}
+        if lmt:
+            diff = now_utc - lmt.astimezone(pytz.utc)
+            mins = int(diff.total_seconds() / 60)
+            delay = f"{mins} min" if mins < 60 else f"{mins//60} ore"
+            status = "LIVE" if mins < 30 else "FERMO"
+        ticker_diag[isin] = {"status": status, "delay": delay}
         return float(current) if current else None
     except:
-        if isin == "IE00BFM15T99": 
-            ticker_diag[isin] = {"status": "FIX", "delay": "N/D", "msg": "Emergency 7.02"}
-            return 7.02
-        ticker_diag[isin] = {"status": "ERRORE", "delay": "∞", "msg": "Errore Connessione"}
+        ticker_diag[isin] = {"status": "ERRORE", "delay": "∞"}
         return None
 
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Riconnessione mercati..."):
+# CORREZIONE VALUERROR: Assicuriamoci che fx_hist sia una Series pulita
+if isinstance(fx_hist, pd.DataFrame):
+    fx_hist = fx_hist.iloc[:, 0]
+
+with st.spinner("Sincronizzazione..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
@@ -123,46 +111,30 @@ with st.spinner("Riconnessione mercati..."):
 
 df_raw['Price_Now'] = prices_now
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
-df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
+
+# Calcolo FX Storico corretto riga per riga per evitare il ValueError
+def get_historical_fx(dt):
+    try:
+        val = fx_hist.asof(dt)
+        return float(val) if not pd.isna(val) else 1.63
+    except: return 1.63
+
+df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Date_DT'].apply(get_historical_fx)
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * market_fx
 
 # --- 4. INTERFACCIA ---
 st.title("🏛️ Claudio's Portfolio Command Center")
-
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    st.metric("Valore Reale Portafoglio (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
-    
+    st.metric("Valore Portafoglio (€)", f"€{t_att_eur:,.2f}", f"€{(t_att_eur - t_inv_eur):,.2f}")
     st_agg = df_raw.groupby('ISIN').agg({'Qty':'sum','Inv_EUR':'sum','Att_EUR':'sum'}).reset_index()
     st_agg['Gain (€)'] = st_agg['Att_EUR'] - st_agg['Inv_EUR']
     st.dataframe(st_agg.style.format(precision=2), use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("🛠️ Monitoraggio Flussi Dati (Ticker Ripristinati)")
-    
-    diag_list = []
-    for isin, info in ticker_diag.items():
-        diag_list.append({
-            "ISIN": isin,
-            "Stato": info['status'],
-            "Ritardo": info['delay'],
-            "Prezzo": f"{cache_prezzi.get(isin):.2f} €" if cache_prezzi.get(isin) else "N/A",
-            "Dettaglio": info['msg']
-        })
-    
-    df_diag = pd.DataFrame(diag_list)
-
-    def style_row(row):
-        color = ''
-        if row.Stato == 'LIVE': color = 'background-color: #d4edda; color: black'
-        elif row.Stato == 'FERMO': color = 'background-color: #fff3cd; color: black'
-        elif row.Stato == 'ERRORE': color = 'background-color: #f8d7da; color: black'
-        return [color] * len(row)
-
-    st.table(df_diag.style.apply(style_row, axis=1))
-    
-    now_syd = datetime.now(pytz.timezone('Australia/Sydney'))
-    st.divider()
-    st.caption(f"Ultimo Refresh: {now_syd.strftime('%H:%M:%S')} (Sydney)")
+    st.subheader("🛠️ Diagnostica Dati")
+    diag_list = [{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache_prezzi.get(k):.2f} €"} for k, v in ticker_diag.items()]
+    st.table(pd.DataFrame(diag_list))
+    st.caption(f"Refresh: {datetime.now(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')} Sydney")
