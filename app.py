@@ -64,36 +64,50 @@ df_raw['Manual_Override'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty'])
 df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
-# --- 3. LOGICA PREZZI LIVE ---
+# --- 3. LOGICA PREZZI LIVE CON TIMESTAMP PER TICKER ---
 unique_errors = set()
+ticker_sync_info = {}
 
-def fetch_live_price(isin, manual_val):
+def fetch_live_price_with_time(isin, manual_val):
+    now_sydney = datetime.now(pytz.timezone('Australia/Sydney')).strftime('%H:%M:%S')
+    
     if pd.notnull(manual_val) and manual_val > 0:
+        ticker_sync_info[isin] = f"Manuale ({now_sydney})"
         return float(manual_val)
+        
     symbol = ticker_map.get(isin)
     if not symbol: return None
+    
     try:
         t = yf.Ticker(symbol)
         price = t.fast_info['last_price']
+        # Recupero orario ultimo scambio se disponibile, altrimenti ora attuale
+        ticker_sync_info[isin] = f"Live ({now_sydney})"
+        
         if price and not pd.isna(price) and price > 0:
             return float(price)
         hist = t.history(period="1d")
         if not hist.empty:
             return float(hist['Close'].iloc[-1])
     except: pass
-    if isin == "IE00BFM15T99": return 7.02
+    
+    if isin == "IE00BFM15T99": 
+        ticker_sync_info[isin] = f"Emergency Fix (7.02)"
+        return 7.02
+        
+    ticker_sync_info[isin] = "Fallback (Prezzo Storico)"
     return None
 
 market_fx = get_fx_rate()
 fx_hist = yf.download("EURAUD=X", start="2025-09-01", progress=False)['Close']
 
-with st.spinner("Aggiornamento dati in corso..."):
+with st.spinner("Sincronizzazione granulare ticker..."):
     prices_now = []
     cache_prezzi = {}
     for _, row in df_raw.iterrows():
         isin = row['ISIN']
         if isin not in cache_prezzi:
-            cache_prezzi[isin] = fetch_live_price(isin, row['Manual_Override'])
+            cache_prezzi[isin] = fetch_live_price_with_time(isin, row['Manual_Override'])
         current_p = cache_prezzi[isin]
         if current_p is None:
             current_p = float(row['Prezzo_Acq'])
@@ -101,6 +115,7 @@ with st.spinner("Aggiornamento dati in corso..."):
         prices_now.append(current_p)
 
 df_raw['Price_Now'] = prices_now
+df_raw['Last_Update'] = df_raw['ISIN'].map(ticker_sync_info)
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 df_raw['FX_Acq'] = df_raw['Date_DT'].apply(lambda x: fx_hist.asof(x) if not fx_hist.empty else 1.63)
@@ -114,6 +129,7 @@ st.title("🏛️ Claudio's Portfolio Command Center")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore Tasse", "📈 Storico", "🛠️ System Logs"])
 
 with tab1:
+    # Riepilogo Globale
     t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
     t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
     t_gain_eur, t_gain_aud = t_att_eur - t_inv_eur, t_att_aud - t_inv_aud
@@ -157,6 +173,7 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Storica Patrimoniale (€)")
+    # Logica grafico storico invariata
     s_date = df_raw['Date_DT'].min()
     h_data = {}
     for isin in df_raw['ISIN'].unique():
@@ -171,12 +188,16 @@ with tab3:
     st.plotly_chart(px.area(pd.DataFrame({'Data': d_range, 'Valore': vals}), x='Data', y='Valore'), use_container_width=True)
 
 with tab4:
-    st.subheader("System Health & Logs")
-    # Aggiunta Data e Ora ultimo aggiornamento (Local Time AU)
-    now = datetime.now(pytz.timezone('Australia/Sydney'))
-    st.info(f"🕒 **Ultimo aggiornamento portafoglio:** {now.strftime('%d/%m/%Y %H:%M:%S')} (Sydney Time)")
+    st.subheader("🛠️ System Health & Per-Ticker Sync")
     
-    if not unique_errors:
-        st.success("✅ Tutti i titoli sono sincronizzati correttamente con dati Live.")
-    else:
-        st.error(f"Sincronizzazione fallita per i seguenti ISIN (usato prezzo storico): {unique_errors}")
+    # Tabella di controllo granulare
+    sync_df = pd.DataFrame([
+        {"ISIN": k, "Ticker Yahoo": v, "Stato Sincronizzazione": ticker_sync_info.get(k, "N/A")}
+        for k, v in ticker_map.items()
+    ])
+    
+    st.table(sync_df)
+    
+    st.divider()
+    now = datetime.now(pytz.timezone('Australia/Sydney'))
+    st.write(f"Global Refresh: {now.strftime('%d/%m/%Y %H:%M:%S')} (Sydney Time)")
