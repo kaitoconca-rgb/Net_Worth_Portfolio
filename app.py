@@ -57,6 +57,8 @@ df_raw['Date_DT'] = pd.to_datetime(df_raw['Data'], dayfirst=True)
 
 # --- 3. PREZZI & DIAGNOSTICA ---
 ticker_diag = {}
+cache_prezzi = {}
+
 def fetch_price(isin, manual_val):
     symbol = ticker_map.get(isin)
     if pd.notnull(manual_val) and manual_val > 0:
@@ -78,18 +80,16 @@ def fetch_price(isin, manual_val):
 
 fx_now = get_fx_rate()
 with st.spinner("Sincronizzazione..."):
-    cache = {}
-    prices = []
-    for _, r in df_raw.iterrows():
-        isin = r['ISIN']
-        if isin not in cache: cache[isin] = fetch_price(isin, r['Manual_Override'])
-        prices.append(cache[isin] if cache[isin] is not None else float(r['Prezzo_Acq']))
+    for isin in df_raw['ISIN'].unique():
+        # Prende il manual override dalla prima riga disponibile per quell'ISIN
+        m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
+        cache_prezzi[isin] = fetch_price(isin, m_val)
 
-df_raw['Price_Now'] = prices
+# Applichiamo i prezzi
+df_raw['Price_Now'] = df_raw['ISIN'].map(cache_prezzi).fillna(df_raw['Prezzo_Acq'])
 df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
 df_raw['Gain_EUR'] = df_raw['Att_EUR'] - df_raw['Inv_EUR']
 df_raw['Att_AUD'] = df_raw['Att_EUR'] * fx_now
-# Calcolo Gain AUD semplificato per coerenza
 df_raw['Gain_AUD'] = df_raw['Gain_EUR'] * fx_now 
 
 # --- 4. INTERFACCIA ---
@@ -120,17 +120,33 @@ with tab2:
         st.info(f"Imponibile stimato: ${max(0, tax):,.2f} AUD")
 
 with tab3:
-    st.subheader("Evoluzione Storica Corretta")
+    st.subheader("Evoluzione Storica")
+    # ORDINE CRONOLOGICO
     h = df_raw.sort_values('Date_DT').copy()
     h['Inv_Cum'] = h['Inv_EUR'].cumsum()
-    # Logica corretta: Sommiamo il valore ATTUALE riga per riga per arrivare al totale esatto
-    h['Valore_Cum'] = h['Att_EUR'].cumsum()
+    
+    # CALCOLO CORRETTO VALORE: Quantità cumulata per ISIN nel tempo
+    h['Qty_Cum'] = h.groupby('ISIN')['Qty'].cumsum()
+    # Sommiamo il valore attuale di tutte le quote possedute fino a quella data
+    # Per farlo bene, dobbiamo iterare sulle date
+    dates = sorted(h['Date_DT'].unique())
+    history = []
+    for d in dates:
+        # Prendi tutto ciò che è stato comprato fino a questa data
+        sub = h[h['Date_DT'] <= d]
+        v_market = (sub['Qty'] * sub['Price_Now']).sum()
+        v_inv = sub['Inv_EUR'].sum()
+        history.append({'Data': d, 'Investito': v_inv, 'Valore': v_market})
+    
+    df_history = pd.DataFrame(history)
     
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=h['Date_DT'], y=h['Inv_Cum'], name="Investito", fill='tozeroy', line_color='gray'))
-    fig.add_trace(go.Scatter(x=h['Date_DT'], y=h['Valore_Cum'], name="Valore Attuale", fill='tonexty', line_color='blue'))
+    fig.add_trace(go.Scatter(x=df_history['Data'], y=df_history['Investito'], name="Capitale Investito", fill='tozeroy', line_color='gray'))
+    fig_h = fig.add_trace(go.Scatter(x=df_history['Data'], y=df_history['Valore'], name="Valore di Mercato (Prezzi Oggi)", fill='tonexty', line_color='blue'))
+    
     st.plotly_chart(fig, use_container_width=True)
+    st.caption("Nota: Il valore storico è calcolato moltiplicando le quote possedute in passato per il prezzo attuale.")
 
 with tab4:
-    diag_df = pd.DataFrame([{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache.get(k):.2f} €"} for k, v in ticker_diag.items()])
+    diag_df = pd.DataFrame([{"ISIN": k, "Stato": v["status"], "Ritardo": v["delay"], "Prezzo": f"{cache_prezzi.get(k):.2f} €"} for k, v in ticker_diag.items()])
     st.table(diag_df)
