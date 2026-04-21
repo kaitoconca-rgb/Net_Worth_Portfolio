@@ -105,16 +105,13 @@ with tab1:
     m1, m2, m3 = st.columns(3)
     m1.metric("Investito EUR", f"€{t_inv_eur:,.0f}")
     m1.metric("Valore Attuale EUR", f"€{t_att_eur:,.0f}", f"€{t_att_eur - t_inv_eur:,.0f}")
-    
     m2.metric("Investito AUD (Storico)", f"${t_inv_aud:,.0f}")
     m2.metric("Valore Attuale AUD", f"${t_att_aud:,.0f}", f"${t_att_aud - t_inv_aud:,.0f}")
-    
     m3.metric("ROI Totale (EUR)", f"{(t_att_eur/t_inv_eur-1)*100:.2f}%")
     m3.metric("ROI Totale (AUD)", f"{(t_att_aud/t_inv_aud-1)*100:.2f}%")
 
     st.divider()
 
-    # Grafici
     g1, g2 = st.columns([1, 1.5])
     with g1:
         st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
@@ -129,7 +126,6 @@ with tab1:
         fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
         st.plotly_chart(fig_fx, use_container_width=True)
 
-    # Tabella di Sintesi ISIN (Ripristinata)
     st.subheader("Dettaglio Asset")
     st.dataframe(
         agg.style.format({
@@ -143,24 +139,48 @@ with tab1:
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse")
     tax_r = st.slider("Marginal Tax Rate (%)", 0.0, 45.0, 37.0)
+    
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Att_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
+    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
+    
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
+        # Calcoli di Gain per riga
+        sel['EUR_Gain_Realizzato'] = (sel['Att_EUR'] - sel['Inv_EUR']) * (sel['% Vendi']/100)
+        sel['AUD_Gain_Realizzato'] = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
         sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
         sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
-        sel['G_AUD'] = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
-        def cgt_calc(row):
-            if row['G_AUD'] <= 0: return 0.0
+        
+        def cgt_calc_row(row):
+            gain = (row['Att_AUD'] - row['Inv_AUD']) * (row['% Vendi']/100)
+            if gain <= 0: return 0.0
             mult = 0.5 if (datetime.now() - row['Data'].to_pydatetime()).days > 365 else 1.0
-            return row['G_AUD'] * mult * (tax_r/100)
-        total_tax = sel.apply(cgt_calc, axis=1).sum()
+            return gain * mult * (tax_r/100)
+        
+        sel['Tassa_Asset'] = sel.apply(cgt_calc_row, axis=1)
+        
+        st.divider()
+        # Header Totali
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Cash EUR", f"€{sel['E_Out'].sum():,.2f}")
-        r2.metric("Cash AUD (Lordo)", f"${sel['A_Out'].sum():,.2f}")
-        r3.metric("Tasse ATO (AUD)", f"-${total_tax:,.2f}", delta_color="inverse")
-        r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - total_tax):,.2f}")
+        r1.metric("Cash out EUR", f"€{sel['E_Out'].sum():,.2f}")
+        r2.metric("Cash out AUD (Lordo)", f"${sel['A_Out'].sum():,.2f}")
+        r3.metric("Tasse ATO (AUD)", f"-${sel['Tassa_Asset'].sum():,.2f}", delta_color="inverse")
+        r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - sel['Tassa_Asset'].sum()):,.2f}")
+
+        # Nuova Sezione: Dettaglio Gain Asset (Richiesto)
+        st.write("### Dettaglio Gain Realizzato")
+        dettaglio_gain = sel[['ISIN', 'Data', '% Vendi', 'EUR_Gain_Realizzato', 'AUD_Gain_Realizzato', 'Tassa_Asset']]
+        st.dataframe(
+            dettaglio_gain.style.format({
+                'EUR_Gain_Realizzato': '€{:,.2f}',
+                'AUD_Gain_Realizzato': '${:,.2f}',
+                'Tassa_Asset': '${:,.2f}',
+                '% Vendi': '{:.0f}%'
+            }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
+                   subset=['EUR_Gain_Realizzato', 'AUD_Gain_Realizzato']),
+            use_container_width=True, hide_index=True
+        )
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
