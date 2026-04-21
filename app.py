@@ -76,12 +76,7 @@ def fetch_price(isin, manual_val):
     try:
         t = yf.Ticker(symbol)
         curr = t.fast_info['last_price']
-        lmt = t.fast_info.get('last_market_time')
-        delay = "N/D"
-        if lmt:
-            diff = datetime.now(pytz.utc) - lmt.astimezone(pytz.utc)
-            delay = f"{int(diff.total_seconds()/60)} min"
-        ticker_diag[isin] = {"status": "LIVE", "delay": delay}
+        ticker_diag[isin] = {"status": "LIVE", "delay": "Live"}
         return float(curr) if curr else None
     except:
         ticker_diag[isin] = {"status": "ERRORE", "delay": "∞"}
@@ -97,7 +92,7 @@ def get_fx_at_date(dt):
         return float(val) if not pd.isna(val) else 1.6450
     except: return 1.6450
 
-with st.spinner("Sincronizzazione in corso..."):
+with st.spinner("Calcolo in corso..."):
     for isin in df_raw['ISIN'].unique():
         m_val = df_raw[df_raw['ISIN'] == isin]['Manual_Override'].iloc[0]
         cache_prezzi[isin] = fetch_price(isin, m_val)
@@ -136,9 +131,9 @@ with tab1:
         fig_b.update_layout(barmode='group', title="Gain/Loss per Asset (EUR vs AUD)")
         st.plotly_chart(fig_b, use_container_width=True)
 
-    st.subheader("Tabella di Sintesi Performance (Multi-Currency)")
+    st.subheader("Tabella di Sintesi Performance (EUR & AUD)")
     
-    # Aggregazione per la tabella
+    # Aggregazione finale per ISIN
     agg_table = df_raw.groupby('ISIN').agg({
         'Qty': 'sum',
         'Inv_EUR': 'sum',
@@ -149,17 +144,18 @@ with tab1:
         'Gain_AUD': 'sum'
     }).reset_index()
     
-    agg_table['ROI %'] = (agg_table['Gain_EUR'] / agg_table['Inv_EUR']) * 100
+    agg_table['ROI % (EUR)'] = (agg_table['Gain_EUR'] / agg_table['Inv_EUR']) * 100
     
-    # Selezione e ordinamento colonne
+    # Ordinamento colonne per confronto immediato
     display_cols = [
-        'ISIN', 'Qty', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'ROI %', 
+        'ISIN', 'Qty', 
+        'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'ROI % (EUR)', 
         'Inv_AUD', 'Att_AUD', 'Gain_AUD'
     ]
     
     def color_values(val):
         if isinstance(val, (int, float)):
-            color = 'red' if val < 0 else 'green' if val > 0 else 'white'
+            color = 'red' if val < 0 else 'green' if val > 0 else '#ccc'
             return f'color: {color}'
         return ''
 
@@ -167,9 +163,9 @@ with tab1:
         agg_table[display_cols].style.format({
             'Qty': '{:,.2f}', 
             'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}', 
-            'ROI %': '{:.2f}%',
+            'ROI % (EUR)': '{:.2f}%',
             'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
-        }).map(color_values, subset=['Gain_EUR', 'Gain_AUD', 'ROI %']),
+        }).map(color_values, subset=['Gain_EUR', 'Gain_AUD', 'ROI % (EUR)']),
         use_container_width=True, hide_index=True
     )
 
