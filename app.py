@@ -59,7 +59,7 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO ---
+# --- 3. PREZZI E STORICO (ROBUSTEZZA MASSIMA) ---
 @st.cache_data(ttl=86400)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
@@ -67,13 +67,14 @@ def get_full_market_context(isins_list, current_ticker_map):
     for isin in isins_list:
         symbol = current_ticker_map.get(isin)
         success = False
-        for _ in range(2): 
+        # Tentativi multipli con attesa crescente
+        for attempt in range(3): 
             try:
-                h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
-                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                # Usiamo period="1mo" che è più leggero di un download completo
+                t = yf.Ticker(symbol)
+                h = t.history(period="1mo")['Close']
                 if not h.empty:
                     prices_hist[isin] = h
-                    # AGGIUNTO: Prezzo alla colonna Diagnostics
                     current_val = float(h.iloc[-1])
                     logs[isin] = {
                         "status": "LIVE", 
@@ -84,20 +85,23 @@ def get_full_market_context(isins_list, current_ticker_map):
                     success = True
                     break
             except:
-                time.sleep(1)
+                time.sleep(attempt + 1) # Attesa esponenziale
         
         if not success:
             prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "Price": "N/A", "updated": "-", "source": "Yahoo Blocked"}
+            logs[isin] = {"status": "FALLBACK", "Price": "Waiting for Yahoo...", "updated": "-", "source": "Rate Limited"}
             
     return prices_hist, logs
 
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
+    # 1. Priorità assoluta al prezzo manuale nel foglio Google
     if pd.notnull(row['Manual_Price']) and row['Manual_Price'] > 0: return row['Manual_Price']
+    # 2. Prezzo da Yahoo
     h = hist_map.get(row['ISIN'])
     if h is not None and not h.empty: return float(h.iloc[-1])
+    # 3. Ultima spiaggia: Prezzo di acquisto
     return row['Prezzo_Acq']
 
 df_raw['Price_Now'] = df_raw.apply(get_current_price, axis=1)
@@ -212,5 +216,4 @@ with tab3:
 with tab4:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
-    # Ora la tabella mostrerà anche la colonna "Price"
     st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
