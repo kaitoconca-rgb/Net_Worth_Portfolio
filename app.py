@@ -84,19 +84,20 @@ def get_full_market_context(isins_list, current_ticker_map):
                 current_val = float(h.iloc[-1])
                
                 
-                # 2. TENTATIVO RECUPERO ORARIO REALE (Intraday)
-                # Chiediamo solo l'ultimo intervallo di 1 minuto per beccare il timestamp esatto
+                # 2. RECUPERO TIMESTAMP "LIVE" DALLA SCHEDA INFO
+                market_time = None
                 try:
-                    intraday = t_obj.history(period="1d", interval="1m")
-                    if not intraday.empty:
-                        # Se abbiamo dati intraday, prendiamo l'ultimo timestamp (con ora/min)
-                        market_time = intraday.index[-1].strftime("%Y-%m-%d %H:%M")
-                    else:
-                        # Se il mercato è chiuso e non c'è intraday, usiamo la data storica
-                        market_time = h.index[-1].strftime("%Y-%m-%d") + " (EOD)"
+                    # Interroghiamo direttamente il prezzo di mercato live e il suo timestamp
+                    # regularMarketTime restituisce un timestamp Unix
+                    ts = t_obj.info.get('regularMarketTime')
+                    if ts:
+                        market_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
                 except:
-                    market_time = h.index[-1].strftime("%Y-%m-%d") + " (EOD)"
+                    pass
 
+                # Se info non risponde, usiamo l'indice della tabella come fallback
+                if not market_time:
+                    market_time = h.index[-1].strftime("%Y-%m-%d") + " (EOD)"
 
 
                 
