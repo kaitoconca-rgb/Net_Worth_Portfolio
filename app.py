@@ -115,7 +115,7 @@ with tab1:
 
     g1, g2 = st.columns([1, 1.5])
     with g1:
-        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), width='stretch')
     with g2:
         agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
         agg['Gain_EUR'] = agg['Att_EUR'] - agg['Inv_EUR']
@@ -125,7 +125,7 @@ with tab1:
             go.Bar(name='Profit AUD ($)', x=agg['ISIN'], y=agg['Gain_AUD'], marker_color='#2ca02c')
         ])
         fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
-        st.plotly_chart(fig_fx, use_container_width=True)
+        st.plotly_chart(fig_fx, width='stretch')
 
     st.subheader("Dettaglio Asset")
     st.dataframe(
@@ -134,7 +134,7 @@ with tab1:
             'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
         }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
                subset=['Gain_EUR', 'Gain_AUD']),
-        use_container_width=True, hide_index=True
+        width='stretch', hide_index=True
     )
 
 with tab2:
@@ -143,7 +143,7 @@ with tab2:
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
+    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True, width='stretch')
     
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
@@ -177,12 +177,13 @@ with tab2:
                 '% Vendi': '{:.0f}%'
             }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
                    subset=['EUR_Gain_Realizzato', 'AUD_Gain_Realizzato']),
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
-    date_range = pd.date_range(date(2024, 10, 1), date.today())
+    # Baseline: La timeline parte dal 1 Ottobre 2025
+    date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
     for d in date_range:
         posizioni = df_raw[df_raw['Data'].dt.date <= d.date()]
@@ -193,7 +194,7 @@ with tab3:
             valore_giorno += pos['Qty'] * p_hist
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
     df_h = pd.DataFrame(daily_history)
-    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2024 ad Oggi (€)"), use_container_width=True)
+    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2025 ad Oggi (€)"), width='stretch')
 
 with tab4:
     st.subheader("Data Health Check")
