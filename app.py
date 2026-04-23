@@ -82,12 +82,14 @@ def get_full_market_context(isins_list, current_ticker_map):
             if not h.empty:
                 prices_hist[isin] = h
                 current_val = float(h.iloc[-1])
-                # RECUPERO ORARIO REALE (INTRADAY)
-                try:
-                    last_ts = t_obj.fast_info['last_price_timestamp']
-                    market_time = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d %H:%M")
-                except:
-                    market_time = h.index[-1].strftime("%Y-%m-%d") + " (EOD)"
+               ultimo_aggiornamento = h.index[-1]
+                
+                # Se è un dato giornaliero, mostriamo solo la data. 
+                # Se ha l'ora (intraday), mostriamo ora e minuti.
+                if ultimo_aggiornamento.hour == 0 and ultimo_aggiornamento.minute == 0:
+                    market_time = ultimo_aggiornamento.strftime("%Y-%m-%d") + " (EOD)"
+                else:
+                    market_time = ultimo_aggiornamento.strftime("%Y-%m-%d %H:%M")
                 logs[isin] = {
                     "status": "LIVE", 
                     "Price": f"€{current_val:.2f}",
