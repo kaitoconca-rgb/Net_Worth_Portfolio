@@ -4,6 +4,7 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
+import time
 from streamlit_gsheets import GSheetsConnection
 
 # --- 0. PROTEZIONE ---
@@ -25,7 +26,6 @@ if not check_password():
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
-# AGGIORNATO: Ticker 36B2.MU per N26 Japan ETF
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", "IE00B8GKDB10": "VHYL.MI",
@@ -59,23 +59,37 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO (CACHE FORZATA) ---
-@st.cache_data(ttl=3600)
+# --- 3. PREZZI E STORICO ---
+@st.cache_data(ttl=86400)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
         symbol = current_ticker_map.get(isin)
-        try:
-            h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
-            if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-            if not h.empty:
-                prices_hist[isin] = h
-                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": f"Yahoo ({symbol})"}
-            else: raise ValueError()
-        except:
+        success = False
+        for _ in range(2): 
+            try:
+                h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                if not h.empty:
+                    prices_hist[isin] = h
+                    # AGGIUNTO: Prezzo alla colonna Diagnostics
+                    current_val = float(h.iloc[-1])
+                    logs[isin] = {
+                        "status": "LIVE", 
+                        "Price": f"€{current_val:.2f}",
+                        "updated": datetime.now().strftime("%H:%M"), 
+                        "source": f"Yahoo ({symbol})"
+                    }
+                    success = True
+                    break
+            except:
+                time.sleep(1)
+        
+        if not success:
             prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": f"Error with {symbol}"}
+            logs[isin] = {"status": "FALLBACK", "Price": "N/A", "updated": "-", "source": "Yahoo Blocked"}
+            
     return prices_hist, logs
 
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
@@ -182,7 +196,6 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
-    # Baseline: La timeline parte dal 1 Ottobre 2025
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
     for d in date_range:
@@ -198,5 +211,6 @@ with tab3:
 
 with tab4:
     st.subheader("Data Health Check")
-    st.write(f"FX EURAUD Live: {fx_now}")
+    st.write(f"FX EURAUD Live: {fx_now:.4f}")
+    # Ora la tabella mostrerà anche la colonna "Price"
     st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
