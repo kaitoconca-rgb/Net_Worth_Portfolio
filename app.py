@@ -29,11 +29,10 @@ def get_single_ticker_data(isin):
     if not ticker_sym or ticker_sym == "MANUAL": return None, None
     try:
         t = yf.Ticker(ticker_sym)
-        # Prezzo Attuale
-        info = t.fast_info
-        price = info.get('last_price')
+        # Prezzo Attuale rapido
+        price = t.fast_info.get('last_price')
         # Storico per Timeline
-        hist = t.history(period="max")['Close']
+        hist = t.history(period="1y")['Close']
         if not hist.empty:
             hist.index = hist.index.tz_localize(None)
         return price, hist
@@ -56,8 +55,7 @@ df = pd.DataFrame({
 
 # Recupero Prezzi e FX
 unique_isins = df['ISIN'].unique()
-prices_cache = {}
-hists_cache = {}
+prices_cache, hists_cache = {}, {}
 
 for isin in unique_isins:
     p, h = get_single_ticker_data(isin)
@@ -99,32 +97,38 @@ with t1:
 
     st.divider()
     
-    st.subheader("Confronto Gain/Loss: EUR vs AUD (Cambio Attuale)")
+    st.subheader("Profitto Netto per Asset: EUR vs AUD (Cambio Attuale)")
     agg = df.groupby('ISIN').agg({'Gain_Loss_EUR':'sum', 'Gain_Loss_AUD':'sum'}).reset_index()
     fig = go.Figure(data=[
         go.Bar(name='Gain EUR', x=agg['ISIN'], y=agg['Gain_Loss_EUR'], marker_color='#1f77b4'),
         go.Bar(name='Gain AUD', x=agg['ISIN'], y=agg['Gain_Loss_AUD'], marker_color='#ff7f0e')
     ])
-    fig.update_layout(barmode='group')
+    fig.update_layout(barmode='group', margin=dict(t=30, b=30))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Dettaglio Asset")
-    st.dataframe(df[['ISIN', 'Data', 'Inv_EUR', 'Valore_Attuale_EUR', 'Gain_Loss_EUR', 'Gain_Loss_AUD', 'Source']].style.format(precision=2))
+    st.subheader("Dettaglio Posizioni")
+    st.dataframe(df[['ISIN', 'Data', 'Inv_EUR', 'Valore_Attuale_EUR', 'Gain_Loss_EUR', 'Gain_Loss_AUD', 'Source']].style.format(precision=2), use_container_width=True)
+
+with t2:
+    st.subheader("Simulatore Cash-out")
+    st.info("Modifica 'Qty' o 'Price_Now' per vedere l'impatto immediato sul portafoglio.")
+    # Il data_editor permette di giocare con i numeri senza sporcare il Google Sheet
+    st.data_editor(df[['ISIN', 'Qty', 'Price_Now', 'Valore_Attuale_EUR', 'Valore_Attuale_AUD', 'Source']], use_container_width=True)
 
 with t3:
     # Timeline
-    dr = pd.date_range(df['Data'].min(), date.today())
-    timeline_data = []
+    dr = pd.date_range(df['Data'].min(), date.today(), freq='D')
+    timeline_pts = []
     for d in dr:
         sub = df[df['Data'].dt.date <= d.date()]
         val_eur = 0
         for _, row in sub.iterrows():
             h = hists_cache.get(row['ISIN'])
-            price_d = h.asof(d) if (h is not None and not h.empty) else row['P_Acq']
-            val_eur += row['Qty'] * price_d
-        timeline_data.append({'Date': d, 'Value': val_eur})
-    st.plotly_chart(px.area(pd.DataFrame(timeline_data), x='Date', y='Value', title="Evoluzione Capitale (€)"), use_container_width=True)
+            p_d = h.asof(d) if (h is not None and not h.empty) else row['P_Acq']
+            val_eur += row['Qty'] * p_d
+        timeline_pts.append({'Date': d, 'Value': val_eur})
+    st.plotly_chart(px.area(pd.DataFrame(timeline_pts), x='Date', y='Value', title="Evoluzione Capitale (€)"), use_container_width=True)
 
 with t4:
-    st.write("Verifica Diagnostica Prezzi")
+    st.write("Diagnostica API")
     st.table(df[['ISIN', 'Price_Now', 'Source']].drop_duplicates())
