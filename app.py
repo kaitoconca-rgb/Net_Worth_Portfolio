@@ -43,7 +43,7 @@ def get_finnhub_price(isin):
     except: return None
 
 @st.cache_data(ttl=3600)
-def get_yahoo_data(isins_list): # Ora accetta esplicitamente una LISTA
+def get_yahoo_data(isins_list):
     hist, current = {}, {}
     for isin in isins_list:
         sym = ticker_map.get(isin)
@@ -53,6 +53,8 @@ def get_yahoo_data(isins_list): # Ora accetta esplicitamente una LISTA
                 current[isin] = t.fast_info.get('last_price')
                 h = t.history(start="2024-09-01")['Close']
                 if not h.empty:
+                    # Rimuoviamo il fuso orario per compatibilità
+                    h.index = h.index.tz_localize(None)
                     hist[isin] = h
             except: pass
     return hist, current
@@ -71,7 +73,6 @@ df = pd.DataFrame({
     'P_Man': pd.to_numeric(df_in['Price'], errors='coerce')
 }).sort_values('Data')
 
-# FIX RIGA 75: Convertiamo in lista per evitare UnhashableParamError
 unique_isins = df['ISIN'].unique().tolist()
 y_hist, y_curr = get_yahoo_data(unique_isins)
 
@@ -87,13 +88,15 @@ res_engine = df.apply(price_engine, axis=1)
 df['Price_Now'] = [r[0] for r in res_engine]
 df['Source'] = [r[1] for r in res_engine]
 
-# FX (Con protezione fallback)
+# FX (Risoluzione Timezone per riga 105)
 @st.cache_data(ttl=3600)
 def get_fx_secure():
     try:
         t = yf.Ticker("EURAUD=X")
         now = t.fast_info.get('last_price', 1.65)
         hist = t.history(start="2024-01-01")['Close']
+        if not hist.empty:
+            hist.index = hist.index.tz_localize(None) # <--- FIX FONDAMENTALE
         return now, hist
     except:
         return 1.65, pd.Series()
@@ -102,7 +105,17 @@ fx_now, fx_hist_df = get_fx_secure()
 
 df['Att_EUR'] = df['Qty'] * df['Price_Now']
 df['Att_AUD'] = df['Att_EUR'] * fx_now
-df['Inv_AUD'] = df['Inv_EUR'] * df['Data'].apply(lambda x: fx_hist_df.asof(x) if not fx_hist_df.empty else 1.65)
+
+# Calcolo AUD storico corretto (senza crash di fuso orario)
+def get_historical_fx(dt):
+    if fx_hist_df.empty: return 1.65
+    try:
+        # Troviamo il cambio più vicino alla data dell'investimento
+        return float(fx_hist_df.asof(dt))
+    except:
+        return 1.65
+
+df['Inv_AUD'] = df['Inv_EUR'] * df['Data'].apply(get_historical_fx)
 
 # --- 4. INTERFACCIA ---
 t1, t2, t3, t4 = st.tabs(["📊 Performance", "💸 Simulatore", "📈 Timeline", "🛠️ Diagnostics"])
@@ -112,8 +125,8 @@ with t1:
     v_aud, i_aud = df['Att_AUD'].sum(), df['Inv_AUD'].sum()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("EUR Value", f"€{v_eur:,.0f}", f"€{v_eur-i_eur:,.0f}")
-    c2.metric("AUD Value", f"${v_aud:,.0f}", f"${v_aud-i_aud:,.0f}")
+    c1.metric("Valore EUR", f"€{v_eur:,.0f}", f"€{v_eur-i_eur:,.0f}")
+    c2.metric("Valore AUD", f"${v_aud:,.0f}", f"${v_aud-i_aud:,.0f}")
     c3.metric("ROI %", f"{((v_eur/i_eur)-1)*100:.2f}%" if i_eur > 0 else "0%")
     
     st.divider()
@@ -123,10 +136,10 @@ with t1:
     with col_b:
         agg = df.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
         fig = go.Figure(data=[
-            go.Bar(name='Gain EUR', x=agg['ISIN'], y=agg['Att_EUR']-agg['Inv_EUR']),
-            go.Bar(name='Gain AUD', x=agg['ISIN'], y=agg['Att_AUD']-agg['Inv_AUD'])
+            go.Bar(name='Profit EUR', x=agg['ISIN'], y=agg['Att_EUR']-agg['Inv_EUR']),
+            go.Bar(name='Profit AUD', x=agg['ISIN'], y=agg['Att_AUD']-agg['Inv_AUD'])
         ])
-        fig.update_layout(barmode='group', title="EUR vs AUD Profit")
+        fig.update_layout(barmode='group', title="Guadagno per ISIN (EUR vs AUD)")
         st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(agg.style.format({
@@ -138,13 +151,15 @@ with t2:
     st.data_editor(df[['ISIN', 'Data', 'Qty', 'P_Acq', 'Price_Now', 'Source']], use_container_width=True)
 
 with t3:
+    # Timeline con protezione fallback
     dr = pd.date_range(date(2024, 10, 1), date.today())
-    timeline_data = []
+    timeline_list = []
     for d in dr:
         sub = df[df['Data'].dt.date <= d.date()]
-        val = sum(p['Qty'] * (y_hist.get(p['ISIN']).asof(d) if (y_hist.get(p['ISIN']) is not None and not y_hist.get(p['ISIN']).empty) else p['P_Acq']) for _, p in sub.iterrows())
-        timeline_data.append({'Date': d, 'Value': val})
-    st.plotly_chart(px.area(pd.DataFrame(timeline_data), x='Date', y='Value'), use_container_width=True)
+        val = sum(p['Qty'] * (y_hist.get(p['ISIN']).asof(d) if (p['ISIN'] in y_hist and not y_hist[p['ISIN']].empty) else p['P_Acq']) for _, p in sub.iterrows())
+        timeline_list.append({'Date': d, 'Value': val})
+    st.plotly_chart(px.area(pd.DataFrame(timeline_list), x='Date', y='Value'), use_container_width=True)
 
 with t4:
+    st.write("Dettaglio Sorgenti Prezzo:")
     st.table(df[['ISIN', 'Price_Now', 'Source']].drop_duplicates())
