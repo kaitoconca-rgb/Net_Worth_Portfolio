@@ -154,8 +154,29 @@ with tab1:
     )
 
 with tab2:
-    st.subheader("Simulatore Cash-out & Tasse")
-    tax_r = st.slider("Marginal Tax Rate (%)", 0.0, 45.0, 37.0)
+    st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
+    
+    # Definiamo le aliquote marginali reali (escludendo il Medicare Levy del 2% o includendolo se preferisci)
+    # Aliquote 2024-2025: 0%, 16%, 30%, 37%, 45%
+    tax_brackets = {
+        "0% (fino a $18,200)": 0.0,
+        "16% ($18,201 – $45,000)": 16.0,
+        "30% ($45,001 – $135,000)": 30.0,
+        "37% ($135,001 – $190,000)": 37.0,
+        "45% (oltre $190,000)": 45.0
+    }
+    
+    selected_bracket = st.select_slider(
+        "Seleziona il tuo scaglione di reddito (Marginal Tax Rate)",
+        options=list(tax_brackets.keys()),
+        value="37% ($135,001 – $190,000)" # Impostiamo il tuo scaglione come default
+    )
+    
+    tax_r = tax_brackets[selected_bracket]
+    
+    st.info(f"Calcolo basato su un'aliquota del **{tax_r}%**. Ricorda che il CGT discount del 50% è applicato automaticamente per asset detenuti > 12 mesi.")
+    
+    # ... Resto del codice del simulatore (df_sim, ed, sel, ecc.) rimane invariato ...
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
