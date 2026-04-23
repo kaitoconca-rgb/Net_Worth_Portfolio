@@ -25,9 +25,10 @@ if not check_password():
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
-# AGGIORNATO: Ticker 36B2.MU per N26 Japan ETF
+# Ticker Map consolidata (Rimosso ticker fallito per LU2885245055)
 ticker_map = {
-    "LU2885245055": "0P0001N9U5.F", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
+    "LU2885245055": "MANUAL", # Gestito tramite colonna 'Price' su Google Sheets
+    "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
@@ -59,13 +60,18 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO (CACHE FORZATA) ---
+# --- 3. PREZZI E STORICO ---
 @st.cache_data(ttl=3600)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
         symbol = current_ticker_map.get(isin)
+        if symbol == "MANUAL":
+            prices_hist[isin] = None
+            logs[isin] = {"status": "MANUAL", "updated": "-", "source": "Sheets Price Col"}
+            continue
+            
         try:
             h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
             if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
@@ -75,7 +81,7 @@ def get_full_market_context(isins_list, current_ticker_map):
             else: raise ValueError()
         except:
             prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": f"Error with {symbol}"}
+            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
     return prices_hist, logs
 
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
@@ -115,7 +121,7 @@ with tab1:
 
     g1, g2 = st.columns([1, 1.5])
     with g1:
-        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
+        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), width="stretch")
     with g2:
         agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
         agg['Gain_EUR'] = agg['Att_EUR'] - agg['Inv_EUR']
@@ -125,7 +131,7 @@ with tab1:
             go.Bar(name='Profit AUD ($)', x=agg['ISIN'], y=agg['Gain_AUD'], marker_color='#2ca02c')
         ])
         fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
-        st.plotly_chart(fig_fx, use_container_width=True)
+        st.plotly_chart(fig_fx, width="stretch")
 
     st.subheader("Dettaglio Asset")
     st.dataframe(
@@ -134,7 +140,7 @@ with tab1:
             'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
         }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
                subset=['Gain_EUR', 'Gain_AUD']),
-        use_container_width=True, hide_index=True
+        width="stretch", hide_index=True
     )
 
 with tab2:
@@ -143,7 +149,7 @@ with tab2:
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
+    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True, width="stretch")
     
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
@@ -177,7 +183,7 @@ with tab2:
                 '% Vendi': '{:.0f}%'
             }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
                    subset=['EUR_Gain_Realizzato', 'AUD_Gain_Realizzato']),
-            use_container_width=True, hide_index=True
+            width="stretch", hide_index=True
         )
 
 with tab3:
@@ -193,7 +199,7 @@ with tab3:
             valore_giorno += pos['Qty'] * p_hist
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
     df_h = pd.DataFrame(daily_history)
-    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2024 ad Oggi (€)"), use_container_width=True)
+    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2024 ad Oggi (€)"), width="stretch")
 
 with tab4:
     st.subheader("Data Health Check")
