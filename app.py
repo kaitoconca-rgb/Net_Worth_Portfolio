@@ -27,7 +27,7 @@ st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
-    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "8OU9.DE", "IE00B8GKDB10": "VHYL.MI",
+    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
@@ -37,6 +37,7 @@ def get_fx_data():
     try:
         t = yf.Ticker("EURAUD=X")
         now = float(t.fast_info['last_price'])
+        # Download storico per calcolare l'investito storico in AUD
         hist = yf.download("EURAUD=X", start="2024-01-01", progress=False)['Close']
         if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
         return now, hist
@@ -142,7 +143,6 @@ with tab2:
     
     df_sim = df_raw.copy()
     df_sim['% Vendi'] = 0.0
-    # Aggiunte colonne Prezzo Storico e Prezzo Attuale (Richiesto)
     ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True)
     
     sel = ed[ed['% Vendi'] > 0].copy()
@@ -155,6 +155,7 @@ with tab2:
         def cgt_calc_row(row):
             gain = (row['Att_AUD'] - row['Inv_AUD']) * (row['% Vendi']/100)
             if gain <= 0: return 0.0
+            # Sconto 50% se detenuto > 12 mesi
             mult = 0.5 if (datetime.now() - row['Data'].to_pydatetime()).days > 365 else 1.0
             return gain * mult * (tax_r/100)
         
@@ -182,6 +183,7 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
+    # Grafico storico dal momento del primo investimento significativo
     date_range = pd.date_range(date(2024, 10, 1), date.today())
     daily_history = []
     for d in date_range:
