@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import datetime, date
 from streamlit_gsheets import GSheetsConnection
 
@@ -12,30 +11,25 @@ if "password_correct" not in st.session_state:
     if not st.session_state.get("password_correct"): st.stop()
 
 # --- 1. CONFIGURAZIONE ---
-st.set_page_config(page_title="Executive Portfolio & Tax Console", layout="wide")
+st.set_page_config(page_title="Claudio Executive: Tax & Exit Simulator", layout="wide")
 
 TICKER_MAP = {
     "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
     "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", 
     "IE00B8GKDB10": "VHYL.MI", "IE00B3RBWM25": "VWRL.AS", 
     "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
-    "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE",
-    "LU2885245055": "MANUAL"
+    "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
 
-@st.cache_data(ttl=3600)
-def get_market_data(isin):
-    ticker_sym = TICKER_MAP.get(isin)
-    if not ticker_sym or ticker_sym == "MANUAL": return None, None
+@st.cache_data(ttl=1800)
+def get_live_price(isin):
+    if isin == "LU2885245055": return None
     try:
-        t = yf.Ticker(ticker_sym)
-        price = t.fast_info.get('last_price')
-        hist = t.history(period="2y")['Close']
-        if not hist.empty: hist.index = hist.index.tz_localize(None)
-        return price, hist
-    except: return None, None
+        t = yf.Ticker(TICKER_MAP.get(isin, ""))
+        return t.fast_info.get('last_price')
+    except: return None
 
-# --- 2. CARICAMENTO ---
+# --- 2. CARICAMENTO DATI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 df_raw = conn.read(ttl=0).dropna(subset=['ISIN', 'Cantidad'])
 df_raw.columns = [c.strip() for c in df_raw.columns]
@@ -47,78 +41,84 @@ df = pd.DataFrame({
     'Inv_EUR': pd.to_numeric(df_raw['Importe Cargado'], errors='coerce'),
     'P_Acq': pd.to_numeric(df_raw['Precio'], errors='coerce'),
     'P_Man': pd.to_numeric(df_raw['Price'], errors='coerce')
-}).sort_values('Data')
+})
 
-prices_cache, hists_cache = {}, {}
-for isin in df['ISIN'].unique():
-    p, h = get_market_data(isin)
-    prices_cache[isin] = p
-    hists_cache[isin] = h
+# Cambio e Prezzi
+fx_now = yf.Ticker("EURAUD=X").fast_info.get('last_price', 1.65)
+prices = {isin: get_live_price(isin) for isin in df['ISIN'].unique()}
 
-t_fx = yf.Ticker("EURAUD=X")
-fx_now = t_fx.fast_info.get('last_price', 1.65)
+def get_final_price(r):
+    if pd.notnull(r['P_Man']) and r['P_Man'] > 0: return r['P_Man']
+    return prices.get(r['ISIN']) or r['P_Acq']
 
-# --- 3. LOGICA FISCALE ATO ---
-def apply_price(r):
-    if pd.notnull(r['P_Man']) and r['P_Man'] > 0: return r['P_Man'], "Manual"
-    p = prices_cache.get(r['ISIN'])
-    return (p, "Yahoo") if p else (r['P_Acq'], "Fallback")
+df['Price_Now'] = df.apply(get_final_price, axis=1)
 
-df[['Price_Now', 'Source']] = df.apply(lambda r: pd.Series(apply_price(r)), axis=1)
-
-df['Valore_EUR'] = df['Qty'] * df['Price_Now']
-df['Valore_AUD'] = df['Valore_EUR'] * fx_now
-df['Investito_AUD_Oggi'] = df['Inv_EUR'] * fx_now 
-df['Gain_AUD'] = df['Valore_AUD'] - df['Investito_AUD_Oggi']
+# Calcoli base AUD (Cambio attuale applicato a tutto per visione d'uscita)
+df['Valore_AUD'] = df['Qty'] * df['Price_Now'] * fx_now
+df['Investito_AUD_Attuale'] = df['Inv_EUR'] * fx_now
+df['Gain_Lordo_AUD'] = df['Valore_AUD'] - df['Investito_AUD_Attuale']
 df['Days_Held'] = (pd.Timestamp.now() - df['Data']).dt.days
 
-def calculate_ato_tax(row):
-    if row['Gain_AUD'] <= 0: return 0.0
-    # Sconto 50% se detenuto > 1 anno
-    taxable_gain = row['Gain_AUD'] * 0.5 if row['Days_Held'] > 365 else row['Gain_AUD']
-    return taxable_gain * 0.45 # Aliquota executive stimata
-
-df['Tax_AUD'] = df.apply(calculate_ato_tax, axis=1)
-df['Net_AUD'] = df['Gain_AUD'] - df['Tax_AUD']
-
-# --- 4. INTERFACCIA ---
-t1, t2, t3, t4 = st.tabs(["📊 Performance", "💸 Simulatore Fiscale", "📈 Timeline", "🛠️ Diagnostics"])
+# --- 3. INTERFACCIA ---
+t1, t2, t3 = st.tabs(["📊 Portfolio", "💰 Simulatore Exit Tax", "🛠️ Debug"])
 
 with t1:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Investito (EUR)", f"€{df['Inv_EUR'].sum():,.0f}")
-    c2.metric("Attuale (AUD)", f"${df['Valore_AUD'].sum():,.0f}")
-    c3.metric("Gain Lordo (AUD)", f"${df['Gain_AUD'].sum():,.0f}")
-    c4.metric("Tasse ATO (Est.)", f"-${df['Tax_AUD'].sum():,.0f}", delta_color="inverse")
-
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Valore Totale AUD", f"${df['Valore_AUD'].sum():,.0f}")
+    c2.metric("Gain Lordo AUD", f"${df['Gain_Lordo_AUD'].sum():,.0f}")
+    c3.metric("Cambio EUR/AUD", f"{fx_now:.4f}")
     st.divider()
-    st.subheader("Profitto Netto Post-Tasse per Asset (AUD)")
-    agg_net = df.groupby('ISIN')['Net_AUD'].sum().reset_index()
-    st.plotly_chart(px.bar(agg_net, x='ISIN', y='Net_AUD', color_discrete_sequence=['#2ecc71']), use_container_width=True)
+    st.dataframe(df[['ISIN', 'Data', 'Qty', 'P_Acq', 'Price_Now', 'Valore_AUD']].style.format(precision=2), use_container_width=True)
 
 with t2:
-    st.subheader("Simulatore Cash-out & Tasse ATO")
-    sim_df = df[['ISIN', 'Data', 'P_Acq', 'Price_Now', 'Gain_AUD', 'Days_Held', 'Tax_AUD', 'Net_AUD']].copy()
-    sim_df['50%_Discount'] = sim_df['Days_Held'] > 365
+    st.subheader("Simulatore Vendita Asset (Logica ATO)")
     
-    # FIX: Usiamo .map() invece di .applymap() per Pandas > 2.0
-    st.data_editor(
-        sim_df.style.format({
-            'P_Acq': '{:.2f}', 'Price_Now': '{:.2f}', 
-            'Gain_AUD': '${:,.2f}', 'Tax_AUD': '${:,.2f}', 'Net_AUD': '${:,.2f}'
-        }).map(lambda x: 'background-color: #d4edda' if x is True else '', subset=['50%_Discount']),
+    # PARAMETRI DI SIMULAZIONE
+    col_param1, col_param2 = st.columns(2)
+    with col_param1:
+        percent_to_sell = st.slider("Percentuale di asset da vendere", 0, 100, 100, step=5)
+    with col_param2:
+        tax_rate = st.number_input("Tua aliquota marginale (%)", value=45.0) / 100
+
+    # Calcolo Simulazione
+    sim = df.copy()
+    sim['Qty_Sold'] = sim['Qty'] * (percent_to_sell / 100)
+    sim['Cash_In_Lordo'] = sim['Qty_Sold'] * sim['Price_Now'] * fx_now
+    sim['Cost_Basis_Sold'] = (sim['Inv_EUR'] * (percent_to_sell / 100)) * fx_now
+    sim['Gain_Sim'] = sim['Cash_In_Lordo'] - sim['Cost_Basis_Sold']
+    
+    # Applicazione Automatica Sconto CGT 50%
+    def calc_tax(row):
+        if row['Gain_Sim'] <= 0: return 0.0
+        # Regola ATO: Detenzione > 1 anno = 50% sconto
+        discount = 0.5 if row['Days_Held'] > 365 else 1.0
+        return row['Gain_Sim'] * discount * tax_rate
+
+    sim['Tax_Due'] = sim.apply(calc_tax, axis=1)
+    sim['Net_Cash_In'] = sim['Cash_In_Lordo'] - sim['Tax_Due']
+    sim['CGT_Discount_Applied'] = sim['Days_Held'] > 365
+
+    # Riepilogo Simulazione
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Cash-out Lordo", f"${sim['Cash_In_Lordo'].sum():,.0f}")
+    s2.metric("Tasse ATO Stimate", f"-${sim['Tax_Due'].sum():,.0f}", delta_color="inverse")
+    s3.metric("Netto in Tasca", f"${sim['Net_Cash_In'].sum():,.0f}")
+
+    st.divider()
+    
+    # Tabella Simulazione con formattazione automatica
+    st.write(f"Dettaglio vendita del {percent_to_sell}% delle posizioni:")
+    
+    # Visualizzazione pulita
+    display_cols = ['ISIN', 'Data', 'Qty_Sold', 'Gain_Sim', 'CGT_Discount_Applied', 'Tax_Due', 'Net_Cash_In']
+    st.dataframe(
+        sim[display_cols].style.format({
+            'Qty_Sold': '{:.2f}', 'Gain_Sim': '${:,.2f}', 
+            'Tax_Due': '${:,.2f}', 'Net_Cash_In': '${:,.2f}'
+        }).map(lambda x: 'background-color: #d4edda' if x is True else '', subset=['CGT_Discount_Applied']),
         use_container_width=True
     )
 
 with t3:
-    dr = pd.date_range(df['Data'].min(), date.today(), freq='D')
-    t_data = []
-    for d in dr:
-        sub = df[df['Data'].dt.date <= d.date()]
-        val = sum(r['Qty'] * (hists_cache[r['ISIN']].asof(d) if hists_cache[r['ISIN']] is not None else r['P_Acq']) for _, r in sub.iterrows())
-        t_data.append({'Date': d, 'Value': val})
-    st.plotly_chart(px.area(pd.DataFrame(t_data), x='Date', y='Value', title="Evoluzione Capitale (€)"), use_container_width=True)
-
-with t4:
-    st.write("Diagnostica")
-    st.table(df[['ISIN', 'Price_Now', 'Source']].drop_duplicates())
+    st.write("Diagnostica Prezzi:")
+    st.table(df[['ISIN', 'Price_Now', 'Days_Held']])
