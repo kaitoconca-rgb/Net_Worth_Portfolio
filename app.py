@@ -82,7 +82,7 @@ def get_full_market_context(isins_list, current_ticker_map):
             if not h.empty:
                 prices_hist[isin] = h
                 current_val = float(h.iloc[-1])
-               ultimo_aggiornamento = h.index[-1]
+                ultimo_aggiornamento = h.index[-1]
                 
                 # Se è un dato giornaliero, mostriamo solo la data. 
                 # Se ha l'ora (intraday), mostriamo ora e minuti.
