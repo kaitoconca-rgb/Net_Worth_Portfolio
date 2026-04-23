@@ -200,16 +200,36 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
+    # Baseline: La timeline parte dal 1 Ottobre 2025
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
+    
     for d in date_range:
+        # Convertiamo d in tz-naive per sicurezza nel confronto
+        d_naive = d.replace(tzinfo=None)
+        
         posizioni = df_raw[df_raw['Data'].dt.date <= d.date()]
         valore_giorno = 0
+        
         for _, pos in posizioni.iterrows():
             h = hist_map.get(pos['ISIN'])
-            p_hist = h.asof(d) if (h is not None and not h.empty) else pos['Prezzo_Acq']
+            
+            p_hist = pos['Prezzo_Acq'] # Default
+            if h is not None and not h.empty:
+                # Forza l'indice di Yahoo a essere senza fuso orario prima del confronto
+                h_naive = h.copy()
+                if h_naive.index.tz is not None:
+                    h_naive.index = h_naive.index.tz_localize(None)
+                
+                try:
+                    p_hist = float(h_naive.asof(d_naive))
+                except:
+                    p_hist = pos['Prezzo_Acq']
+            
             valore_giorno += pos['Qty'] * p_hist
+            
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
+    
     df_h = pd.DataFrame(daily_history)
     st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2025 ad Oggi (€)"), width='stretch')
 
