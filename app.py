@@ -82,9 +82,13 @@ def get_full_market_context(isins_list, current_ticker_map):
             if not h.empty:
                 prices_hist[isin] = h
                 current_val = float(h.iloc[-1])
+                # ESTRAZIONE DATA RECENTE DA YAHOO
+                # Prendiamo l'ultimo indice disponibile e lo formattiamo
+                last_market_time = h.index[-1].strftime("%Y-%m-%d %H:%M")
                 logs[isin] = {
                     "status": "LIVE", 
                     "Price": f"€{current_val:.2f}",
+                    "Market Time": last_market_time, # Ora esatta del dato Yahoo
                     "updated": datetime.now().strftime("%H:%M"), 
                     "source": f"Yahoo ({symbol})"
                 }
