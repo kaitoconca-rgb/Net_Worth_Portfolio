@@ -59,39 +59,41 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO ---
-@st.cache_data(ttl=86400)
+# --- 3. PREZZI E STORICO (OTTIMIZZATO DAL 01/10/2025) ---
+@st.cache_data(ttl=3600)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
         symbol = current_ticker_map.get(isin)
-        success = False
-        for _ in range(2): 
-            try:
-                h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
-                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                if not h.empty:
-                    prices_hist[isin] = h
-                    # AGGIUNTO: Prezzo alla colonna Diagnostics
-                    current_val = float(h.iloc[-1])
-                    logs[isin] = {
-                        "status": "LIVE", 
-                        "Price": f"€{current_val:.2f}",
-                        "updated": datetime.now().strftime("%H:%M"), 
-                        "source": f"Yahoo ({symbol})"
-                    }
-                    success = True
-                    break
-            except:
-                time.sleep(1)
-        
-        if not success:
-            prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "Price": "N/A", "updated": "-", "source": "Yahoo Blocked"}
+        try:
+            # Scarichiamo solo quanto strettamente necessario per la Timeline
+            h = yf.download(symbol, start="2025-10-01", progress=False)['Close']
+            if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
             
-    return prices_hist, logs
+            # Se la tabella è arrivata ma l'ultimo valore è NaN, proviamo a recuperare il prezzo "live"
+            if not h.empty and pd.isna(h.iloc[-1]):
+                t_obj = yf.Ticker(symbol)
+                last_price_data = t_obj.history(period="1d")['Close']
+                if not last_price_data.empty:
+                    # Riempiamo l'ultimo valore NaN con il prezzo live trovato
+                    h.iloc[-1] = last_price_data.iloc[-1]
 
+            if not h.empty:
+                prices_hist[isin] = h
+                current_val = float(h.iloc[-1])
+                logs[isin] = {
+                    "status": "LIVE", 
+                    "Price": f"€{current_val:.2f}",
+                    "updated": datetime.now().strftime("%H:%M"), 
+                    "source": f"Yahoo ({symbol})"
+                }
+            else:
+                raise ValueError()
+        except:
+            prices_hist[isin] = None
+            logs[isin] = {"status": "FALLBACK", "Price": "N/A", "updated": "-", "source": f"Error with {symbol}"}
+    return prices_hist, logs
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
