@@ -25,9 +25,10 @@ if not check_password():
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
+# AGGIORNATO: Ticker 36B2.MU per N26 Japan ETF
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
-    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "8OU9.DE", "IE00B8GKDB10": "VHYL.MI",
+    "IE0008471009": "EXW1.DE", "IE00BFM15T99": "36B2.MU", "IE00B8GKDB10": "VHYL.MI",
     "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
@@ -37,7 +38,6 @@ def get_fx_data():
     try:
         t = yf.Ticker("EURAUD=X")
         now = float(t.fast_info['last_price'])
-        # Download storico per calcolare l'investito storico in AUD
         hist = yf.download("EURAUD=X", start="2024-01-01", progress=False)['Close']
         if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
         return now, hist
@@ -59,26 +59,26 @@ df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
-# --- 3. PREZZI E STORICO ---
+# --- 3. PREZZI E STORICO (CACHE FORZATA) ---
 @st.cache_data(ttl=3600)
-def get_full_market_context(isins_list):
+def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
     logs = {}
     for isin in isins_list:
-        symbol = ticker_map.get(isin)
+        symbol = current_ticker_map.get(isin)
         try:
             h = yf.download(symbol, start="2024-09-01", progress=False)['Close']
             if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
             if not h.empty:
                 prices_hist[isin] = h
-                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": "Yahoo"}
+                logs[isin] = {"status": "LIVE", "updated": datetime.now().strftime("%H:%M"), "source": f"Yahoo ({symbol})"}
             else: raise ValueError()
         except:
             prices_hist[isin] = None
-            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": "Acq Price"}
+            logs[isin] = {"status": "FALLBACK", "updated": "-", "source": f"Error with {symbol}"}
     return prices_hist, logs
 
-hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist())
+hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
     if pd.notnull(row['Manual_Price']) and row['Manual_Price'] > 0: return row['Manual_Price']
@@ -155,7 +155,6 @@ with tab2:
         def cgt_calc_row(row):
             gain = (row['Att_AUD'] - row['Inv_AUD']) * (row['% Vendi']/100)
             if gain <= 0: return 0.0
-            # Sconto 50% se detenuto > 12 mesi
             mult = 0.5 if (datetime.now() - row['Data'].to_pydatetime()).days > 365 else 1.0
             return gain * mult * (tax_r/100)
         
@@ -183,7 +182,6 @@ with tab2:
 
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
-    # Grafico storico dal momento del primo investimento significativo
     date_range = pd.date_range(date(2024, 10, 1), date.today())
     daily_history = []
     for d in date_range:
