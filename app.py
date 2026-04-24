@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
 import time
+import websocket
+import json
 from streamlit_gsheets import GSheetsConnection
 
 # --- 0. PROTEZIONE ---
@@ -58,6 +60,53 @@ df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
 df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') 
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
+
+#WEBSOCKET
+
+def fetch_live_prices(symbols, timeout=3):
+    live_data = {}
+
+    def on_message(ws, message):
+        try:
+            msg = json.loads(message)
+            symbol = msg.get("id")
+            price = msg.get("price")
+            ts = msg.get("time")
+            if symbol and price and ts:
+                live_data[symbol] = {
+                    "price": float(price),
+                    "timestamp": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+                }
+        except:
+            pass
+
+    ws = websocket.WebSocketApp(
+        "wss://streamer.finance.yahoo.com",
+        on_message=on_message
+    )
+
+    import threading
+    t = threading.Thread(target=lambda: ws.run_forever())
+    t.daemon = True
+    t.start()
+
+    time.sleep(0.2)
+
+    try:
+        ws.send(json.dumps({"subscribe": symbols}))
+    except:
+        pass
+
+    time.sleep(timeout)
+
+    try:
+        ws.close()
+    except:
+        pass
+
+    return live_data
+
+
 
 # --- 3. PREZZI E STORICO (OTTIMIZZATO DAL 01/10/2025) ---
 @st.cache_data(ttl=3600)
@@ -117,7 +166,16 @@ def get_full_market_context(isins_list, current_ticker_map):
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
 def get_current_price(row):
+    symbol = ticker_map.get(row['ISIN'])
     if pd.notnull(row['Manual_Price']) and row['Manual_Price'] > 0: return row['Manual_Price']
+    
+     # 2. Live WebSocket price (solo se Diagnostics ha aggiornato)
+    live = st.session_state.get("live_prices", {})
+    if symbol in live:
+        return live[symbol]["price"]
+    
+    
+    
     h = hist_map.get(row['ISIN'])
     if h is not None and not h.empty: return float(h.iloc[-1])
     return row['Prezzo_Acq']
@@ -254,6 +312,35 @@ with tab3:
 
 with tab4:
     st.subheader("Data Health Check")
+
+    if st.button("🔄 Refresh Live Prices (WebSocket)"):
+        st.info("Fetching live prices…")
+        symbols = list(ticker_map.values())
+        st.session_state["live_prices"] = fetch_live_prices(symbols, timeout=3)
+        st.success(f"Updated {len(st.session_state['live_prices'])} tickers.")
+
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
-    # Ora la tabella mostrerà anche la colonna "Price"
-    st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
+
+    live = st.session_state.get("live_prices", {})
+
+    diag_table = []
+
+    for isin, symbol in ticker_map.items():
+        row = {"ISIN": isin, "Symbol": symbol}
+
+        if symbol in live:
+            row["Status"] = "LIVE"
+            row["Price"] = f"€{live[symbol]['price']:.2f}"
+            row["Timestamp"] = live[symbol]["timestamp"]
+            row["Source"] = "Yahoo WebSocket"
+        else:
+            d = diag_logs.get(isin, {})
+            row["Status"] = d.get("status", "FALLBACK")
+            row["Price"] = d.get("Price", "N/A")
+            row["Timestamp"] = d.get("Market Time", "-")
+            row["Source"] = d.get("source", "Yahoo EOD")
+
+        diag_table.append(row)
+
+    st.table(pd.DataFrame(diag_table))
+
