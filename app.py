@@ -234,59 +234,67 @@ with tab2:
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
-    # 1. Definiamo il range temporale
+    # 1. Range temporale e preparazione dati
     date_range = pd.date_range(date(2025, 10, 1), date.today())
-    daily_history = []
-    
-    # Prepariamo la colonna data per il filtro
     df_raw['Data_Solo'] = df_raw['Data'].dt.date
+    all_isins = df_raw['ISIN'].unique()
     
-    # Prendiamo TUTTI gli ISIN che sono passati dal portafoglio, anche quelli venduti
-    tutti_gli_isin = df_raw['ISIN'].unique()
-    
+    daily_data = []
+
+    # 2. Calcolo granulare giorno per giorno
     for d in date_range:
-        d_date = d.date()
+        current_date = d.date()
+        # Calcoliamo il saldo (Qty) accumulato fino a questo giorno per ogni ISIN
+        snapshot = df_raw[df_raw['Data_Solo'] <= current_date].groupby('ISIN')['Qty'].sum()
         
-        # Filtriamo le transazioni avvenute fino a questa data 'd'
-        snap = df_raw[df_raw['Data_Solo'] <= d_date].groupby('ISIN')['Qty'].sum()
-        
-        valore_giorno = 0
-        for isin in tutti_gli_isin:
-            # Recuperiamo la quantità posseduta a quella data specifica
-            qty = snap.get(isin, 0)
+        for isin in all_isins:
+            qty = snapshot.get(isin, 0)
             
-            # Se la quantità era 0 in quel giorno (non ancora comprato o già venduto), saltiamo
+            # Anche se la Qty è 0, vogliamo che il grafico lo sappia (per "chiudere" l'area)
             if abs(qty) < 0.001:
+                daily_data.append({'Date': d, 'ISIN': isin, 'MarketValue': 0.0})
                 continue
-            
-            # Recuperiamo il prezzo storico
+                
+            # Prezzo storico
             h = hist_map.get(isin)
+            p_hist = 0
             if h is not None and hasattr(h, 'asof'):
                 try:
                     p_hist = h.asof(d)
-                    if pd.isna(p_hist):
-                        p_hist = 0
+                    if pd.isna(p_hist): p_hist = 0
                 except:
                     p_hist = 0
-            else:
-                # Fallback al prezzo di acquisto se non abbiamo ticker
-                p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
-                
-            valore_giorno += qty * p_hist
             
-        daily_history.append({'Date': d, 'MarketValue': valore_giorno})
-        
-    # 4. Generazione del Grafico
-    df_h = pd.DataFrame(daily_history)
-    if not df_h.empty:
-        # Usiamo un'area chart per vedere l'accumulo del valore nel tempo
-        fig_timeline = px.area(df_h, x='Date', y='MarketValue', 
-                              title="Evoluzione Capitale (€) - Storico Posizioni")
+            # Se non c'è prezzo nel ticker, usa il prezzo di acquisto del ledger
+            if p_hist == 0:
+                p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
+            
+            daily_data.append({
+                'Date': d, 
+                'ISIN': isin, 
+                'MarketValue': float(qty * p_hist)
+            })
+
+    # 3. Creazione DataFrame per il grafico
+    df_timeline = pd.DataFrame(daily_data)
+
+    # 4. Rendering del grafico
+    if not df_timeline.empty:
+        # Usiamo 'color' per separare i fondi nell'area chart
+        fig_timeline = px.area(
+            df_timeline, 
+            x='Date', 
+            y='MarketValue', 
+            color='ISIN',  # <--- Questo è fondamentale per vedere il fondo LU separato dagli altri
+            title="Evoluzione Capitale (€) per Asset",
+            line_group='ISIN'
+        )
         
         fig_timeline.update_layout(
             hovermode="x unified",
-            yaxis_title="Valore di Mercato (€)",
-            xaxis_title="Data"
+            yaxis_title="Valore (€)",
+            xaxis_title="Timeline",
+            legend_title="Asset (ISIN)"
         )
         st.plotly_chart(fig_timeline, use_container_width=True)
 with tab4:
