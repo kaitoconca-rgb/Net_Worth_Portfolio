@@ -318,13 +318,14 @@ with tab1:
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
 
     if not df_vendite.empty:
+        df_vendite = df_vendite.rename(columns={'Data': 'Data Vendita'})
         # Funzione per calcolare le metriche aggregate e i prezzi
         def get_asset_history(row):
             isin = row['ISIN']
             
             # Recupero storici acquisti
             buys = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
-            
+            data_acquisto = buys['Data'].min() if not buys.empty else None
             total_bought = buys['Qty'].sum() if not buys.empty else 0
             total_inv_eur_buy = buys['Inv_EUR'].sum() if not buys.empty else 0
             total_inv_aud_buy = buys['Inv_AUD'].sum() if not buys.empty else 0
@@ -343,6 +344,7 @@ with tab1:
             avg_fx_sell = inv_aud_sell / inv_eur_sell if inv_eur_sell != 0 else 0
             
             return pd.Series({
+                'Data Acquisto': data_acquisto,
                 'Tot_Qty_Acquistata': total_bought,
                 'Prezzo_Acquisto_PMC': pmc_eur,
                 'Valore_Acquisto_Tot_EUR': total_inv_eur_buy,
@@ -361,18 +363,29 @@ with tab1:
 
         # 2. Definizione colonne desiderate
         desired_cols = [
-            'ISIN', 'Data', 'Qty', 'Tot_Qty_Acquistata', 
-            'Prezzo_Acquisto_PMC', 'Valore_Acquisto_Tot_EUR', 'FX_Acquisto_Medio',
-            'Prezzo_Vendita_Unitario', 'Valore_Vendita_EUR', 'FX_Vendita',
-            'Profit_EUR', 'Profit_AUD'
+            'ISIN', 
+            'Data Acquisto', 
+            'Data Vendita', 
+            'Qty', 
+            'Tot_Qty_Acquistata', 
+            'Prezzo_Acquisto_PMC', 
+            'Valore_Acquisto_Tot_EUR', 
+            'FX_Acquisto_Medio',
+            'Prezzo_Vendita_Unitario', 
+            'Valore_Vendita_EUR', 
+            'FX_Vendita',
+            'Profit_EUR', 
+            'Profit_AUD'
         ]
         
         # Filtriamo SOLO le colonne che esistono effettivamente nel DataFrame
         final_cols = [c for c in desired_cols if c in df_vendite.columns]
 
-        # 3. Visualizzazione con formattazione sicura
+      # 3. Visualizzazione
         st.dataframe(
             df_vendite[final_cols].style.format({
+                'Data Acquisto': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "-",
+                'Data Vendita': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "-",
                 'Qty': '{:.2f}',
                 'Tot_Qty_Acquistata': '{:.2f}',
                 'Prezzo_Acquisto_PMC': '€{:.4f}',
@@ -383,7 +396,7 @@ with tab1:
                 'FX_Vendita': '{:.4f}',
                 'Profit_EUR': '€{:,.2f}',
                 'Profit_AUD': '${:,.2f}'
-            }, na_rep="-"),
+            }),
             use_container_width=True
         )
     else:
