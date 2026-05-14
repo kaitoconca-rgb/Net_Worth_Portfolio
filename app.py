@@ -310,32 +310,32 @@ with tab1:
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
-   
     st.subheader("Storico Operazioni di Vendita")
     
     # 1. Filtro vendite (Tipo = SELL)
-    # Usiamo str.upper() per evitare problemi di case-sensitivity
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
 
     if not df_vendite.empty:
+        # Rinominiamo subito la colonna Data originale
         df_vendite = df_vendite.rename(columns={'Data': 'Data Vendita'})
-        # Funzione per calcolare le metriche aggregate e i prezzi
+
         def get_asset_history(row):
             isin = row['ISIN']
             
-            # Recupero storici acquisti
+            # Recupero storici acquisti per questo specifico ISIN
             buys = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
+            
+            # Estraiamo la data del primo acquisto (o l'ultima prima della vendita)
             data_acquisto = buys['Data'].min() if not buys.empty else None
+            
             total_bought = buys['Qty'].sum() if not buys.empty else 0
             total_inv_eur_buy = buys['Inv_EUR'].sum() if not buys.empty else 0
             total_inv_aud_buy = buys['Inv_AUD'].sum() if not buys.empty else 0
             
-            # Prezzo Medio di Carico (PMC)
+            # Calcoli Prezzi e Cambi
             pmc_eur = total_inv_eur_buy / total_bought if total_bought != 0 else 0
-            # Cambio medio acquisto (AUD/EUR)
             avg_fx_buy = total_inv_aud_buy / total_inv_eur_buy if total_inv_eur_buy != 0 else 0
             
-            # Dati vendita corrente
             inv_eur_sell = abs(row['Inv_EUR'])
             inv_aud_sell = abs(row['Inv_AUD'])
             qty_sold = abs(row['Qty'])
@@ -354,14 +354,12 @@ with tab1:
                 'FX_Vendita': avg_fx_sell
             })
 
-        # Calcolo e pulizia colonne
+        # Calcolo e pulizia
         history_results = df_vendite.apply(get_asset_history, axis=1)
-        
-        # Rimuoviamo colonne esistenti con lo stesso nome per evitare duplicati che causano KeyError
         df_vendite = df_vendite.drop(columns=[c for c in history_results.columns if c in df_vendite.columns])
         df_vendite = pd.concat([df_vendite, history_results], axis=1)
 
-        # 2. Definizione colonne desiderate
+        # 2. Definizione colonne desiderate con i nuovi nomi
         desired_cols = [
             'ISIN', 
             'Data Acquisto', 
@@ -378,10 +376,9 @@ with tab1:
             'Profit_AUD'
         ]
         
-        # Filtriamo SOLO le colonne che esistono effettivamente nel DataFrame
         final_cols = [c for c in desired_cols if c in df_vendite.columns]
 
-      # 3. Visualizzazione
+        # 3. Visualizzazione
         st.dataframe(
             df_vendite[final_cols].style.format({
                 'Data Acquisto': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "-",
@@ -400,7 +397,7 @@ with tab1:
             use_container_width=True
         )
     else:
-        st.info("Nessuna operazione di vendita (SELL) rilevata.")
+        st.info("Nessuna operazione di vendita registrata.")
     st.divider()
 
     # --- 4. GRAFICI ---
