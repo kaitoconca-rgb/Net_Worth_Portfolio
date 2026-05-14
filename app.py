@@ -156,47 +156,59 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "�
 with tab1:
     st.header("Performance Complessiva")
 
-    # --- 1. LOGICA DI CALCOLO INTEGRATA (Aperte + Chiuse) ---
+    # --- 1. VERIFICA E PREPARAZIONE COLONNE ---
+    # Controlliamo come si chiama la colonna AUD nel tuo foglio
+    col_aud = 'Prezzo_Acq_AUD' if 'Prezzo_Acq_AUD' in df_raw.columns else None
     
-    # Calcoliamo il totale effettivamente uscito dalle tue tasche (Acquisti storici)
-    df_buys = df_raw[df_raw['Qty'] > 0]
-    total_invested_eur = (df_buys['Qty'] * df_buys['Prezzo_Acq']).sum()
-    total_invested_aud = (df_buys['Qty'] * df_buys['Prezzo_Acq_AUD']).sum()
+    # Se non esiste, cerchiamo 'Prezzo_AUD' o simili
+    if not col_aud:
+        for c in df_raw.columns:
+            if 'AUD' in c.upper() and 'PREZZO' in c.upper():
+                col_aud = c
+                break
 
-    # Calcoliamo il valore di mercato attuale (solo per chi ha Qty > 0 oggi)
-    df_totals = df_raw.groupby('ISIN').agg({'Qty': 'sum'}).reset_index()
-    active_isins = df_totals[df_totals['Qty'] > 0.001]['ISIN'].tolist()
+    # --- 2. LOGICA DI CALCOLO INTEGRATA ---
     
-    current_market_value_eur = 0
+    # Calcolo Investito Storico (Acquisti)
+    df_buys = df_raw[df_raw['Qty'] > 0].copy()
+    total_invested_eur = (df_buys['Qty'] * df_buys['Prezzo_Acq']).sum()
     
-    # Calcoliamo anche i profitti per singolo asset per il grafico FX Impact
+    # Se abbiamo la colonna AUD la usiamo, altrimenti convertiamo dall'EUR col cambio attuale
+    if col_aud:
+        total_invested_aud = (df_buys['Qty'] * df_buys[col_aud]).sum()
+    else:
+        total_invested_aud = total_invested_eur / FX_AUD_EUR
+
+    # Calcolo Valore Attuale e Performance per Asset
     asset_performance = []
+    current_market_value_eur = 0
 
     for isin in df_raw['ISIN'].unique():
-        # Dati dell'asset
         asset_data = df_raw[df_raw['ISIN'] == isin]
         net_qty = asset_data['Qty'].sum()
         
-        # Prezzo attuale (se venduto, il prezzo attuale non conta per il valore, ma per il calcolo profitto sì)
+        # Prezzo attuale
         h = hist_map.get(isin)
         p_now = h.iloc[-1] if (h is not None and not h.empty) else asset_data['Prezzo_Acq'].iloc[0]
         
-        # Valore attuale in portafoglio
+        # Valore attuale
         v_at_market = max(0, net_qty * p_now)
         current_market_value_eur += v_at_market
         
-        # Profitto Totale (Realizzato + Non Realizzato)
-        # Formula: (Valore Attuale + Incassi da vendite) - (Costi di acquisto)
-        cash_in = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq']).sum()
-        cash_out = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq']).sum()
+        # Profitto Realizzato + Non Realizzato (EUR)
+        cash_in_eur = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq']).sum()
+        cash_out_eur = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq']).sum()
+        profit_eur = (v_at_market + cash_in_eur) - cash_out_eur
         
-        profit_eur = (v_at_market + cash_in) - cash_out
-        
-        # Stessa logica per AUD (usando i prezzi AUD nel ledger)
-        cash_in_aud = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq_AUD']).sum()
-        cash_out_aud = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq_AUD']).sum()
-        v_at_market_aud = v_at_market / FX_AUD_EUR
-        profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
+        # Profitto Realizzato + Non Realizzato (AUD)
+        if col_aud:
+            cash_in_aud = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0][col_aud]).sum()
+            cash_out_aud = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0][col_aud]).sum()
+            v_at_market_aud = v_at_market / FX_AUD_EUR
+            profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
+        else:
+            profit_aud = profit_eur / FX_AUD_EUR
+            v_at_market_aud = v_at_market / FX_AUD_EUR
         
         asset_performance.append({
             'ISIN': isin,
@@ -207,7 +219,7 @@ with tab1:
 
     df_perf = pd.DataFrame(asset_performance)
     
-    # Calcolo KPI Globali
+    # KPI Globali
     total_profit_eur = df_perf['Profit_EUR'].sum()
     total_profit_aud = df_perf['Profit_AUD'].sum()
     current_value_aud = current_market_value_eur / FX_AUD_EUR
@@ -215,7 +227,7 @@ with tab1:
     roi_eur = (total_profit_eur / total_invested_eur) * 100 if total_invested_eur != 0 else 0
     roi_aud = (total_profit_aud / total_invested_aud) * 100 if total_invested_aud != 0 else 0
 
-    # --- 2. VISUALIZZAZIONE KPI (LAYOUT ORIGINALE) ---
+    # --- 3. VISUALIZZAZIONE KPI ---
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Investito EUR (Storico)", f"€{total_invested_eur:,.0f}")
@@ -229,19 +241,16 @@ with tab1:
 
     st.divider()
 
-    # --- 3. ALLOCATION % E FX IMPACT ---
+    # --- 4. GRAFICI ---
     col_left, col_right = st.columns(2)
-    
     with col_left:
         st.subheader("Allocation %")
-        # Mostriamo solo chi ha valore attuale > 0
         df_pie = df_perf[df_perf['Current_Value'] > 0]
         fig_pie = px.pie(df_pie, values='Current_Value', names='ISIN', hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
         
     with col_right:
         st.subheader("FX Impact: Profitto EUR vs AUD")
-        # Qui LU apparirà perché ha un Profit_EUR/AUD anche se Current_Value è 0
         fig_bar = px.bar(
             df_perf, 
             x='ISIN', 
@@ -251,7 +260,6 @@ with tab1:
             color_discrete_map={'Profit_EUR': '#1f77b4', 'Profit_AUD': '#2ca02c'}
         )
         st.plotly_chart(fig_bar, use_container_width=True)
-
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
     tax_brackets = {
