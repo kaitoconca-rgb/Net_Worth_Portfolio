@@ -208,7 +208,55 @@ for isin in df_raw['ISIN'].unique():
     })
 
 df_perf = pd.DataFrame(asset_performance)
+# --- NUOVA LOGICA PER DETTAGLIO VENDITE (SPOSTA SOPRA I TAB) ---
+vendite_effettuate = []
 
+# Filtriamo solo le operazioni di vendita dal registro grezzo
+df_sells = df_raw[df_raw['Tipo'] == 'SELL'].copy()
+
+for _, row in df_sells.iterrows():
+    isin = row['ISIN']
+    data_v = row['Data']
+    qty_v = abs(row['Qty'])
+    prezzo_v = row['Prezzo_Acq'] # Prezzo a cui hai venduto
+    incasso_eur = abs(row['Inv_EUR'])
+    incasso_aud = abs(row['Inv_AUD'])
+    
+    # Per calcolare il profitto di QUESTA vendita, dobbiamo trovare il prezzo medio di carico (PMC)
+    # degli acquisti precedenti a questa data per quello specifico ISIN
+    acquisti_precedenti = df_raw[(df_raw['ISIN'] == isin) & 
+                                 (df_raw['Tipo'] == 'BUY') & 
+                                 (df_raw['Data'] < data_v)]
+    
+    if not acquisti_precedenti.empty:
+        pmc_eur = acquisti_precedenti['Inv_EUR'].sum() / acquisti_precedenti['Qty'].sum()
+        pmc_aud = acquisti_precedenti['Inv_AUD'].sum() / acquisti_precedenti['Qty'].sum()
+        
+        costo_base_eur = qty_v * pmc_eur
+        costo_base_aud = qty_v * pmc_aud
+        
+        profit_eur = incasso_eur - costo_base_eur
+        profit_aud = incasso_aud - costo_base_aud
+        
+        # Cambio all'acquisto (PMC) vs Cambio alla vendita (Effettivo)
+        fx_acquisto = pmc_aud / pmc_eur
+        fx_vendita = incasso_aud / incasso_eur
+    else:
+        # Fallback se non trova acquisti (errore dati)
+        profit_eur = profit_aud = fx_acquisto = fx_vendita = 0
+
+    vendite_effettuate.append({
+        'Data': data_v,
+        'ISIN': isin,
+        'Quantità': qty_v,
+        'Prezzo Vendita': prezzo_v,
+        'FX Acquisto (PMC)': fx_acquisto,
+        'FX Vendita': fx_vendita,
+        'Profit_EUR': profit_eur,
+        'Profit_AUD': profit_aud
+    })
+
+df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
 # --- 4. INTERFACCIA ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "🛠️ Diagnostics"])
 
@@ -262,25 +310,28 @@ with tab1:
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
-
-    # --- ROW 3: POSIZIONI CHIUSE (Dettaglio date e cambi) ---
-    if not df_realized.empty:
-        with st.expander("Dettaglio Posizioni Chiuse (Storico Vendite)", expanded=True):
-            # Formattazione della tabella per includere date e cambi
-            st.dataframe(
-                df_realized[[
-                    'ISIN', 'Data Acquisto', 'Data Vendita', 
-                    'FX Acquisto', 'FX Vendita', 'Profit_EUR', 'Profit_AUD'
-                ]].style.format({
-                    'FX Acquisto': '{:.4f}',
-                    'FX Vendita': '{:.4f}',
-                    'Profit_EUR': '€{:,.2f}',
-                    'Profit_AUD': '${:,.2f}'
-                }), 
-                hide_index=True, 
-                use_container_width=True
-            )
-
+    st.subheader("Storico Operazioni di Vendita")
+    
+    if not df_dettaglio_vendite.empty:
+        st.write("Questa tabella mostra ogni singola vendita effettuata, calcolando il profitto rispetto al prezzo medio di carico precedente.")
+        
+        # Ordiniamo per data più recente
+        df_display_vendite = df_dettaglio_vendite.sort_values('Data', ascending=False)
+        
+        st.dataframe(
+            df_display_vendite.style.format({
+                'Quantità': '{:,.2f}',
+                'Prezzo Vendita': '€{:,.2f}',
+                'FX Acquisto (PMC)': '{:.4f}',
+                'FX Vendita': '{:.4f}',
+                'Profit_EUR': '€{:,.2f}',
+                'Profit_AUD': '${:,.2f}'
+            }), 
+            hide_index=True, 
+            use_container_width=True
+        )
+    else:
+        st.info("Nessuna operazione di vendita registrata nel ledger.")
     st.divider()
 
     # --- 4. GRAFICI ---
