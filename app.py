@@ -310,7 +310,7 @@ with tab1:
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
-  st.subheader("Storico Operazioni di Vendita")
+    st.subheader("Storico Operazioni di Vendita")
     
     # 1. Filtro Vendite
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
