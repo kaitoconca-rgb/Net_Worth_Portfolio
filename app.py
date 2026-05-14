@@ -232,39 +232,47 @@ with tab2:
         r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - sel['Tassa_Stima'].sum()):,.2f}")
 
 with tab3:
-   st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
+    st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
+    
+    # 1. Define the range (Starting from your October milestone)
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
     
+    # 2. Helper column for filtering
     df_raw['Data_Solo'] = df_raw['Data'].dt.date
     
+    # 3. Calculate daily value
     for d in date_range:
         d_date = d.date()
         snap = df_raw[df_raw['Data_Solo'] <= d_date].groupby('ISIN')['Qty'].sum()
         
         valore_giorno = 0
         for isin, qty in snap.items():
-            if abs(qty) < 0.001: continue
+            if abs(qty) < 0.001: 
+                continue
             
             h = hist_map.get(isin)
-            # Safety check: Ensure h is a valid Series/DataFrame before calling asof
             if h is not None and hasattr(h, 'asof'):
                 try:
                     p_hist = h.asof(d)
-                    if pd.isna(p_hist): p_hist = 0
+                    if pd.isna(p_hist): 
+                        p_hist = 0
                 except:
                     p_hist = 0
             else:
-                # Fallback: use the first purchase price if no history found
+                # Fallback to initial purchase price if no ticker history
                 p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
                 
             valore_giorno += qty * p_hist
             
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
         
+    # 4. Display the Chart
     df_h = pd.DataFrame(daily_history)
-    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale (€) - Basato su Quantità Storiche"), use_container_width=True)
-
+    if not df_h.empty:
+        st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', 
+                               title="Capitale (€) - Basato su Quantità Storiche"), 
+                        use_container_width=True)
 with tab4:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
