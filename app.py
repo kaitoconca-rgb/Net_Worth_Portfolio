@@ -163,28 +163,13 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "�
 with tab1:
     st.header("Performance Complessiva")
 
-    # --- 1. VERIFICA E PREPARAZIONE COLONNE ---
-    # Controlliamo come si chiama la colonna AUD nel tuo foglio
-    col_aud = 'Prezzo_Acq_AUD' if 'Prezzo_Acq_AUD' in df_raw.columns else None
+    # --- 1. LOGICA DI CALCOLO STORICA (AUD basato sulla data di acquisto) ---
     
-    # Se non esiste, cerchiamo 'Prezzo_AUD' o simili
-    if not col_aud:
-        for c in df_raw.columns:
-            if 'AUD' in c.upper() and 'PREZZO' in c.upper():
-                col_aud = c
-                break
-
-    # --- 2. LOGICA DI CALCOLO INTEGRATA ---
-    
-    # Calcolo Investito Storico (Acquisti)
-    df_buys = df_raw[df_raw['Qty'] > 0].copy()
-    total_invested_eur = (df_buys['Qty'] * df_buys['Prezzo_Acq']).sum()
-    
-    # Se abbiamo la colonna AUD la usiamo, altrimenti convertiamo dall'EUR col cambio attuale
-    if col_aud:
-        total_invested_aud = (df_buys['Qty'] * df_buys[col_aud]).sum()
-    else:
-        total_invested_aud = total_invested_eur / FX_AUD_EUR
+    # Calcolo Investito Storico (Somma dei flussi in uscita documentati nell'Excel)
+    # Usiamo le colonne Inv_EUR e Inv_AUD che hai già popolato nel df_raw al punto 2 dello script
+    df_buys = df_raw[df_raw['Tipo'] == 'BUY'].copy()
+    total_invested_eur = df_buys['Inv_EUR'].sum()
+    total_invested_aud = df_buys['Inv_AUD'].sum()
 
     # Calcolo Valore Attuale e Performance per Asset
     asset_performance = []
@@ -194,34 +179,35 @@ with tab1:
         asset_data = df_raw[df_raw['ISIN'] == isin]
         net_qty = asset_data['Qty'].sum()
         
-        # Prezzo attuale
+        # Prezzo attuale (usando la tua funzione get_current_val o logica simile)
         h = hist_map.get(isin)
         p_now = h.iloc[-1] if (h is not None and not h.empty) else asset_data['Prezzo_Acq'].iloc[0]
         
-        # Valore attuale
-        v_at_market = max(0, net_qty * p_now)
-        current_market_value_eur += v_at_market
+        # Valore attuale di mercato (Solo per posizioni aperte)
+        v_at_market_eur = max(0, net_qty * p_now)
+        current_market_value_eur += v_at_market_eur
         
-        # Profitto Realizzato + Non Realizzato (EUR)
-        cash_in_eur = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq']).sum()
-        cash_out_eur = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq']).sum()
-        profit_eur = (v_at_market + cash_in_eur) - cash_out_eur
+        # --- CALCOLO PROFITTO (Realizzato + Non Realizzato) ---
+        # Profit = (Valore Attuale + Somma Incassi Vendite) - Somma Costi Acquisti
         
-        # Profitto Realizzato + Non Realizzato (AUD)
-        if col_aud:
-            cash_in_aud = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0][col_aud]).sum()
-            cash_out_aud = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0][col_aud]).sum()
-            v_at_market_aud = v_at_market / FX_AUD_EUR
-            profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
-        else:
-            profit_aud = profit_eur / FX_AUD_EUR
-            v_at_market_aud = v_at_market / FX_AUD_EUR
+        # EUR
+        cash_in_eur = asset_data[asset_data['Tipo'] == 'SELL']['Inv_EUR'].abs().sum()
+        cash_out_eur = asset_data[asset_data['Tipo'] == 'BUY']['Inv_EUR'].sum()
+        profit_eur = (v_at_market_eur + cash_in_eur) - cash_out_eur
+        
+        # AUD (Qui sta la correzione: usiamo i valori storici calcolati riga per riga)
+        cash_in_aud = asset_data[asset_data['Tipo'] == 'SELL']['Inv_AUD'].abs().sum()
+        cash_out_aud = asset_data[asset_data['Tipo'] == 'BUY']['Inv_AUD'].sum()
+        
+        # Per il valore attuale in AUD usiamo il cambio spot (perché è il valore di oggi)
+        v_at_market_aud = v_at_market_eur * fx_now 
+        profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
         
         asset_performance.append({
             'ISIN': isin,
             'Profit_EUR': profit_eur,
             'Profit_AUD': profit_aud,
-            'Current_Value': v_at_market
+            'Current_Value': v_at_market_eur
         })
 
     df_perf = pd.DataFrame(asset_performance)
@@ -229,26 +215,26 @@ with tab1:
     # KPI Globali
     total_profit_eur = df_perf['Profit_EUR'].sum()
     total_profit_aud = df_perf['Profit_AUD'].sum()
-    current_value_aud = current_market_value_eur / FX_AUD_EUR
+    current_market_value_aud = current_market_value_eur * fx_now
     
     roi_eur = (total_profit_eur / total_invested_eur) * 100 if total_invested_eur != 0 else 0
     roi_aud = (total_profit_aud / total_invested_aud) * 100 if total_invested_aud != 0 else 0
 
-    # --- 3. VISUALIZZAZIONE KPI ---
+    # --- 2. VISUALIZZAZIONE KPI ---
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Investito EUR (Storico)", f"€{total_invested_eur:,.0f}")
         st.metric("Valore Attuale EUR", f"€{current_market_value_eur:,.0f}", f"€{total_profit_eur:,.0f}")
     with c2:
         st.metric("Investito AUD (Storico)", f"${total_invested_aud:,.0f}")
-        st.metric("Valore Attuale AUD", f"${current_value_aud:,.0f}", f"${total_profit_aud:,.0f}")
+        st.metric("Valore Attuale AUD", f"${current_market_value_aud:,.0f}", f"${total_profit_aud:,.0f}")
     with c3:
         st.metric("ROI Totale (EUR)", f"{roi_eur:.2f}%")
         st.metric("ROI Totale (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
 
-    # --- 4. GRAFICI ---
+    # --- 3. GRAFICI ---
     col_left, col_right = st.columns(2)
     with col_left:
         st.subheader("Allocation %")
