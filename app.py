@@ -312,43 +312,70 @@ with tab1:
     st.divider()
     st.subheader("Storico Operazioni di Vendita")
     
-    # 1. Filtro Vendite
+    # 1. Filtro vendite
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
 
     if not df_vendite.empty:
-        # 2. Recupero Prezzo di Acquisto (PMC)
-        def get_buy_price(isin):
-            buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
-            if not buy_ops.empty:
-                # Usiamo il campo Prezzo_Acq che è quello che hai popolato nello sheet
-                return buy_ops['Prezzo_Acq'].iloc[-1]
-            return 0
+        # Funzione per calcolare le metriche aggregate dell'asset venduto
+        def get_asset_history(row):
+            isin = row['ISIN']
+            data_vendita = row['Data']
+            
+            # Storico acquisti per questo ISIN
+            buys = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
+            
+            total_bought = buys['Qty'].sum()
+            total_inv_eur_buy = buys['Inv_EUR'].sum()
+            total_inv_aud_buy = buys['Inv_AUD'].sum()
+            
+            # Cambio medio acquisto (weighted average)
+            avg_fx_buy = total_inv_aud_buy / total_inv_eur_buy if total_inv_eur_buy != 0 else 0
+            
+            # Dati vendita corrente
+            inv_eur_sell = abs(row['Inv_EUR'])
+            inv_aud_sell = abs(row['Inv_AUD'])
+            avg_fx_sell = inv_aud_sell / inv_eur_sell if inv_eur_sell != 0 else 0
+            
+            return pd.Series({
+                'Tot_Qty_Acquistata': total_bought,
+                'Valore_Acquisto_Tot_EUR': total_inv_eur_buy,
+                'FX_Acquisto_Medio': avg_fx_buy,
+                'Valore_Vendita_EUR': inv_eur_sell,
+                'FX_Vendita': avg_fx_sell
+            })
 
-        df_vendite['Prezzo_Acquisto_PMC'] = df_vendite['ISIN'].apply(get_buy_price)
-        
-        # 3. Calcolo Prezzo di Vendita (gestisce il caso None ricalcolandolo dall'Importo)
-        df_vendite['Prezzo_Vendita_Unitario'] = df_vendite['Inv_EUR'].abs() / df_vendite['Qty'].abs()
+        # Applichiamo i calcoli
+        history_cols = df_vendite.apply(get_asset_history, axis=1)
+        df_vendite = pd.concat([df_vendite, history_cols], axis=1)
 
-        # 4. Verifica Colonne Esistenti (per evitare il KeyError)
-        # Definiamo le colonne che VORREMMO mostrare
-        desired_cols = ['ISIN', 'Data', 'Qty', 'Prezzo_Acquisto_PMC', 'Prezzo_Vendita_Unitario', 'Profit_EUR', 'Profit_AUD']
+        # 2. Selezione Colonne per la Tabella
+        view_cols = [
+            'ISIN', 'Data', 'Qty', 'Tot_Qty_Acquistata', 
+            'Prezzo_Acquisto_PMC', 'Valore_Acquisto_Tot_EUR', 'FX_Acquisto_Medio',
+            'Prezzo_Vendita_Unitario', 'Valore_Vendita_EUR', 'FX_Vendita',
+            'Profit_EUR', 'Profit_AUD'
+        ]
         
-        # Teniamo solo quelle effettivamente presenti nel DataFrame
-        available_cols = [c for c in desired_cols if c in df_vendite.columns]
-        
-        # 5. Visualizzazione
+        # Filtro per sicurezza (mostra solo se esistono)
+        available_cols = [c for c in view_cols if c in df_vendite.columns]
+
         st.dataframe(
             df_vendite[available_cols].style.format({
                 'Qty': '{:.2f}',
+                'Tot_Qty_Acquistata': '{:.2f}',
                 'Prezzo_Acquisto_PMC': '€{:.4f}',
+                'Valore_Acquisto_Tot_EUR': '€{:,.2f}',
+                'FX_Acquisto_Medio': '{:.4f}',
                 'Prezzo_Vendita_Unitario': '€{:.4f}',
+                'Valore_Vendita_EUR': '€{:,.2f}',
+                'FX_Vendita': '{:.4f}',
                 'Profit_EUR': '€{:,.2f}',
                 'Profit_AUD': '${:,.2f}'
-            }, na_rep="-"),
+            }),
             use_container_width=True
         )
     else:
-        st.info("Nessuna operazione di vendita (SELL) trovata nel file sorgente.")
+        st.info("Nessuna vendita registrata.")
     st.divider()
 
     # --- 4. GRAFICI ---
