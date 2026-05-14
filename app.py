@@ -301,22 +301,33 @@ with tab3:
             custom_data=['TotalDay']
         )
         
-        # Tooltip che mostra il totale del portafoglio
-        fig_timeline.update_traces(
-            hovertemplate="<br>".join([
-                "Asset: %{fullData.name}",
-                "Valore Asset: €%{y:,.2f}",
-                "<b>TOTALE PORTAFOGLIO: €%{customdata[0]:,.2f}</b>",
-                "<extra></extra>"
-            ])
-        )
-        
+        # 1. FORZIAMO LA VISUALIZZAZIONE DI TUTTI GLI ELEMENTI
         fig_timeline.update_layout(
-            hovermode="x unified",
+            hovermode="x unified", # Mantiene gli asset raggruppati per data
+            hoverlabel=dict(
+                namelength=-1,     # Forza Plotly a non troncare i nomi lunghi degli ISIN
+                bgcolor="white",   # Sfondo bianco per migliore leggibilità
+                font_size=12,      # Dimensione font leggibile
+            )
+        )
+
+        # 2. OTTIMIZZIAMO IL TOOLTIP PER MOSTRARE TUTTI I 10 ASSET
+        fig_timeline.update_traces(
+            hovertemplate="€%{y:,.2f}<extra></extra>" 
+        )
+
+        # 3. ESPANDIAMO L'ALTEZZA DEL GRAFICO (opzionale)
+        # Se la tabella è molto lunga, aumentare l'altezza del grafico aiuta a non farla uscire dai bordi
+        fig_timeline.update_layout(
+            height=600, 
             yaxis_title="Valore Mercato (€)",
             xaxis_title="Timeline",
-            legend_title="Asset (ISIN)"
+            legend_title="Asset (ISIN)",
+            # Rimuoviamo il vincolo di visualizzazione per permettere a tutti i 10 asset di apparire
+            hoverdistance=100, 
+            spikedistance=1000
         )
+        
         st.plotly_chart(fig_timeline, use_container_width=True)
 with tab4:
     st.subheader("Data Health Check")
