@@ -53,11 +53,18 @@ df_input.columns = [c.strip() for c in df_input.columns]
 df_raw = pd.DataFrame()
 df_raw['Data'] = pd.to_datetime(df_input['Fecha Valor'], dayfirst=True)
 df_raw['ISIN'] = df_input['ISIN']
+df_raw['Tipo'] = df_input['Tipo'].str.upper().fillna('BUY')
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
 df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') 
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
+df_raw.loc[df_raw['Tipo'] == 'SELL', 'Qty'] = -df_raw['Qty'].abs()
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
+def get_fx_at(dt):
+    try: return float(fx_hist.asof(dt))
+    except: return 1.6500
+
+df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Data'].apply(get_fx_at)
 
 # --- 3. PREZZI E STORICO (OTTIMIZZATO DAL 01/10/2025) ---
 @st.cache_data(ttl=3600)
@@ -116,68 +123,82 @@ def get_full_market_context(isins_list, current_ticker_map):
     return prices_hist, logs
 hist_map, diag_logs = get_full_market_context(df_raw['ISIN'].unique().tolist(), ticker_map)
 
-def get_current_price(row):
-    if pd.notnull(row['Manual_Price']) and row['Manual_Price'] > 0: return row['Manual_Price']
+# 2. Creazione del Portfolio Aggregato (Collassa BUY e SELL)
+portfolio = df_raw.groupby('ISIN').agg({
+    'Qty': 'sum',
+    'Inv_EUR': 'sum',
+    'Inv_AUD': 'sum'
+}).reset_index()
+
+# 3. Rimuovo le posizioni chiuse (se Qty è quasi zero, l'asset è venduto al 100%)
+portfolio = portfolio[portfolio['Qty'].abs() > 0.001]
+
+# 4. Calcolo dei prezzi correnti per le posizioni aperte (Enhanced Fallback)
+def get_current_val(row):
+    manual = df_raw[df_raw['ISIN'] == row['ISIN']]['Manual_Price'].iloc[-1]
+    if pd.notnull(manual) and manual > 0: 
+        return manual
+    
     h = hist_map.get(row['ISIN'])
-    if h is not None and not h.empty: return float(h.iloc[-1])
-    return row['Prezzo_Acq']
+    if h is not None and not h.empty:
+        val = float(h.iloc[-1])
+        if val > 0: return val
+        
+    # Se tutto fallisce, usa l'ultimo prezzo di acquisto noto per non azzerare il valore
+    return df_raw[df_raw['ISIN'] == row['ISIN']]['Prezzo_Acq'].iloc[-1]
 
-df_raw['Price_Now'] = df_raw.apply(get_current_price, axis=1)
-
-def get_fx_at(dt):
-    try: return float(fx_hist.asof(dt))
-    except: return 1.6500
-
-df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Data'].apply(get_fx_at)
-df_raw['Att_EUR'] = df_raw['Qty'] * df_raw['Price_Now']
-df_raw['Att_AUD'] = df_raw['Att_EUR'] * fx_now
-
+portfolio['Price_Now'] = portfolio.apply(get_current_val, axis=1)
+portfolio['Att_EUR'] = portfolio['Qty'] * portfolio['Price_Now']
+portfolio['Att_AUD'] = portfolio['Att_EUR'] * fx_now
 # --- 4. INTERFACCIA ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "🛠️ Diagnostics"])
 
 with tab1:
-    t_inv_eur, t_att_eur = df_raw['Inv_EUR'].sum(), df_raw['Att_EUR'].sum()
-    t_inv_aud, t_att_aud = df_raw['Inv_AUD'].sum(), df_raw['Att_AUD'].sum()
+    t_inv_eur = portfolio['Inv_EUR'].sum()
+    t_att_eur = portfolio['Att_EUR'].sum()
+    t_inv_aud = portfolio['Inv_AUD'].sum()
+    t_att_aud = portfolio['Att_AUD'].sum()
+    
+    roi_eur = ((t_att_eur / t_inv_eur) - 1) * 100 if t_inv_eur != 0 else 0
+    roi_aud = ((t_att_aud / t_inv_aud) - 1) * 100 if t_inv_aud != 0 else 0
     
     m1, m2, m3 = st.columns(3)
     m1.metric("Investito EUR", f"€{t_inv_eur:,.0f}")
     m1.metric("Valore Attuale EUR", f"€{t_att_eur:,.0f}", f"€{t_att_eur - t_inv_eur:,.0f}")
     m2.metric("Investito AUD (Storico)", f"${t_inv_aud:,.0f}")
     m2.metric("Valore Attuale AUD", f"${t_att_aud:,.0f}", f"${t_att_aud - t_inv_aud:,.0f}")
-    m3.metric("ROI Totale (EUR)", f"{(t_att_eur/t_inv_eur-1)*100:.2f}%")
-    m3.metric("ROI Totale (AUD)", f"{(t_att_aud/t_inv_aud-1)*100:.2f}%")
+    m3.metric("ROI Totale (EUR)", f"{roi_eur:.2f}%")
+    m3.metric("ROI Totale (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
 
     g1, g2 = st.columns([1, 1.5])
     with g1:
-        st.plotly_chart(px.pie(df_raw, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), width='stretch')
+        # Usiamo 'portfolio' per mostrare solo quello che possiedi oggi
+        st.plotly_chart(px.pie(portfolio, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
     with g2:
-        agg = df_raw.groupby('ISIN').agg({'Inv_EUR':'sum','Att_EUR':'sum','Inv_AUD':'sum','Att_AUD':'sum'}).reset_index()
-        agg['Gain_EUR'] = agg['Att_EUR'] - agg['Inv_EUR']
-        agg['Gain_AUD'] = agg['Att_AUD'] - agg['Inv_AUD']
+        # Calcoliamo il gain per il grafico a barre basandoci sul portfolio attuale
+        portfolio['Gain_EUR'] = portfolio['Att_EUR'] - portfolio['Inv_EUR']
+        portfolio['Gain_AUD'] = portfolio['Att_AUD'] - portfolio['Inv_AUD']
         fig_fx = go.Figure(data=[
-            go.Bar(name='Profit EUR (€)', x=agg['ISIN'], y=agg['Gain_EUR'], marker_color='#1f77b4'),
-            go.Bar(name='Profit AUD ($)', x=agg['ISIN'], y=agg['Gain_AUD'], marker_color='#2ca02c')
+            go.Bar(name='Profit EUR (€)', x=portfolio['ISIN'], y=portfolio['Gain_EUR'], marker_color='#1f77b4'),
+            go.Bar(name='Profit AUD ($)', x=portfolio['ISIN'], y=portfolio['Gain_AUD'], marker_color='#2ca02c')
         ])
         fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
-        st.plotly_chart(fig_fx, width='stretch')
+        st.plotly_chart(fig_fx, use_container_width=True)
 
-    st.subheader("Dettaglio Asset")
+    st.subheader("Dettaglio Asset Attivi")
     st.dataframe(
-        agg.style.format({
-            'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}',
+        portfolio[['ISIN', 'Qty', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD']].style.format({
+            'Qty': '{:,.4f}', 'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}',
             'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
         }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
                subset=['Gain_EUR', 'Gain_AUD']),
-        width='stretch', hide_index=True
+        use_container_width=True, hide_index=True
     )
 
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
-    
-    # Definiamo le aliquote marginali reali (escludendo il Medicare Levy del 2% o includendolo se preferisci)
-    # Aliquote 2024-2025: 0%, 16%, 30%, 37%, 45%
     tax_brackets = {
         "0% (fino a $18,200)": 0.0,
         "16% ($18,201 – $45,000)": 16.0,
@@ -185,75 +206,66 @@ with tab2:
         "37% ($135,001 – $190,000)": 37.0,
         "45% (oltre $190,000)": 45.0
     }
-    
-    selected_bracket = st.select_slider(
-        "Seleziona il tuo scaglione di reddito (Marginal Tax Rate)",
-        options=list(tax_brackets.keys()),
-        value="37% ($135,001 – $190,000)" # Impostiamo il tuo scaglione come default
-    )
-    
+    selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% ($135,001 – $190,000)")
     tax_r = tax_brackets[selected_bracket]
     
-    st.info(f"Calcolo basato su un'aliquota del **{tax_r}%**. Ricorda che il CGT discount del 50% è applicato automaticamente per asset detenuti > 12 mesi.")
+    st.info(f"Calcolo basato su un'aliquota del **{tax_r}%**.")
     
-    # ... Resto del codice del simulatore (df_sim, ed, sel, ecc.) rimane invariato ...
-    
-    df_sim = df_raw.copy()
+    # Per il simulatore usiamo il portfolio corrente
+    df_sim = portfolio.copy()
     df_sim['% Vendi'] = 0.0
-    ed = st.data_editor(df_sim[['ISIN','Data','Qty','Prezzo_Acq','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True, width='stretch')
+    ed = st.data_editor(df_sim[['ISIN','Qty','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi']], hide_index=True, use_container_width=True)
     
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
-        sel['EUR_Gain_Realizzato'] = (sel['Att_EUR'] - sel['Inv_EUR']) * (sel['% Vendi']/100)
-        sel['AUD_Gain_Realizzato'] = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
         sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
         sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
         
-        def cgt_calc_row(row):
-            gain = (row['Att_AUD'] - row['Inv_AUD']) * (row['% Vendi']/100)
-            if gain <= 0: return 0.0
-            mult = 0.5 if (datetime.now() - row['Data'].to_pydatetime()).days > 365 else 1.0
-            return gain * mult * (tax_r/100)
-        
-        sel['Tassa_Asset'] = sel.apply(cgt_calc_row, axis=1)
+        # Semplificazione CGT: usiamo l'aliquota selezionata
+        sel['Tassa_Stima'] = (sel['A_Out'] - (sel['Inv_AUD'] * sel['% Vendi']/100)).clip(lower=0) * (tax_r/100)
         
         st.divider()
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("Cash out EUR", f"€{sel['E_Out'].sum():,.2f}")
         r2.metric("Cash out AUD (Lordo)", f"${sel['A_Out'].sum():,.2f}")
-        r3.metric("Tasse ATO (AUD)", f"-${sel['Tassa_Asset'].sum():,.2f}", delta_color="inverse")
-        r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - sel['Tassa_Asset'].sum()):,.2f}")
-
-        st.write("### Dettaglio Gain Realizzato")
-        dettaglio_gain = sel[['ISIN', 'Data', '% Vendi', 'EUR_Gain_Realizzato', 'AUD_Gain_Realizzato', 'Tassa_Asset']]
-        st.dataframe(
-            dettaglio_gain.style.format({
-                'EUR_Gain_Realizzato': '€{:,.2f}',
-                'AUD_Gain_Realizzato': '${:,.2f}',
-                'Tassa_Asset': '${:,.2f}',
-                '% Vendi': '{:.0f}%'
-            }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
-                   subset=['EUR_Gain_Realizzato', 'AUD_Gain_Realizzato']),
-            width='stretch', hide_index=True
-        )
+        r3.metric("Tasse Stimate (AUD)", f"-${sel['Tassa_Stima'].sum():,.2f}", delta_color="inverse")
+        r4.metric("Netto AUD", f"${(sel['A_Out'].sum() - sel['Tassa_Stima'].sum()):,.2f}")
 
 with tab3:
-    st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
+   st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
+    
+    df_raw['Data_Solo'] = df_raw['Data'].dt.date
+    
     for d in date_range:
-        posizioni = df_raw[df_raw['Data'].dt.date <= d.date()]
+        d_date = d.date()
+        snap = df_raw[df_raw['Data_Solo'] <= d_date].groupby('ISIN')['Qty'].sum()
+        
         valore_giorno = 0
-        for _, pos in posizioni.iterrows():
-            h = hist_map.get(pos['ISIN'])
-            p_hist = h.asof(d) if (h is not None and not h.empty) else pos['Prezzo_Acq']
-            valore_giorno += pos['Qty'] * p_hist
+        for isin, qty in snap.items():
+            if abs(qty) < 0.001: continue
+            
+            h = hist_map.get(isin)
+            # Safety check: Ensure h is a valid Series/DataFrame before calling asof
+            if h is not None and hasattr(h, 'asof'):
+                try:
+                    p_hist = h.asof(d)
+                    if pd.isna(p_hist): p_hist = 0
+                except:
+                    p_hist = 0
+            else:
+                # Fallback: use the first purchase price if no history found
+                p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
+                
+            valore_giorno += qty * p_hist
+            
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
+        
     df_h = pd.DataFrame(daily_history)
-    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale da Ottobre 2025 ad Oggi (€)"), width='stretch')
+    st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', title="Capitale (€) - Basato su Quantità Storiche"), use_container_width=True)
 
 with tab4:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
-    # Ora la tabella mostrerà anche la colonna "Price"
     st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
