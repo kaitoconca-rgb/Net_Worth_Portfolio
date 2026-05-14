@@ -154,48 +154,103 @@ portfolio['Att_AUD'] = portfolio['Att_EUR'] * fx_now
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "🛠️ Diagnostics"])
 
 with tab1:
-    t_inv_eur = portfolio['Inv_EUR'].sum()
-    t_att_eur = portfolio['Att_EUR'].sum()
-    t_inv_aud = portfolio['Inv_AUD'].sum()
-    t_att_aud = portfolio['Att_AUD'].sum()
+    st.header("Performance Complessiva")
+
+    # --- 1. LOGICA DI CALCOLO INTEGRATA (Aperte + Chiuse) ---
     
-    roi_eur = ((t_att_eur / t_inv_eur) - 1) * 100 if t_inv_eur != 0 else 0
-    roi_aud = ((t_att_aud / t_inv_aud) - 1) * 100 if t_inv_aud != 0 else 0
+    # Calcoliamo il totale effettivamente uscito dalle tue tasche (Acquisti storici)
+    df_buys = df_raw[df_raw['Qty'] > 0]
+    total_invested_eur = (df_buys['Qty'] * df_buys['Prezzo_Acq']).sum()
+    total_invested_aud = (df_buys['Qty'] * df_buys['Prezzo_Acq_AUD']).sum()
+
+    # Calcoliamo il valore di mercato attuale (solo per chi ha Qty > 0 oggi)
+    df_totals = df_raw.groupby('ISIN').agg({'Qty': 'sum'}).reset_index()
+    active_isins = df_totals[df_totals['Qty'] > 0.001]['ISIN'].tolist()
     
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Investito EUR", f"€{t_inv_eur:,.0f}")
-    m1.metric("Valore Attuale EUR", f"€{t_att_eur:,.0f}", f"€{t_att_eur - t_inv_eur:,.0f}")
-    m2.metric("Investito AUD (Storico)", f"${t_inv_aud:,.0f}")
-    m2.metric("Valore Attuale AUD", f"${t_att_aud:,.0f}", f"${t_att_aud - t_inv_aud:,.0f}")
-    m3.metric("ROI Totale (EUR)", f"{roi_eur:.2f}%")
-    m3.metric("ROI Totale (AUD)", f"{roi_aud:.2f}%")
+    current_market_value_eur = 0
+    
+    # Calcoliamo anche i profitti per singolo asset per il grafico FX Impact
+    asset_performance = []
+
+    for isin in df_raw['ISIN'].unique():
+        # Dati dell'asset
+        asset_data = df_raw[df_raw['ISIN'] == isin]
+        net_qty = asset_data['Qty'].sum()
+        
+        # Prezzo attuale (se venduto, il prezzo attuale non conta per il valore, ma per il calcolo profitto sì)
+        h = hist_map.get(isin)
+        p_now = h.iloc[-1] if (h is not None and not h.empty) else asset_data['Prezzo_Acq'].iloc[0]
+        
+        # Valore attuale in portafoglio
+        v_at_market = max(0, net_qty * p_now)
+        current_market_value_eur += v_at_market
+        
+        # Profitto Totale (Realizzato + Non Realizzato)
+        # Formula: (Valore Attuale + Incassi da vendite) - (Costi di acquisto)
+        cash_in = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq']).sum()
+        cash_out = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq']).sum()
+        
+        profit_eur = (v_at_market + cash_in) - cash_out
+        
+        # Stessa logica per AUD (usando i prezzi AUD nel ledger)
+        cash_in_aud = (asset_data[asset_data['Qty'] < 0]['Qty'].abs() * asset_data[asset_data['Qty'] < 0]['Prezzo_Acq_AUD']).sum()
+        cash_out_aud = (asset_data[asset_data['Qty'] > 0]['Qty'] * asset_data[asset_data['Qty'] > 0]['Prezzo_Acq_AUD']).sum()
+        v_at_market_aud = v_at_market / FX_AUD_EUR
+        profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
+        
+        asset_performance.append({
+            'ISIN': isin,
+            'Profit_EUR': profit_eur,
+            'Profit_AUD': profit_aud,
+            'Current_Value': v_at_market
+        })
+
+    df_perf = pd.DataFrame(asset_performance)
+    
+    # Calcolo KPI Globali
+    total_profit_eur = df_perf['Profit_EUR'].sum()
+    total_profit_aud = df_perf['Profit_AUD'].sum()
+    current_value_aud = current_market_value_eur / FX_AUD_EUR
+    
+    roi_eur = (total_profit_eur / total_invested_eur) * 100 if total_invested_eur != 0 else 0
+    roi_aud = (total_profit_aud / total_invested_aud) * 100 if total_invested_aud != 0 else 0
+
+    # --- 2. VISUALIZZAZIONE KPI (LAYOUT ORIGINALE) ---
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Investito EUR (Storico)", f"€{total_invested_eur:,.0f}")
+        st.metric("Valore Attuale EUR", f"€{current_market_value_eur:,.0f}", f"€{total_profit_eur:,.0f}")
+    with c2:
+        st.metric("Investito AUD (Storico)", f"${total_invested_aud:,.0f}")
+        st.metric("Valore Attuale AUD", f"${current_value_aud:,.0f}", f"${total_profit_aud:,.0f}")
+    with c3:
+        st.metric("ROI Totale (EUR)", f"{roi_eur:.2f}%")
+        st.metric("ROI Totale (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
 
-    g1, g2 = st.columns([1, 1.5])
-    with g1:
-        # Usiamo 'portfolio' per mostrare solo quello che possiedi oggi
-        st.plotly_chart(px.pie(portfolio, values='Att_EUR', names='ISIN', hole=0.4, title="Allocation %"), use_container_width=True)
-    with g2:
-        # Calcoliamo il gain per il grafico a barre basandoci sul portfolio attuale
-        portfolio['Gain_EUR'] = portfolio['Att_EUR'] - portfolio['Inv_EUR']
-        portfolio['Gain_AUD'] = portfolio['Att_AUD'] - portfolio['Inv_AUD']
-        fig_fx = go.Figure(data=[
-            go.Bar(name='Profit EUR (€)', x=portfolio['ISIN'], y=portfolio['Gain_EUR'], marker_color='#1f77b4'),
-            go.Bar(name='Profit AUD ($)', x=portfolio['ISIN'], y=portfolio['Gain_AUD'], marker_color='#2ca02c')
-        ])
-        fig_fx.update_layout(title="FX Impact: Profitto EUR vs AUD", barmode='group')
-        st.plotly_chart(fig_fx, use_container_width=True)
-
-    st.subheader("Dettaglio Asset Attivi")
-    st.dataframe(
-        portfolio[['ISIN', 'Qty', 'Inv_EUR', 'Att_EUR', 'Gain_EUR', 'Inv_AUD', 'Att_AUD', 'Gain_AUD']].style.format({
-            'Qty': '{:,.4f}', 'Inv_EUR': '€{:,.2f}', 'Att_EUR': '€{:,.2f}', 'Gain_EUR': '€{:,.2f}',
-            'Inv_AUD': '${:,.2f}', 'Att_AUD': '${:,.2f}', 'Gain_AUD': '${:,.2f}'
-        }).map(lambda x: 'color: red' if isinstance(x, (int, float)) and x < 0 else 'color: green' if isinstance(x, (int, float)) and x > 0 else '', 
-               subset=['Gain_EUR', 'Gain_AUD']),
-        use_container_width=True, hide_index=True
-    )
+    # --- 3. ALLOCATION % E FX IMPACT ---
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.subheader("Allocation %")
+        # Mostriamo solo chi ha valore attuale > 0
+        df_pie = df_perf[df_perf['Current_Value'] > 0]
+        fig_pie = px.pie(df_pie, values='Current_Value', names='ISIN', hole=0.4)
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+    with col_right:
+        st.subheader("FX Impact: Profitto EUR vs AUD")
+        # Qui LU apparirà perché ha un Profit_EUR/AUD anche se Current_Value è 0
+        fig_bar = px.bar(
+            df_perf, 
+            x='ISIN', 
+            y=['Profit_EUR', 'Profit_AUD'],
+            barmode='group',
+            labels={'value': 'Profitto (€/$)', 'variable': 'Valuta'},
+            color_discrete_map={'Profit_EUR': '#1f77b4', 'Profit_AUD': '#2ca02c'}
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
