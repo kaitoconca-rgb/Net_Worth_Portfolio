@@ -311,27 +311,50 @@ with tab1:
 
     st.divider()
     st.subheader("Storico Operazioni di Vendita")
-    
-    if not df_dettaglio_vendite.empty:
-        st.write("Questa tabella mostra ogni singola vendita effettuata, calcolando il profitto rispetto al prezzo medio di carico precedente.")
+    st.write("Questa tabella mostra ogni singola vendita effettuata, calcolando il profitto rispetto al prezzo medio di carico precedente.")
+
+    # 1. Filtriamo solo le operazioni di vendita (Tipo = SELL)
+    # Assicurati che 'df_raw' sia il DataFrame caricato all'inizio dello script
+    df_vendite = df_raw[df_raw['Tipo'] == 'SELL'].copy()
+
+    if not df_vendite.empty:
+        # 2. Funzione interna per recuperare il Prezzo di Acquisto (PMC)
+        def get_buy_price(isin):
+            # Cerca nel ledger principale l'ultima operazione di acquisto per quell'ISIN
+            buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'] == 'BUY')]
+            if not buy_ops.empty:
+                # Restituisce il valore dalla colonna 'Prezzo_Acq' (o 'Precio' del tuo foglio)
+                return buy_ops['Prezzo_Acq'].iloc[-1] 
+            return 0
+
+        # 3. Applichiamo la logica per popolare le nuove colonne
+        df_vendite['Prezzo_Acquisto_PMC'] = df_vendite['ISIN'].apply(get_buy_price)
         
-        # Ordiniamo per data più recente
-        df_display_vendite = df_dettaglio_vendite.sort_values('Data', ascending=False)
-        
+        # Calcoliamo il Prezzo di Vendita Unitario (Importo / Quantità)
+        # Usiamo .abs() perché nelle vendite la Qty è spesso negativa nel ledger
+        df_vendite['Prezzo_Vendita_Unitario'] = df_vendite['Inv_EUR'].abs() / df_vendite['Qty'].abs()
+
+        # 4. Visualizzazione della tabella con le nuove colonne
         st.dataframe(
-            df_display_vendite.style.format({
-                'Quantità': '{:,.2f}',
-                'Prezzo Vendita': '€{:,.2f}',
-                'FX Acquisto (PMC)': '{:.4f}',
-                'FX Vendita': '{:.4f}',
+            df_vendite[[
+                'ISIN', 
+                'Data', 
+                'Qty', 
+                'Prezzo_Acquisto_PMC',   # Prezzo originario di acquisto
+                'Prezzo_Vendita_Unitario', # Prezzo di uscita
+                'Profit_EUR', 
+                'Profit_AUD'
+            ]].style.format({
+                'Qty': '{:.2f}',
+                'Prezzo_Acquisto_PMC': '€{:.4f}',
+                'Prezzo_Vendita_Unitario': '€{:.4f}',
                 'Profit_EUR': '€{:,.2f}',
                 'Profit_AUD': '${:,.2f}'
-            }), 
-            hide_index=True, 
+            }).applymap(lambda x: 'color: #00ff00' if x > 0 else 'color: #ff4b4b', subset=['Profit_EUR']),
             use_container_width=True
         )
     else:
-        st.info("Nessuna operazione di vendita registrata nel ledger.")
+        st.info("Non ci sono operazioni di vendita registrate nel foglio di input.")
     st.divider()
 
     # --- 4. GRAFICI ---
