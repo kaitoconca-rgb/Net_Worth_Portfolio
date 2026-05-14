@@ -234,45 +234,61 @@ with tab2:
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
-    # 1. Define the range (Starting from your October milestone)
+    # 1. Definiamo il range temporale
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     daily_history = []
     
-    # 2. Helper column for filtering
+    # Prepariamo la colonna data per il filtro
     df_raw['Data_Solo'] = df_raw['Data'].dt.date
     
-    # 3. Calculate daily value
+    # Prendiamo TUTTI gli ISIN che sono passati dal portafoglio, anche quelli venduti
+    tutti_gli_isin = df_raw['ISIN'].unique()
+    
     for d in date_range:
         d_date = d.date()
+        
+        # Filtriamo le transazioni avvenute fino a questa data 'd'
         snap = df_raw[df_raw['Data_Solo'] <= d_date].groupby('ISIN')['Qty'].sum()
         
         valore_giorno = 0
-        for isin, qty in snap.items():
-            if abs(qty) < 0.001: 
+        for isin in tutti_gli_isin:
+            # Recuperiamo la quantità posseduta a quella data specifica
+            qty = snap.get(isin, 0)
+            
+            # Se la quantità era 0 in quel giorno (non ancora comprato o già venduto), saltiamo
+            if abs(qty) < 0.001:
                 continue
             
+            # Recuperiamo il prezzo storico
             h = hist_map.get(isin)
             if h is not None and hasattr(h, 'asof'):
                 try:
                     p_hist = h.asof(d)
-                    if pd.isna(p_hist): 
+                    if pd.isna(p_hist):
                         p_hist = 0
                 except:
                     p_hist = 0
             else:
-                # Fallback to initial purchase price if no ticker history
+                # Fallback al prezzo di acquisto se non abbiamo ticker
                 p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
                 
             valore_giorno += qty * p_hist
             
         daily_history.append({'Date': d, 'MarketValue': valore_giorno})
         
-    # 4. Display the Chart
+    # 4. Generazione del Grafico
     df_h = pd.DataFrame(daily_history)
     if not df_h.empty:
-        st.plotly_chart(px.area(df_h, x='Date', y='MarketValue', 
-                               title="Capitale (€) - Basato su Quantità Storiche"), 
-                        use_container_width=True)
+        # Usiamo un'area chart per vedere l'accumulo del valore nel tempo
+        fig_timeline = px.area(df_h, x='Date', y='MarketValue', 
+                              title="Evoluzione Capitale (€) - Storico Posizioni")
+        
+        fig_timeline.update_layout(
+            hovermode="x unified",
+            yaxis_title="Valore di Mercato (€)",
+            xaxis_title="Data"
+        )
+        st.plotly_chart(fig_timeline, use_container_width=True)
 with tab4:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
