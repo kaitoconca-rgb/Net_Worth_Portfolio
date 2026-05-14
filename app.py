@@ -6,7 +6,14 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 import time
 from streamlit_gsheets import GSheetsConnection
-
+# --- FETCH CURRENT FX RATE ---
+try:
+    # Attempt to get the real-time rate
+    fx_data = yf.Ticker("EURAUD=X").history(period="1d")
+    FX_AUD_EUR = 1 / fx_data['Close'].iloc[-1] 
+except:
+    # Fallback rate if Yahoo is down (approximate 0.61 EUR per 1 AUD)
+    FX_AUD_EUR = 0.61
 # --- 0. PROTEZIONE ---
 def check_password():
     def password_guessed():
