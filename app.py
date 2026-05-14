@@ -310,29 +310,30 @@ with tab1:
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
+   
     st.subheader("Storico Operazioni di Vendita")
     
     # 1. Filtro vendite (Tipo = SELL)
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
 
     if not df_vendite.empty:
-        # Rinominiamo subito la colonna Data originale
-        df_vendite = df_vendite.rename(columns={'Data': 'Data Vendita'})
-
+        # Funzione interna di calcolo
         def get_asset_history(row):
             isin = row['ISIN']
+            data_corrente = row['Data'] # Usiamo il nome originale per il calcolo
             
             # Recupero storici acquisti per questo specifico ISIN
             buys = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
             
-            # Estraiamo la data del primo acquisto (o l'ultima prima della vendita)
-            data_acquisto = buys['Data'].min() if not buys.empty else None
+            # Calcolo Data Acquisto (il primo in assoluto)
+            data_acq_val = buys['Data'].min() if not buys.empty else None
             
+            # Calcolo Qty e Valori
             total_bought = buys['Qty'].sum() if not buys.empty else 0
             total_inv_eur_buy = buys['Inv_EUR'].sum() if not buys.empty else 0
             total_inv_aud_buy = buys['Inv_AUD'].sum() if not buys.empty else 0
             
-            # Calcoli Prezzi e Cambi
+            # Prezzi Unitari e Cambi
             pmc_eur = total_inv_eur_buy / total_bought if total_bought != 0 else 0
             avg_fx_buy = total_inv_aud_buy / total_inv_eur_buy if total_inv_eur_buy != 0 else 0
             
@@ -340,47 +341,40 @@ with tab1:
             inv_aud_sell = abs(row['Inv_AUD'])
             qty_sold = abs(row['Qty'])
             
-            prezzo_vendita_unitario = inv_eur_sell / qty_sold if qty_sold != 0 else 0
-            avg_fx_sell = inv_aud_sell / inv_eur_sell if inv_eur_sell != 0 else 0
+            prezzo_vend_unit = inv_eur_sell / qty_sold if qty_sold != 0 else 0
+            fx_sell_val = inv_aud_sell / inv_eur_sell if inv_eur_sell != 0 else 0
             
             return pd.Series({
-                'Data Acquisto': data_acquisto,
+                'Data Acquisto': data_acq_val,
                 'Tot_Qty_Acquistata': total_bought,
                 'Prezzo_Acquisto_PMC': pmc_eur,
                 'Valore_Acquisto_Tot_EUR': total_inv_eur_buy,
                 'FX_Acquisto_Medio': avg_fx_buy,
-                'Prezzo_Vendita_Unitario': prezzo_vendita_unitario,
+                'Prezzo_Vendita_Unitario': prezzo_vend_unit,
                 'Valore_Vendita_EUR': inv_eur_sell,
-                'FX_Vendita': avg_fx_sell
+                'FX_Vendita': fx_sell_val
             })
 
-        # Calcolo e pulizia
-        history_results = df_vendite.apply(get_asset_history, axis=1)
-        df_vendite = df_vendite.drop(columns=[c for c in history_results.columns if c in df_vendite.columns])
-        df_vendite = pd.concat([df_vendite, history_results], axis=1)
+        # Applichiamo i calcoli
+        res = df_vendite.apply(get_asset_history, axis=1)
+        df_vendite = pd.concat([df_vendite, res], axis=1)
 
-        # 2. Definizione colonne desiderate con i nuovi nomi
-        desired_cols = [
-            'ISIN', 
-            'Data Acquisto', 
-            'Data Vendita', 
-            'Qty', 
-            'Tot_Qty_Acquistata', 
-            'Prezzo_Acquisto_PMC', 
-            'Valore_Acquisto_Tot_EUR', 
-            'FX_Acquisto_Medio',
-            'Prezzo_Vendita_Unitario', 
-            'Valore_Vendita_EUR', 
-            'FX_Vendita',
-            'Profit_EUR', 
-            'Profit_AUD'
+        # 2. Rinominazione e Ordinamento
+        df_vendite = df_vendite.rename(columns={'Data': 'Data Vendita'})
+
+        cols_to_show = [
+            'ISIN', 'Data Acquisto', 'Data Vendita', 'Qty', 
+            'Tot_Qty_Acquistata', 'Prezzo_Acquisto_PMC', 'Valore_Acquisto_Tot_EUR', 
+            'FX_Acquisto_Medio', 'Prezzo_Vendita_Unitario', 'Valore_Vendita_EUR', 
+            'FX_Vendita', 'Profit_EUR', 'Profit_AUD'
         ]
-        
-        final_cols = [c for c in desired_cols if c in df_vendite.columns]
 
-        # 3. Visualizzazione
+        # Filtro finale per mostrare solo colonne esistenti
+        final_view = [c for c in cols_to_show if c in df_vendite.columns]
+
+        # 3. Render Tabella
         st.dataframe(
-            df_vendite[final_cols].style.format({
+            df_vendite[final_view].style.format({
                 'Data Acquisto': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "-",
                 'Data Vendita': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "-",
                 'Qty': '{:.2f}',
@@ -397,7 +391,7 @@ with tab1:
             use_container_width=True
         )
     else:
-        st.info("Nessuna operazione di vendita registrata.")
+        st.info("Nessuna vendita registrata.")
     st.divider()
 
     # --- 4. GRAFICI ---
