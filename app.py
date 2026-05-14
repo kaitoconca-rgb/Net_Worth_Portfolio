@@ -234,6 +234,7 @@ with tab2:
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
+    # 1. Definiamo il range temporale
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     df_raw['Data_Solo'] = df_raw['Data'].dt.date
     all_isins = df_raw['ISIN'].unique()
@@ -242,31 +243,36 @@ with tab3:
 
     for d in date_range:
         current_date = d.date()
+        # Calcoliamo la quantità posseduta esattamente in questo giorno
         snapshot = df_raw[df_raw['Data_Solo'] <= current_date].groupby('ISIN')['Qty'].sum()
         
-        day_total = 0 # Variabile per calcolare il totale giornaliero
+        day_total = 0 
         
         for isin in all_isins:
             qty = snapshot.get(isin, 0)
             
+            # Se non possedevo l'asset in quel giorno, mettiamo 0 e passiamo oltre
             if abs(qty) < 0.001:
                 daily_data.append({'Date': d, 'ISIN': isin, 'MarketValue': 0.0, 'TotalDay': 0.0})
                 continue
                 
+            # Recupero Prezzo
             h = hist_map.get(isin)
-            p_hist = 0
-            if h is not None and hasattr(h, 'asof'):
+            p_hist = None
+            
+            if h is not None and not h.empty:
                 try:
+                    # Cerchiamo il prezzo più vicino disponibile
                     p_hist = h.asof(d)
                 except:
-                    p_hist = 0
+                    p_hist = None
             
-            # --- FIX FONDAMENTALE PER LU ---
-            # Se Yahoo non ha dati per quel giorno o restituisce NaN, 
-            # usiamo il prezzo di acquisto storico dal ledger
-            if pd.isna(p_hist) or p_hist == 0:
-                # Prende il prezzo della prima operazione trovata per quell'ISIN
-                p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
+            # --- LOGICA DI RIPRISTINO AGGRESSIVA ---
+            # Se Yahoo non restituisce nulla, usiamo il prezzo di acquisto nel ledger
+            if p_hist is None or pd.isna(p_hist) or p_hist == 0:
+                # Trova il primo prezzo di acquisto disponibile per questo ISIN nel tuo Excel
+                ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
+                p_hist = ledger_price.iloc[0] if not ledger_price.empty else 0
             
             valore_asset = float(qty * p_hist)
             day_total += valore_asset
@@ -275,10 +281,10 @@ with tab3:
                 'Date': d, 
                 'ISIN': isin, 
                 'MarketValue': valore_asset,
-                'TotalDay': 0.0 # Placeholder, lo riempiremo dopo
+                'TotalDay': 0.0 
             })
         
-        # Aggiorniamo il totale per tutti i record di questo giorno
+        # Inseriamo il totale giornaliero per l'hover
         for item in daily_data:
             if item['Date'] == d:
                 item['TotalDay'] = day_total
@@ -286,30 +292,28 @@ with tab3:
     df_timeline = pd.DataFrame(daily_data)
 
     if not df_timeline.empty:
-        # Creiamo il grafico
         fig_timeline = px.area(
             df_timeline, 
             x='Date', 
             y='MarketValue', 
             color='ISIN',
-            title="Evoluzione Capitale (€) - Visualizzazione con Totale",
-            # custom_data permette di passare il totale all'hover
+            title="Evoluzione Capitale (€) - Storico Completo",
             custom_data=['TotalDay']
         )
         
-        # Configurazione Hover per mostrare il TOTALE
+        # Tooltip che mostra il totale del portafoglio
         fig_timeline.update_traces(
             hovertemplate="<br>".join([
                 "Asset: %{fullData.name}",
                 "Valore Asset: €%{y:,.2f}",
                 "<b>TOTALE PORTAFOGLIO: €%{customdata[0]:,.2f}</b>",
-                "<extra></extra>" # Rimuove la label secondaria fastidiosa
+                "<extra></extra>"
             ])
         )
         
         fig_timeline.update_layout(
             hovermode="x unified",
-            yaxis_title="Valore (€)",
+            yaxis_title="Valore Mercato (€)",
             xaxis_title="Timeline",
             legend_title="Asset (ISIN)"
         )
