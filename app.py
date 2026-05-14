@@ -310,51 +310,45 @@ with tab1:
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
 
     st.divider()
-    st.subheader("Storico Operazioni di Vendita")
-    st.write("Questa tabella mostra ogni singola vendita effettuata, calcolando il profitto rispetto al prezzo medio di carico precedente.")
-
-    # 1. Filtriamo solo le operazioni di vendita (Tipo = SELL)
-    # Assicurati che 'df_raw' sia il DataFrame caricato all'inizio dello script
-    df_vendite = df_raw[df_raw['Tipo'] == 'SELL'].copy()
+  st.subheader("Storico Operazioni di Vendita")
+    
+    # 1. Filtro Vendite
+    df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
 
     if not df_vendite.empty:
-        # 2. Funzione interna per recuperare il Prezzo di Acquisto (PMC)
+        # 2. Recupero Prezzo di Acquisto (PMC)
         def get_buy_price(isin):
-            # Cerca nel ledger principale l'ultima operazione di acquisto per quell'ISIN
-            buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'] == 'BUY')]
+            buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
             if not buy_ops.empty:
-                # Restituisce il valore dalla colonna 'Prezzo_Acq' (o 'Precio' del tuo foglio)
-                return buy_ops['Prezzo_Acq'].iloc[-1] 
+                # Usiamo il campo Prezzo_Acq che è quello che hai popolato nello sheet
+                return buy_ops['Prezzo_Acq'].iloc[-1]
             return 0
 
-        # 3. Applichiamo la logica per popolare le nuove colonne
         df_vendite['Prezzo_Acquisto_PMC'] = df_vendite['ISIN'].apply(get_buy_price)
         
-        # Calcoliamo il Prezzo di Vendita Unitario (Importo / Quantità)
-        # Usiamo .abs() perché nelle vendite la Qty è spesso negativa nel ledger
+        # 3. Calcolo Prezzo di Vendita (gestisce il caso None ricalcolandolo dall'Importo)
         df_vendite['Prezzo_Vendita_Unitario'] = df_vendite['Inv_EUR'].abs() / df_vendite['Qty'].abs()
 
-        # 4. Visualizzazione della tabella con le nuove colonne
+        # 4. Verifica Colonne Esistenti (per evitare il KeyError)
+        # Definiamo le colonne che VORREMMO mostrare
+        desired_cols = ['ISIN', 'Data', 'Qty', 'Prezzo_Acquisto_PMC', 'Prezzo_Vendita_Unitario', 'Profit_EUR', 'Profit_AUD']
+        
+        # Teniamo solo quelle effettivamente presenti nel DataFrame
+        available_cols = [c for c in desired_cols if c in df_vendite.columns]
+        
+        # 5. Visualizzazione
         st.dataframe(
-            df_vendite[[
-                'ISIN', 
-                'Data', 
-                'Qty', 
-                'Prezzo_Acquisto_PMC',   # Prezzo originario di acquisto
-                'Prezzo_Vendita_Unitario', # Prezzo di uscita
-                'Profit_EUR', 
-                'Profit_AUD'
-            ]].style.format({
+            df_vendite[available_cols].style.format({
                 'Qty': '{:.2f}',
                 'Prezzo_Acquisto_PMC': '€{:.4f}',
                 'Prezzo_Vendita_Unitario': '€{:.4f}',
                 'Profit_EUR': '€{:,.2f}',
                 'Profit_AUD': '${:,.2f}'
-            }).applymap(lambda x: 'color: #00ff00' if x > 0 else 'color: #ff4b4b', subset=['Profit_EUR']),
+            }, na_rep="-"),
             use_container_width=True
         )
     else:
-        st.info("Non ci sono operazioni di vendita registrate nel foglio di input.")
+        st.info("Nessuna operazione di vendita (SELL) trovata nel file sorgente.")
     st.divider()
 
     # --- 4. GRAFICI ---
