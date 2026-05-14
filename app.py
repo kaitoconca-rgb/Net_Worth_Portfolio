@@ -163,17 +163,17 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "�
 with tab1:
     st.header("Performance Complessiva")
 
-    # --- 1. PREPARAZIONE DATI ---
-    # Identifichiamo cosa è "Chiuso" (LU) e cosa è "Attivo"
+    # --- 1. PREPARAZIONE DATI (Logica per distinguere Attivo vs Realizzato) ---
+    # Asset chiusi (es. LU dove Qty è zero)
     df_realized = df_perf[df_perf['Current_Value'] < 0.01].copy()
+    # Asset aperti (quelli che hai ancora in portafoglio)
     df_unrealized = df_perf[df_perf['Current_Value'] >= 0.01].copy()
     
-    # Calcolo profitti
+    # Calcolo profitti consolidati
     realized_profit_eur = df_realized['Profit_EUR'].sum()
     realized_profit_aud = df_realized['Profit_AUD'].sum()
     
-    # Capitale attualmente a rischio (solo asset aperti)
-    # Filtriamo df_raw per gli ISIN ancora in portafoglio
+    # Identifichiamo il capitale "bloccato" negli asset aperti
     active_isins = df_unrealized['ISIN'].tolist()
     df_active_ledger = df_raw[df_raw['ISIN'].isin(active_isins)]
     
@@ -182,8 +182,8 @@ with tab1:
     
     current_market_value_aud = current_market_value_eur * fx_now
 
-    # --- 2. ROW 1: IL RISULTATO FINALE (Realizzato + Pendente) ---
-    # Questo corregge il "messaggio fuorviante" dell'immagine
+    # --- 2. ROW 1: IL RISULTATO REALE (Realizzato + Pendente) ---
+    # Questa sezione risolve il messaggio fuorviante dell'immagine precedente
     st.subheader("Risultato Totale della Gestione")
     r1_col1, r1_col2 = st.columns(2)
     
@@ -191,21 +191,21 @@ with tab1:
         st.metric(
             "Profitto Totale EUR", 
             f"€{total_profit_eur:,.0f}", 
-            f"Realizzato (Cash-in): €{realized_profit_eur:,.0f}"
+            f"Di cui Realizzato (Cash-in): €{realized_profit_eur:,.0f}"
         )
     with r1_col2:
-        # Qui vedrai chiaramente il peso del cambio AUD su LU
+        # Qui vedrai chiaramente se LU ha pesato negativamente in AUD per il cambio
         st.metric(
             "Profitto Totale AUD", 
             f"${total_profit_aud:,.0f}", 
-            f"Realizzato (Cash-in): ${realized_profit_aud:,.0f}",
+            f"Di cui Realizzato (Cash-in): ${realized_profit_aud:,.0f}",
             delta_color="normal" if realized_profit_aud > 0 else "inverse"
         )
 
     st.divider()
 
-    # --- 3. ROW 2: PORTAFOGLIO ATTUALE (Cosa hai in mano oggi) ---
-    st.subheader("Stato del Portafoglio Vivo")
+    # --- 3. ROW 2: PORTAFOGLIO VIVO (Cosa possiedi oggi) ---
+    st.subheader("Portafoglio Attivo (Posizioni Aperte)")
     c1, c2, c3 = st.columns(3)
     
     with c1:
@@ -219,37 +219,39 @@ with tab1:
         st.metric("Valore Mercato", f"${current_market_value_aud:,.0f}")
         
     with c3:
-        st.write("**Performance Relativa**")
-        # ROI calcolato solo sul capitale attualmente investito
-        active_roi_eur = (df_unrealized['Profit_EUR'].sum() / active_invested_eur * 100) if active_invested_eur != 0 else 0
-        active_roi_aud = (df_unrealized['Profit_AUD'].sum() / active_invested_aud * 100) if active_invested_aud != 0 else 0
-        st.metric("ROI Attivo (EUR)", f"{active_roi_eur:.2f}%")
-        st.metric("ROI Attivo (AUD)", f"{active_roi_aud:.2f}%")
+        st.write("**Rendimento %**")
+        # ROI pulito: calcolato solo sul capitale effettivamente investito ora
+        roi_eur_attivo = (df_unrealized['Profit_EUR'].sum() / active_invested_eur * 100) if active_invested_eur != 0 else 0
+        roi_aud_attivo = (df_unrealized['Profit_AUD'].sum() / active_invested_aud * 100) if active_invested_aud != 0 else 0
+        st.metric("ROI Attivo (EUR)", f"{roi_eur_attivo:.2f}%")
+        st.metric("ROI Attivo (AUD)", f"{roi_aud_attivo:.2f}%")
 
     st.divider()
 
     # --- 4. GRAFICI ---
     col_left, col_right = st.columns(2)
     with col_left:
-        st.subheader("Asset Allocation (Solo Attivi)")
+        st.subheader("Allocation % (Solo Attivi)")
         fig_pie = px.pie(df_unrealized, values='Current_Value', names='ISIN', hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
         
     with col_right:
         st.subheader("Profitto per Asset (Inclusi Chiusi)")
-        # Questo grafico mostrerà LU con la sua barra (Profit EUR vs Loss AUD)
+        # Qui LU apparirà con il suo profitto EUR e la perdita/guadagno AUD
         fig_bar = px.bar(
             df_perf, 
             x='ISIN', 
             y=['Profit_EUR', 'Profit_AUD'],
             barmode='group',
+            labels={'value': 'Profitto (€/$)', 'variable': 'Valuta'},
             color_discrete_map={'Profit_EUR': '#1f77b4', 'Profit_AUD': '#2ca02c'}
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- 5. TABELLA POSIZIONI CHIUSE ---
+    # --- 5. DETTAGLIO POSIZIONI CHIUSE (The LU Section) ---
     if not df_realized.empty:
         with st.expander("Visualizza Dettaglio Posizioni Chiuse (es. LU)"):
+            st.write("Questi asset sono stati venduti completamente. Il profitto è già consolidato.")
             st.dataframe(
                 df_realized[['ISIN', 'Profit_EUR', 'Profit_AUD']].style.format({
                     'Profit_EUR': '€{:,.2f}',
