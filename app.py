@@ -234,60 +234,77 @@ with tab2:
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
-    # 1. Range temporale e preparazione dati
     date_range = pd.date_range(date(2025, 10, 1), date.today())
     df_raw['Data_Solo'] = df_raw['Data'].dt.date
     all_isins = df_raw['ISIN'].unique()
     
     daily_data = []
 
-    # 2. Calcolo granulare giorno per giorno
     for d in date_range:
         current_date = d.date()
-        # Calcoliamo il saldo (Qty) accumulato fino a questo giorno per ogni ISIN
         snapshot = df_raw[df_raw['Data_Solo'] <= current_date].groupby('ISIN')['Qty'].sum()
+        
+        day_total = 0 # Variabile per calcolare il totale giornaliero
         
         for isin in all_isins:
             qty = snapshot.get(isin, 0)
             
-            # Anche se la Qty è 0, vogliamo che il grafico lo sappia (per "chiudere" l'area)
             if abs(qty) < 0.001:
-                daily_data.append({'Date': d, 'ISIN': isin, 'MarketValue': 0.0})
+                daily_data.append({'Date': d, 'ISIN': isin, 'MarketValue': 0.0, 'TotalDay': 0.0})
                 continue
                 
-            # Prezzo storico
             h = hist_map.get(isin)
             p_hist = 0
             if h is not None and hasattr(h, 'asof'):
                 try:
                     p_hist = h.asof(d)
-                    if pd.isna(p_hist): p_hist = 0
                 except:
                     p_hist = 0
             
-            # Se non c'è prezzo nel ticker, usa il prezzo di acquisto del ledger
-            if p_hist == 0:
+            # --- FIX FONDAMENTALE PER LU ---
+            # Se Yahoo non ha dati per quel giorno o restituisce NaN, 
+            # usiamo il prezzo di acquisto storico dal ledger
+            if pd.isna(p_hist) or p_hist == 0:
+                # Prende il prezzo della prima operazione trovata per quell'ISIN
                 p_hist = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].iloc[0]
+            
+            valore_asset = float(qty * p_hist)
+            day_total += valore_asset
             
             daily_data.append({
                 'Date': d, 
                 'ISIN': isin, 
-                'MarketValue': float(qty * p_hist)
+                'MarketValue': valore_asset,
+                'TotalDay': 0.0 # Placeholder, lo riempiremo dopo
             })
+        
+        # Aggiorniamo il totale per tutti i record di questo giorno
+        for item in daily_data:
+            if item['Date'] == d:
+                item['TotalDay'] = day_total
 
-    # 3. Creazione DataFrame per il grafico
     df_timeline = pd.DataFrame(daily_data)
 
-    # 4. Rendering del grafico
     if not df_timeline.empty:
-        # Usiamo 'color' per separare i fondi nell'area chart
+        # Creiamo il grafico
         fig_timeline = px.area(
             df_timeline, 
             x='Date', 
             y='MarketValue', 
-            color='ISIN',  # <--- Questo è fondamentale per vedere il fondo LU separato dagli altri
-            title="Evoluzione Capitale (€) per Asset",
-            line_group='ISIN'
+            color='ISIN',
+            title="Evoluzione Capitale (€) - Visualizzazione con Totale",
+            # custom_data permette di passare il totale all'hover
+            custom_data=['TotalDay']
+        )
+        
+        # Configurazione Hover per mostrare il TOTALE
+        fig_timeline.update_traces(
+            hovertemplate="<br>".join([
+                "Asset: %{fullData.name}",
+                "Valore Asset: €%{y:,.2f}",
+                "<b>TOTALE PORTAFOGLIO: €%{customdata[0]:,.2f}</b>",
+                "<extra></extra>" # Rimuove la label secondaria fastidiosa
+            ])
         )
         
         fig_timeline.update_layout(
