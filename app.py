@@ -157,74 +157,80 @@ def get_current_val(row):
 portfolio['Price_Now'] = portfolio.apply(get_current_val, axis=1)
 portfolio['Att_EUR'] = portfolio['Qty'] * portfolio['Price_Now']
 portfolio['Att_AUD'] = portfolio['Att_EUR'] * fx_now
+
+# === DEVE STARE SOPRA LA DEFINIZIONE DEI TAB ===
+
+asset_performance = []
+current_market_value_eur = 0
+
+for isin in df_raw['ISIN'].unique():
+    asset_data = df_raw[df_raw['ISIN'] == isin]
+    net_qty = asset_data['Qty'].sum()
+    
+    h = hist_map.get(isin)
+    p_now = h.iloc[-1] if (h is not None and not h.empty) else asset_data['Prezzo_Acq'].iloc[0]
+    
+    v_at_market_eur = max(0, net_qty * p_now)
+    current_market_value_eur += v_at_market_eur
+    
+    # Calcoli EUR
+    cash_in_eur = asset_data[asset_data['Tipo'] == 'SELL']['Inv_EUR'].abs().sum()
+    cash_out_eur = asset_data[asset_data['Tipo'] == 'BUY']['Inv_EUR'].sum()
+    profit_eur = (v_at_market_eur + cash_in_eur) - cash_out_eur
+    
+    # Calcoli AUD
+    cash_in_aud = asset_data[asset_data['Tipo'] == 'SELL']['Inv_AUD'].abs().sum()
+    cash_out_aud = asset_data[asset_data['Tipo'] == 'BUY']['Inv_AUD'].sum()
+    v_at_market_aud = v_at_market_eur * fx_now 
+    profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
+    
+    asset_performance.append({
+        'ISIN': isin, 'Profit_EUR': profit_eur, 'Profit_AUD': profit_aud, 'Current_Value': v_at_market_eur
+    })
+
+df_perf = pd.DataFrame(asset_performance)
+total_profit_eur = df_perf['Profit_EUR'].sum()
+total_profit_aud = df_perf['Profit_AUD'].sum()
+
 # --- 4. INTERFACCIA ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "🛠️ Diagnostics"])
 
 with tab1:
     st.header("Performance Complessiva")
 
-    # --- 1. PREPARAZIONE DATI (Logica per distinguere Attivo vs Realizzato) ---
-    # Asset chiusi (es. LU dove Qty è zero)
+    # Filtri per dividere Attivo da Realizzato (LU)
     df_realized = df_perf[df_perf['Current_Value'] < 0.01].copy()
-    # Asset aperti (quelli che hai ancora in portafoglio)
     df_unrealized = df_perf[df_perf['Current_Value'] >= 0.01].copy()
     
-    # Calcolo profitti consolidati
-    realized_profit_eur = df_realized['Profit_EUR'].sum()
-    realized_profit_aud = df_realized['Profit_AUD'].sum()
-    
-    # Identifichiamo il capitale "bloccato" negli asset aperti
+    # Calcolo veloce del capitale attivo (per evitare messaggi fuorvianti)
     active_isins = df_unrealized['ISIN'].tolist()
-    df_active_ledger = df_raw[df_raw['ISIN'].isin(active_isins)]
-    
-    active_invested_eur = df_active_ledger[df_active_ledger['Tipo'] == 'BUY']['Inv_EUR'].sum()
-    active_invested_aud = df_active_ledger[df_active_ledger['Tipo'] == 'BUY']['Inv_AUD'].sum()
-    
-    current_market_value_aud = current_market_value_eur * fx_now
+    df_active = df_raw[df_raw['ISIN'].isin(active_isins)]
+    active_inv_eur = df_active[df_active['Tipo'] == 'BUY']['Inv_EUR'].sum()
+    active_inv_aud = df_active[df_active['Tipo'] == 'BUY']['Inv_AUD'].sum()
 
-    # --- 2. ROW 1: IL RISULTATO REALE (Realizzato + Pendente) ---
-    # Questa sezione risolve il messaggio fuorviante dell'immagine precedente
-    st.subheader("Risultato Totale della Gestione")
-    r1_col1, r1_col2 = st.columns(2)
-    
-    with r1_col1:
-        st.metric(
-            "Profitto Totale EUR", 
-            f"€{total_profit_eur:,.0f}", 
-            f"Di cui Realizzato (Cash-in): €{realized_profit_eur:,.0f}"
-        )
-    with r1_col2:
-        # Qui vedrai chiaramente se LU ha pesato negativamente in AUD per il cambio
-        st.metric(
-            "Profitto Totale AUD", 
-            f"${total_profit_aud:,.0f}", 
-            f"Di cui Realizzato (Cash-in): ${realized_profit_aud:,.0f}",
-            delta_color="normal" if realized_profit_aud > 0 else "inverse"
-        )
+    # --- ROW 1: PROFITTO TOTALE (La verità economica) ---
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Profitto Totale EUR", f"€{total_profit_eur:,.0f}", f"Incassato: €{df_realized['Profit_EUR'].sum():,.0f}")
+    with col_b:
+        st.metric("Profitto Totale AUD", f"${total_profit_aud:,.0f}", f"Incassato: ${df_realized['Profit_AUD'].sum():,.0f}")
 
     st.divider()
 
-    # --- 3. ROW 2: PORTAFOGLIO VIVO (Cosa possiedi oggi) ---
-    st.subheader("Portafoglio Attivo (Posizioni Aperte)")
+    # --- ROW 2: CAPITALE ATTUALMENTE INVESTITO ---
     c1, c2, c3 = st.columns(3)
-    
     with c1:
-        st.write("**Esposizione EUR**")
-        st.metric("Capitale Attivo", f"€{active_invested_eur:,.0f}")
-        st.metric("Valore Mercato", f"€{current_market_value_eur:,.0f}")
-    
+        st.write("**Asset Attivi (EUR)**")
+        st.metric("Investito", f"€{active_inv_eur:,.0f}")
+        st.metric("Valore", f"€{current_market_value_eur:,.0f}")
     with c2:
-        st.write("**Esposizione AUD**")
-        st.metric("Capitale Attivo", f"${active_invested_aud:,.0f}")
-        st.metric("Valore Mercato", f"${current_market_value_aud:,.0f}")
-        
+        st.write("**Asset Attivi (AUD)**")
+        st.metric("Investito", f"${active_inv_aud:,.0f}")
+        st.metric("Valore", f"${current_market_value_eur * fx_now:,.0f}")
     with c3:
-        st.write("**Rendimento %**")
-        # ROI pulito: calcolato solo sul capitale effettivamente investito ora
-        roi_eur_attivo = (df_unrealized['Profit_EUR'].sum() / active_invested_eur * 100) if active_invested_eur != 0 else 0
-        roi_aud_attivo = (df_unrealized['Profit_AUD'].sum() / active_invested_aud * 100) if active_invested_aud != 0 else 0
-        st.metric("ROI Attivo (EUR)", f"{roi_eur_attivo:.2f}%")
-        st.metric("ROI Attivo (AUD)", f"{roi_aud_attivo:.2f}%")
+        st.write("**ROI Attivo**")
+        roi_eur = (df_unrealized['Profit_EUR'].sum() / active_inv_eur * 100) if active_inv_eur != 0 else 0
+        st.metric("ROI (EUR)", f"{roi_eur:.2f}%")
 
     st.divider()
 
