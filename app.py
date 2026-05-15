@@ -445,20 +445,30 @@ with tab2:
     # --- 1. PREPARAZIONE DATI ---
     df_sim = portfolio.copy()
     
-    # Prezzo di acquisto unitario (PMC) per riga
-    def get_pmc(isin):
+    # Recupero Prezzo Acquisto unitario e Valore Iniziale AUD (storico)
+    def get_purchase_data(isin):
         buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
-        return buy_ops['Prezzo_Acq'].iloc[-1] if not buy_ops.empty else 0
+        if not buy_ops.empty:
+            pmc = buy_ops['Prezzo_Acq'].iloc[-1]
+            inv_aud_hist = buy_ops['Inv_AUD'].sum() # Somma degli importi in AUD spesi al tempo
+            return pd.Series([pmc, inv_aud_hist])
+        return pd.Series([0, 0])
 
-    df_sim['Prezzo_Acq_EUR'] = df_sim['ISIN'].apply(get_pmc)
+    df_sim[['Prezzo_Acq_EUR', 'Inv_AUD_Hist']] = df_sim['ISIN'].apply(get_purchase_data)
     
-    # Calcolo Gain/Loss per Alert Cambio
+    # Calcolo Variazioni Percentuali
+    # In EUR: (Valore Attuale / Valore Investito) - 1
+    df_sim['Var_%_EUR'] = ((df_sim['Att_EUR'] / df_sim['Inv_EUR']) - 1) * 100
+    # In AUD: (Valore Attuale / Valore Investito Storico) - 1
+    df_sim['Var_%_AUD'] = ((df_sim['Att_AUD'] / df_sim['Inv_AUD_Hist']) - 1) * 100
+    
+    # Logica Alert Cambio
     df_sim['Gain_EUR'] = df_sim['Att_EUR'] - df_sim['Inv_EUR']
-    df_sim['Gain_AUD'] = df_sim['Att_AUD'] - df_sim['Inv_AUD']
+    df_sim['Gain_AUD'] = df_sim['Att_AUD'] - df_sim['Inv_AUD_Hist']
     
     def fx_alert(row):
         if row['Gain_EUR'] > 0 and row['Gain_AUD'] < 0:
-            return "⚠️ FX LOSS (Deducibile)"
+            return "⚠️ FX LOSS"
         return "✅ OK"
 
     df_sim['Alert'] = df_sim.apply(fx_alert, axis=1)
@@ -466,17 +476,26 @@ with tab2:
 
     # --- 2. DATA EDITOR (VISUALIZZAZIONE) ---
     column_config = {
-        "Alert": st.column_config.TextColumn("Stato Cambio", width="small"),
-        "Prezzo_Acq_EUR": st.column_config.NumberColumn("Prezzo Acq (€)", format="€%.4f"),
-        "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (€)", format="€%.4f"),
-        "Att_EUR": st.column_config.NumberColumn("Valore Attuale (€)", format="€%.2f"),
-        "Att_AUD": st.column_config.NumberColumn("Valore Attuale (AUD)", format="AUD %.2f"),
-        "Gain_AUD": st.column_config.NumberColumn("Gain/Loss Totale (AUD)", format="AUD %.2f"),
-        "% Vendi": st.column_config.NumberColumn("% da Vendere", min_value=0, max_value=100, step=1, format="%d%%")
+        "Alert": st.column_config.TextColumn("Stato", width="small"),
+        "Inv_EUR": st.column_config.NumberColumn("Val. Iniziale (€)", format="€%.2f"),
+        "Att_EUR": st.column_config.NumberColumn("Val. Attuale (€)", format="€%.2f"),
+        "Var_%_EUR": st.column_config.NumberColumn("Var % (€)", format="%.2f%%"),
+        "Inv_AUD_Hist": st.column_config.NumberColumn("Val. Iniziale (AUD)", format="AUD %.2f"),
+        "Att_AUD": st.column_config.NumberColumn("Val. Attuale (AUD)", format="AUD %.2f"),
+        "Var_%_AUD": st.column_config.NumberColumn("Var % (AUD)", format="%.2f%%"),
+        "% Vendi": st.column_config.NumberColumn("% Vendi", min_value=0, max_value=100, step=1, format="%d%%")
     }
 
+    # Selezione e ordine colonne per massima leggibilità
+    display_cols = [
+        'ISIN', 'Alert', 'Qty', 
+        'Inv_EUR', 'Att_EUR', 'Var_%_EUR', 
+        'Inv_AUD_Hist', 'Att_AUD', 'Var_%_AUD', 
+        '% Vendi'
+    ]
+
     ed = st.data_editor(
-        df_sim[['ISIN', 'Alert', 'Qty', 'Prezzo_Acq_EUR', 'Price_Now', 'Att_EUR', 'Att_AUD', 'Gain_AUD', '% Vendi']],
+        df_sim[display_cols],
         column_config=column_config,
         hide_index=True,
         use_container_width=True
@@ -486,44 +505,35 @@ with tab2:
     sel = ed[ed['% Vendi'] > 0].copy()
     
     if not sel.empty:
-        # Calcoliamo i flussi basati sulla percentuale scelta
-        sel['E_Out'] = (sel['Qty'] * (sel['% Vendi']/100)) * sel['Price_Now']
+        # Calcolo flussi in uscita
+        sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
         sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
         
-        # Gain AUD effettivo sulla porzione venduta (per ATO)
-        sel['Realized_Gain_AUD'] = sel['Gain_AUD'] * (sel['% Vendi']/100)
+        # Capital Gain AUD basato sullo storico (per ATO)
+        realized_gain_aud = (sel['Att_AUD'] - sel['Inv_AUD_Hist']) * (sel['% Vendi']/100)
+        total_realized_gain_aud = realized_gain_aud.sum()
         
-        total_e_out = sel['E_Out'].sum()
-        total_a_out = sel['A_Out'].sum()
-        total_realized_gain_aud = sel['Realized_Gain_AUD'].sum()
-        
-        # Tassa: si paga solo se il gain complessivo della vendita è positivo
         stima_tassa = max(0, total_realized_gain_aud * (tax_r/100))
         
         st.divider()
         st.subheader("Riepilogo Simulazione di Vendita")
         
-        # Usiamo 5 colonne per includere il Valore Totale in EUR
         r1, r2, r3, r4, r5 = st.columns(5)
         
-        r1.metric("Cash out EUR", f"€{total_e_out:,.2f}")
-        r2.metric("Cash out AUD (Lordo)", f"AUD {total_a_out:,.2f}")
+        r1.metric("Cash out EUR", f"€{sel['E_Out'].sum():,.2f}")
+        r2.metric("Cash out AUD", f"AUD {sel['A_Out'].sum():,.2f}")
         
         if total_realized_gain_aud < 0:
-            # Caso Minusvalenza: beneficio fiscale
             benefit = abs(total_realized_gain_aud * (tax_r/100))
-            r3.metric("Minusvalenza AUD", f"-AUD {abs(total_realized_gain_aud):,.2f}", delta="Deducibile ATO")
-            r4.metric("Tax Saving Stimato", f"AUD {benefit:,.2f}")
-            r5.metric("Netto Stimato (AUD)", f"AUD {total_a_out:,.2f}", help="Nessuna tassa dovuta")
+            r3.metric("Minusvalenza AUD", f"-AUD {abs(total_realized_gain_aud):,.2f}", delta="Deducibile")
+            r4.metric("Tax Saving", f"AUD {benefit:,.2f}")
+            r5.metric("Netto Stimato", f"AUD {sel['A_Out'].sum():,.2f}")
         else:
-            # Caso Plusvalenza
             r3.metric("Tasse Stimate", f"-AUD {stima_tassa:,.2f}", delta_color="inverse")
-            r4.metric("Netto AUD (Post-Tax)", f"AUD {(total_a_out - stima_tassa):,.2f}")
-            r5.metric("ROI Simulazione", f"{ (total_realized_gain_aud / (sel['Inv_AUD'].sum() * sel['% Vendi'].sum()/100) * 100):.2f}%")
-            
-        st.caption(f"Nota: Tassi e calcoli aggiornati al cambio attuale (EUR/AUD: {1/fx_now:.4f}).")
+            r4.metric("Netto AUD", f"AUD {(sel['A_Out'].sum() - stima_tassa):,.2f}")
+            r5.metric("ROI (AUD)", f"{(total_realized_gain_aud / (sel['Inv_AUD_Hist'].sum() * sel['% Vendi'].sum()/100) * 100):.2f}%")
     else:
-        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per visualizzare il riepilogo finanziario.")
+        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per il calcolo fiscale.")
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
