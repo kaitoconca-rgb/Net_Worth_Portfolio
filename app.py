@@ -440,49 +440,87 @@ with tab2:
     selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% ($135,001 – $190,000)")
     tax_r = tax_brackets[selected_bracket]
     
-    # --- LOGICA DI CALCOLO GAIN/LOSS ---
+    st.info(f"L'impatto fiscale ATO è calcolato sulla plusvalenza in AUD. Se vedi ⚠️, la vendita genera una minusvalenza deducibile in Australia nonostante il guadagno nominale in Euro.")
+
+    # --- 1. PREPARAZIONE DATI ---
     df_sim = portfolio.copy()
     
-    # Gain/Loss unitario e totale in EUR
+    # Prezzo di acquisto unitario (PMC) per riga
+    def get_pmc(isin):
+        buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
+        return buy_ops['Prezzo_Acq'].iloc[-1] if not buy_ops.empty else 0
+
+    df_sim['Prezzo_Acq_EUR'] = df_sim['ISIN'].apply(get_pmc)
+    
+    # Calcolo Gain/Loss per Alert Cambio
     df_sim['Gain_EUR'] = df_sim['Att_EUR'] - df_sim['Inv_EUR']
-    # Gain/Loss unitario e totale in AUD (quello che conta per ATO)
     df_sim['Gain_AUD'] = df_sim['Att_AUD'] - df_sim['Inv_AUD']
     
-    # Identifichiamo il "Conflitto di Cambio": Profitto in EUR, ma Perdita in AUD
-    def identify_conflict(row):
+    def fx_alert(row):
         if row['Gain_EUR'] > 0 and row['Gain_AUD'] < 0:
-            return "⚠️ FX LOSS (Gain EUR / Loss AUD)"
-        elif row['Gain_EUR'] < 0 and row['Gain_AUD'] > 0:
-            return "📈 FX GAIN (Loss EUR / Gain AUD)"
-        return "✅ Coerente"
+            return "⚠️ FX LOSS (Deducibile)"
+        return "✅ OK"
 
-    df_sim['FX_Status'] = df_sim.apply(identify_conflict, axis=1)
+    df_sim['Alert'] = df_sim.apply(fx_alert, axis=1)
     df_sim['% Vendi'] = 0.0
-    
-    st.info(f"L'impatto fiscale ATO è calcolato sul **Gain AUD**. Se vedi ⚠️, la vendita genera una minusvalenza deducibile nonostante il guadagno nominale in Euro.")
 
-    # Visualizzazione Editor
-    # Ordiniamo le colonne per mettere lo Status bene in vista
+    # --- 2. DATA EDITOR (VISUALIZZAZIONE) ---
     column_config = {
-        "FX_Status": st.column_config.TextColumn("Stato Cambio", width="medium"),
-        "% Vendi": st.column_config.NumberColumn("% da Vendere", min_value=0, max_value=100, step=1, format="%d%%"),
-        "Gain_AUD": st.column_config.NumberColumn("Potenziale Gain/Loss AUD", format="$%.2f")
+        "Alert": st.column_config.TextColumn("Stato Cambio", width="small"),
+        "Prezzo_Acq_EUR": st.column_config.NumberColumn("Prezzo Acq (€)", format="€%.4f"),
+        "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (€)", format="€%.4f"),
+        "Att_AUD": st.column_config.NumberColumn("Valore Attuale ($)", format="$%.2f"),
+        "Gain_AUD": st.column_config.NumberColumn("Gain/Loss Totale ($)", format="$%.2f"),
+        "% Vendi": st.column_config.NumberColumn("% da Vendere", min_value=0, max_value=100, step=1, format="%d%%")
     }
 
     ed = st.data_editor(
-        df_sim[['ISIN', 'FX_Status', 'Qty', 'Price_Now', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', '% Vendi']],
+        df_sim[['ISIN', 'Alert', 'Qty', 'Prezzo_Acq_EUR', 'Price_Now', 'Att_AUD', 'Gain_AUD', '% Vendi']],
         column_config=column_config,
         hide_index=True,
         use_container_width=True
     )
     
-    # --- CALCOLO RISULTATI ---
+    # --- 3. SUMMARY CALCULATION (IL PEZZO MANCANTE) ---
     sel = ed[ed['% Vendi'] > 0].copy()
+    
     if not sel.empty:
-        # Porzione di Gain/Loss effettiva in AUD basata sulla % venduta
-        sel['Realized_Gain_AUD'] = (sel['Gain_AUD'] * (sel['% Vendi']/100))
+        # Calcoliamo i flussi basati sulla percentuale scelta
+        sel['E_Out'] = (sel['Qty'] * (sel['% Vendi']/100)) * sel['Price_Now']
+        sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
         
-        total_realized_gain_aud = sel['Realized_Gain_AUD'].sum
+        # Gain AUD effettivo sulla porzione venduta (per ATO)
+        sel['Realized_Gain_AUD'] = sel['Gain_AUD'] * (sel['% Vendi']/100)
+        
+        total_e_out = sel['E_Out'].sum()
+        total_a_out = sel['A_Out'].sum()
+        total_realized_gain_aud = sel['Realized_Gain_AUD'].sum()
+        
+        # Tassa: si paga solo se il gain complessivo della vendita è positivo
+        stima_tassa = max(0, total_realized_gain_aud * (tax_r/100))
+        
+        st.divider()
+        st.subheader("Riepilogo Simulazione di Vendita")
+        
+        r1, r2, r3, r4 = st.columns(4)
+        
+        r1.metric("Cash out EUR", f"€{total_e_out:,.2f}")
+        r2.metric("Cash out AUD (Lordo)", f"${total_a_out:,.2f}")
+        
+        if total_realized_gain_aud < 0:
+            # Caso Minusvalenza: mostriamo il beneficio fiscale
+            benefit = abs(total_realized_gain_aud * (tax_r/100))
+            r3.metric("Minusvalenza AUD", f"-${abs(total_realized_gain_aud):,.2f}", delta="Deducibile ATO")
+            r4.metric("Tax Saving Stimato", f"${benefit:,.2f}", help="Riduzione delle tasse su altri capital gains")
+        else:
+            # Caso Plusvalenza
+            r3.metric("Tasse Stimate (AUD)", f"-${stima_tassa:,.2f}", delta_color="inverse")
+            r4.metric("Netto AUD (Post-Tax)", f"${(total_a_out - stima_tassa):,.2f}")
+            
+        # Nota di trasparenza
+        st.caption(f"Nota: Il netto AUD è calcolato sottraendo la tassa stimata (${stima_tassa:,.2f}) dal cash-out lordo (${total_a_out:,.2f}).")
+    else:
+        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per simulare i risultati.")
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
