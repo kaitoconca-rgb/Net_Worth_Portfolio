@@ -440,69 +440,49 @@ with tab2:
     selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% ($135,001 – $190,000)")
     tax_r = tax_brackets[selected_bracket]
     
-    st.info(f"Calcolo basato su un'aliquota del **{tax_r}%**.")
-    
-    # --- LOGICA DI COLOR CODING ---
+    # --- LOGICA DI CALCOLO GAIN/LOSS ---
     df_sim = portfolio.copy()
     
-    # Calcoliamo i profitti teorici per il controllo del colore
-    df_sim['Profit_EUR_Sim'] = df_sim['Att_EUR'] - df_sim['Inv_EUR']
-    df_sim['Profit_AUD_Sim'] = df_sim['Att_AUD'] - df_sim['Inv_AUD']
+    # Gain/Loss unitario e totale in EUR
+    df_sim['Gain_EUR'] = df_sim['Att_EUR'] - df_sim['Inv_EUR']
+    # Gain/Loss unitario e totale in AUD (quello che conta per ATO)
+    df_sim['Gain_AUD'] = df_sim['Att_AUD'] - df_sim['Inv_AUD']
     
-    # Funzione per applicare il colore
-    def highlight_fx_conflict(row):
-        # Caso: Gain in EUR ma Loss in AUD
-        if row['Profit_EUR_Sim'] > 0 and row['Profit_AUD_Sim'] < 0:
-            return ['background-color: #ff9800; color: white'] * len(row) # Arancione (FX Conflict)
-        # Caso: Gain in AUD ma Loss in EUR (opzionale, per completezza)
-        elif row['Profit_EUR_Sim'] < 0 and row['Profit_AUD_Sim'] > 0:
-            return ['background-color: #2196f3; color: white'] * len(row) # Blu
-        return [''] * len(row)
+    # Identifichiamo il "Conflitto di Cambio": Profitto in EUR, ma Perdita in AUD
+    def identify_conflict(row):
+        if row['Gain_EUR'] > 0 and row['Gain_AUD'] < 0:
+            return "⚠️ FX LOSS (Gain EUR / Loss AUD)"
+        elif row['Gain_EUR'] < 0 and row['Gain_AUD'] > 0:
+            return "📈 FX GAIN (Loss EUR / Gain AUD)"
+        return "✅ Coerente"
 
+    df_sim['FX_Status'] = df_sim.apply(identify_conflict, axis=1)
     df_sim['% Vendi'] = 0.0
     
-    # Visualizzazione con stile
-    # Nota: st.data_editor supporta lo styling tramite .style
-    styled_df = df_sim.style.apply(highlight_fx_conflict, axis=1).format({
-        'Price_Now': '€{:.2f}',
-        'Att_EUR': '€{:,.2f}',
-        'Inv_EUR': '€{:,.2f}',
-        'Att_AUD': '${:,.2f}',
-        'Inv_AUD': '${:,.2f}'
-    })
+    st.info(f"L'impatto fiscale ATO è calcolato sul **Gain AUD**. Se vedi ⚠️, la vendita genera una minusvalenza deducibile nonostante il guadagno nominale in Euro.")
 
-    st.write("📌 **Legenda Colori:** Arancione = Guadagno EUR / Perdita AUD (Conflitto Cambio)")
-    
+    # Visualizzazione Editor
+    # Ordiniamo le colonne per mettere lo Status bene in vista
+    column_config = {
+        "FX_Status": st.column_config.TextColumn("Stato Cambio", width="medium"),
+        "% Vendi": st.column_config.NumberColumn("% da Vendere", min_value=0, max_value=100, step=1, format="%d%%"),
+        "Gain_AUD": st.column_config.NumberColumn("Potenziale Gain/Loss AUD", format="$%.2f")
+    }
+
     ed = st.data_editor(
-        styled_df, 
-        column_order=['ISIN','Qty','Price_Now','Att_EUR','Inv_EUR','Att_AUD','Inv_AUD','% Vendi'],
-        hide_index=True, 
+        df_sim[['ISIN', 'FX_Status', 'Qty', 'Price_Now', 'Inv_AUD', 'Att_AUD', 'Gain_AUD', '% Vendi']],
+        column_config=column_config,
+        hide_index=True,
         use_container_width=True
     )
     
-    # --- CALCOLO RISULTATI SIMULAZIONE ---
+    # --- CALCOLO RISULTATI ---
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
-        sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
-        sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
+        # Porzione di Gain/Loss effettiva in AUD basata sulla % venduta
+        sel['Realized_Gain_AUD'] = (sel['Gain_AUD'] * (sel['% Vendi']/100))
         
-        # Semplificazione CGT: calcoliamo il gain sulla porzione venduta
-        gain_aud = (sel['Att_AUD'] - sel['Inv_AUD']) * (sel['% Vendi']/100)
-        sel['Tassa_Stima'] = gain_aud.clip(lower=0) * (tax_r/100)
-        
-        st.divider()
-        r1, r2, r3, r4 = st.columns(4)
-        
-        # Totali per le metriche
-        total_e_out = sel['E_Out'].sum()
-        total_a_out = sel['A_Out'].sum()
-        total_tax = sel['Tassa_Stima'].sum()
-        
-        r1.metric("Cash out EUR", f"€{total_e_out:,.2f}")
-        r2.metric("Cash out AUD (Lordo)", f"${total_a_out:,.2f}")
-        r3.metric("Tasse Stimate (AUD)", f"-${total_tax:,.2f}", delta_color="inverse")
-        r4.metric("Netto AUD", f"${(total_a_out - total_tax):,.2f}")
-
+        total_realized_gain_aud = sel['Realized_Gain_AUD'].sum
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
