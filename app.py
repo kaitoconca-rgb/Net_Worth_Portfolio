@@ -430,14 +430,14 @@ with tab2:
     st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
     
     tax_brackets = {
-        "0% (fino a $18,200)": 0.0,
-        "16% ($18,201 – $45,000)": 16.0,
-        "30% ($45,001 – $135,000)": 30.0,
-        "37% ($135,001 – $190,000)": 37.0,
-        "45% (oltre $190,000)": 45.0
+        "0% (fino a AUD 18,200)": 0.0,
+        "16% (AUD 18,201 – 45,000)": 16.0,
+        "30% (AUD 45,001 – 135,000)": 30.0,
+        "37% (AUD 135,001 – 190,000)": 37.0,
+        "45% (oltre AUD 190,000)": 45.0
     }
     
-    selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% ($135,001 – $190,000)")
+    selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% (AUD 135,001 – 190,000)")
     tax_r = tax_brackets[selected_bracket]
     
     st.info(f"L'impatto fiscale ATO è calcolato sulla plusvalenza in AUD. Se vedi ⚠️, la vendita genera una minusvalenza deducibile in Australia nonostante il guadagno nominale in Euro.")
@@ -469,19 +469,20 @@ with tab2:
         "Alert": st.column_config.TextColumn("Stato Cambio", width="small"),
         "Prezzo_Acq_EUR": st.column_config.NumberColumn("Prezzo Acq (€)", format="€%.4f"),
         "Price_Now": st.column_config.NumberColumn("Prezzo Attuale (€)", format="€%.4f"),
-        "Att_AUD": st.column_config.NumberColumn("Valore Attuale ($)", format="$%.2f"),
-        "Gain_AUD": st.column_config.NumberColumn("Gain/Loss Totale ($)", format="$%.2f"),
+        "Att_EUR": st.column_config.NumberColumn("Valore Attuale (€)", format="€%.2f"),
+        "Att_AUD": st.column_config.NumberColumn("Valore Attuale (AUD)", format="AUD %.2f"),
+        "Gain_AUD": st.column_config.NumberColumn("Gain/Loss Totale (AUD)", format="AUD %.2f"),
         "% Vendi": st.column_config.NumberColumn("% da Vendere", min_value=0, max_value=100, step=1, format="%d%%")
     }
 
     ed = st.data_editor(
-        df_sim[['ISIN', 'Alert', 'Qty', 'Prezzo_Acq_EUR', 'Price_Now', 'Att_AUD', 'Gain_AUD', '% Vendi']],
+        df_sim[['ISIN', 'Alert', 'Qty', 'Prezzo_Acq_EUR', 'Price_Now', 'Att_EUR', 'Att_AUD', 'Gain_AUD', '% Vendi']],
         column_config=column_config,
         hide_index=True,
         use_container_width=True
     )
     
-    # --- 3. SUMMARY CALCULATION (IL PEZZO MANCANTE) ---
+    # --- 3. SUMMARY CALCULATION ---
     sel = ed[ed['% Vendi'] > 0].copy()
     
     if not sel.empty:
@@ -502,25 +503,27 @@ with tab2:
         st.divider()
         st.subheader("Riepilogo Simulazione di Vendita")
         
-        r1, r2, r3, r4 = st.columns(4)
+        # Usiamo 5 colonne per includere il Valore Totale in EUR
+        r1, r2, r3, r4, r5 = st.columns(5)
         
         r1.metric("Cash out EUR", f"€{total_e_out:,.2f}")
-        r2.metric("Cash out AUD (Lordo)", f"${total_a_out:,.2f}")
+        r2.metric("Cash out AUD (Lordo)", f"AUD {total_a_out:,.2f}")
         
         if total_realized_gain_aud < 0:
-            # Caso Minusvalenza: mostriamo il beneficio fiscale
+            # Caso Minusvalenza: beneficio fiscale
             benefit = abs(total_realized_gain_aud * (tax_r/100))
-            r3.metric("Minusvalenza AUD", f"-${abs(total_realized_gain_aud):,.2f}", delta="Deducibile ATO")
-            r4.metric("Tax Saving Stimato", f"${benefit:,.2f}", help="Riduzione delle tasse su altri capital gains")
+            r3.metric("Minusvalenza AUD", f"-AUD {abs(total_realized_gain_aud):,.2f}", delta="Deducibile ATO")
+            r4.metric("Tax Saving Stimato", f"AUD {benefit:,.2f}")
+            r5.metric("Netto Stimato (AUD)", f"AUD {total_a_out:,.2f}", help="Nessuna tassa dovuta")
         else:
             # Caso Plusvalenza
-            r3.metric("Tasse Stimate (AUD)", f"-${stima_tassa:,.2f}", delta_color="inverse")
-            r4.metric("Netto AUD (Post-Tax)", f"${(total_a_out - stima_tassa):,.2f}")
+            r3.metric("Tasse Stimate", f"-AUD {stima_tassa:,.2f}", delta_color="inverse")
+            r4.metric("Netto AUD (Post-Tax)", f"AUD {(total_a_out - stima_tassa):,.2f}")
+            r5.metric("ROI Simulazione", f"{ (total_realized_gain_aud / (sel['Inv_AUD'].sum() * sel['% Vendi'].sum()/100) * 100):.2f}%")
             
-        # Nota di trasparenza
-        st.caption(f"Nota: Il netto AUD è calcolato sottraendo la tassa stimata (${stima_tassa:,.2f}) dal cash-out lordo (${total_a_out:,.2f}).")
+        st.caption(f"Nota: Tassi e calcoli aggiornati al cambio attuale (EUR/AUD: {1/fx_now:.4f}).")
     else:
-        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per simulare i risultati.")
+        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per visualizzare il riepilogo finanziario.")
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
