@@ -427,7 +427,7 @@ with tab1:
                 use_container_width=True
             )
 with tab2:
-    st.subheader("Simulatore Cash-out & Tasse (ATO compliant)")
+    st.subheader("Simulatore Cash-out & Tasse (Granulare per Lotto d'Acquisto)")
     
     tax_brackets = {
         "0% (fino a AUD 18,200)": 0.0,
@@ -440,83 +440,140 @@ with tab2:
     selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% (AUD 135,001 – 190,000)")
     tax_r = tax_brackets[selected_bracket]
     
-    st.info(f"L'impatto fiscale ATO è calcolato sulla plusvalenza in AUD. Se vedi ⚠️, la vendita genera una minusvalenza deducibile in Australia nonostante il guadagno nominale in Euro.")
+    st.info(f"L'impatto fiscale ATO è calcolato sulla plusvalenza del singolo lotto in AUD. La visualizzazione per data di acquisto ti permette di scegliere con precisione quali lotti liquidare.")
 
-    # --- 1. PREPARAZIONE DATI ---
-    df_sim = portfolio.copy()
+    # --- 1. COSTRUZIONE LOTTI APERTI (Dettaglio per Data) ---
+    lotti_aperti = []
     
-    # Recupero Prezzo Acquisto unitario e Valore Iniziale AUD (storico)
-    def get_purchase_data(isin):
-        buy_ops = df_raw[(df_raw['ISIN'] == isin) & (df_raw['Tipo'].str.upper() == 'BUY')]
-        if not buy_ops.empty:
-            pmc = buy_ops['Prezzo_Acq'].iloc[-1]
-            inv_aud_hist = buy_ops['Inv_AUD'].sum() # Somma degli importi in AUD spesi al tempo
-            return pd.Series([pmc, inv_aud_hist])
-        return pd.Series([0, 0])
+    for isin in df_raw['ISIN'].unique():
+        # Isoliamo la cronologia dei movimenti per l'asset
+        asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data').copy()
+        
+        # Recuperiamo il prezzo di mercato corrente usando la tua logica esistente
+        h = hist_map.get(isin)
+        p_now = float(h.iloc[-1]) if (h is not None and not h.empty) else asset_ledger['Prezzo_Acq'].iloc[0]
+        manual = asset_ledger['Manual_Price'].iloc[-1]
+        if pd.notnull(manual) and manual > 0:
+            p_now = manual
 
-    df_sim[['Prezzo_Acq_EUR', 'Inv_AUD_Hist']] = df_sim['ISIN'].apply(get_purchase_data)
-    
-    # Calcolo Variazioni Percentuali
-    # In EUR: (Valore Attuale / Valore Investito) - 1
-    df_sim['Var_%_EUR'] = ((df_sim['Att_EUR'] / df_sim['Inv_EUR']) - 1) * 100
-    # In AUD: (Valore Attuale / Valore Investito Storico) - 1
-    df_sim['Var_%_AUD'] = ((df_sim['Att_AUD'] / df_sim['Inv_AUD_Hist']) - 1) * 100
-    
-    # Logica Alert Cambio
-    df_sim['Gain_EUR'] = df_sim['Att_EUR'] - df_sim['Inv_EUR']
-    df_sim['Gain_AUD'] = df_sim['Att_AUD'] - df_sim['Inv_AUD_Hist']
-    
-    def fx_alert(row):
-        if row['Gain_EUR'] > 0 and row['Gain_AUD'] < 0:
-            return "⚠️ FX LOSS"
-        return "✅ OK"
+        # Tracciamento FIFO semplificato per determinare quanta Qty rimane in ogni lotto d'acquisto
+        # Troviamo tutti i BUY individuali
+        buys = asset_ledger[asset_ledger['Tipo'] == 'BUY'].copy()
+        # Calcoliamo la quantità totale venduta storicamente per questo ISIN
+        total_sold = abs(asset_ledger[asset_ledger['Tipo'] == 'SELL']['Qty'].sum())
+        
+        # Sottraiamo le vendite dai lotti più vecchi (FIFO) per determinare le quantità residue correnti
+        for idx, buy_row in buys.iterrows():
+            qty_iniziale = buy_row['Qty']
+            if total_sold > 0:
+                if total_sold >= qty_iniziale:
+                    total_sold -= qty_iniziale
+                    qty_residua = 0.0
+                else:
+                    qty_residua = qty_iniziale - total_sold
+                    total_sold = 0.0
+            else:
+                qty_residua = qty_iniziale
+            
+            # Se il lotto ha ancora pezzi attivi, lo includiamo nel simulatore
+            if qty_residua > 0.001:
+                # Calcolo quote proporzionali dei costi storici del lotto
+                quota_lotto = qty_residua / qty_iniziale
+                inv_eur_residual = buy_row['Inv_EUR'] * quota_lotto
+                inv_aud_residual = buy_row['Inv_AUD'] * quota_lotto
+                
+                # Valore di mercato attuale delle quote residue
+                att_eur_val = qty_residua * p_now
+                att_aud_val = att_eur_val * fx_now
+                
+                # Calcolo performance e gain del singolo lotto
+                var_eur = ((att_eur_val / inv_eur_residual) - 1) * 100 if inv_eur_residual > 0 else 0
+                var_aud = ((att_aud_val / inv_aud_residual) - 1) * 100 if inv_aud_residual > 0 else 0
+                
+                gain_eur = att_eur_val - inv_eur_residual
+                gain_aud = att_aud_val - inv_aud_residual
+                alert_status = "⚠️ FX LOSS" if (gain_eur > 0 and gain_aud < 0) else "✅ OK"
+                
+                # Verifica se il lotto si qualifica per lo sconto CGT del 50% dell'ATO (mantenuto > 12 mesi)
+                giorni_possesso = (datetime.now().date() - buy_row['Data'].date()).days
+                cgt_discount = "50% Disc" if giorni_possesso >= 365 else "No Disc"
 
-    df_sim['Alert'] = df_sim.apply(fx_alert, axis=1)
-    df_sim['% Vendi'] = 0.0
+                lotti_aperti.append({
+                    'ISIN': isin,
+                    'Data Acquisto': buy_row['Data'].strftime('%Y-%m-%d'),
+                    'Stato': alert_status,
+                    'CGT': cgt_discount,
+                    'Qty Residua': qty_residua,
+                    'Prezzo Acq (€)': buy_row['Prezzo_Acq'],
+                    'Inv EUR (€)': inv_eur_residual,
+                    'Att EUR (€)': att_eur_val,
+                    'Var % EUR': var_eur,
+                    'Inv AUD ($)': inv_aud_residual,
+                    'Att AUD ($)': att_aud_val,
+                    'Var % AUD': var_aud,
+                    '% Vendi': 0.0
+                })
 
-    # --- 2. DATA EDITOR (VISUALIZZAZIONE) ---
+    df_sim_lotti = pd.DataFrame(lotti_aperti)
+
+    # --- 2. CONFIGURAZIONE E CONFIG COLUMNS DATA EDITOR ---
     column_config = {
-        "Alert": st.column_config.TextColumn("Stato", width="small"),
-        "Inv_EUR": st.column_config.NumberColumn("Val. Iniziale (€)", format="€%.2f"),
-        "Att_EUR": st.column_config.NumberColumn("Val. Attuale (€)", format="€%.2f"),
-        "Var_%_EUR": st.column_config.NumberColumn("Var % (€)", format="%.2f%%"),
-        "Inv_AUD_Hist": st.column_config.NumberColumn("Val. Iniziale (AUD)", format="AUD %.2f"),
-        "Att_AUD": st.column_config.NumberColumn("Val. Attuale (AUD)", format="AUD %.2f"),
-        "Var_%_AUD": st.column_config.NumberColumn("Var % (AUD)", format="%.2f%%"),
-        "% Vendi": st.column_config.NumberColumn("% Vendi", min_value=0, max_value=100, step=1, format="%d%%")
+        "ISIN": st.column_config.TextColumn("ISIN", width="medium"),
+        "Data Acquisto": st.column_config.TextColumn("Data Acquisto", width="small"),
+        "Stato": st.column_config.TextColumn("Stato", width="small"),
+        "CGT": st.column_config.TextColumn("ATO CGT", width="small"),
+        "Qty Residua": st.column_config.NumberColumn("Qty Disp.", format="%.2f"),
+        "Prezzo Acq (€)": st.column_config.NumberColumn("Prezzo Acq", format="€%.2f"),
+        "Inv EUR (€)": st.column_config.NumberColumn("Costo Base Lot (€)", format="€%.2f"),
+        "Att EUR (€)": st.column_config.NumberColumn("Val. Corrente (€)", format="€%.2f"),
+        "Var % EUR": st.column_config.NumberColumn("Var % (€)", format="%.2f%%"),
+        "Inv AUD ($)": st.column_config.NumberColumn("Costo Base Lot (AUD)", format="$%.2f"),
+        "Att AUD ($)": st.column_config.NumberColumn("Val. Corrente (AUD)", format="$%.2f"),
+        "Var % AUD": st.column_config.NumberColumn("Var % (AUD)", format="%.2f%%"),
+        "% Vendi": st.column_config.NumberColumn("% Vendi", min_value=0, max_value=100, step=5, format="%d%%")
     }
 
-    # Selezione e ordine colonne per massima leggibilità
     display_cols = [
-        'ISIN', 'Alert', 'Qty', 
-        'Inv_EUR', 'Att_EUR', 'Var_%_EUR', 
-        'Inv_AUD_Hist', 'Att_AUD', 'Var_%_AUD', 
-        '% Vendi'
+        'ISIN', 'Data Acquisto', 'Stato', 'CGT', 'Qty Residua', 'Prezzo Acq (€)',
+        'Inv EUR (€)', 'Att EUR (€)', 'Var % EUR', 
+        'Inv AUD ($)', 'Att AUD ($)', 'Var % AUD', '% Vendi'
     ]
 
+    # Mostriamo la tabella interattiva suddivisa lotto per lotto
     ed = st.data_editor(
-        df_sim[display_cols],
+        df_sim_lotti[display_cols],
         column_config=column_config,
         hide_index=True,
         use_container_width=True
     )
     
-    # --- 3. SUMMARY CALCULATION ---
+    # --- 3. LOGICA DI RIEPILOGO FISCALE STRATIFICATA ---
     sel = ed[ed['% Vendi'] > 0].copy()
     
     if not sel.empty:
-        # Calcolo flussi in uscita
-        sel['E_Out'] = sel['Att_EUR'] * (sel['% Vendi']/100)
-        sel['A_Out'] = sel['Att_AUD'] * (sel['% Vendi']/100)
+        # Calcolo flussi in uscita proporzionali alla percentuale inserita
+        sel['E_Out'] = sel['Att EUR (€)'] * (sel['% Vendi']/100)
+        sel['A_Out'] = sel['Att AUD ($)'] * (sel['% Vendi']/100)
         
-        # Capital Gain AUD basato sullo storico (per ATO)
-        realized_gain_aud = (sel['Att_AUD'] - sel['Inv_AUD_Hist']) * (sel['% Vendi']/100)
-        total_realized_gain_aud = realized_gain_aud.sum()
+        # Capital Gain calcolato sul singolo lotto specifico selezionato
+        sel['Lotto_Gain_AUD'] = (sel['Att AUD ($)'] - sel['Inv AUD ($)']) * (sel['% Vendi']/100)
         
-        stima_tassa = max(0, total_realized_gain_aud * (tax_r/100))
+        # Applichiamo lo sconto CGT del 50% se l'asset è contrassegnato con "50% Disc" e il gain è positivo
+        def calcola_gain_tassabile(row):
+            if row['Lotto_Gain_AUD'] > 0 and row['CGT'] == "50% Disc":
+                return row['Lotto_Gain_AUD'] * 0.5
+            return row['Lotto_Gain_AUD']
+
+        sel['Lotto_Gain_Tassabile_AUD'] = sel.apply(calcola_gain_tassabile, axis=1)
+        
+        total_realized_gain_aud = sel['Lotto_Gain_AUD'].sum()
+        total_taxable_gain_aud = sel['Lotto_Gain_Tassabile_AUD'].sum()
+        
+        # Tassa stimata calcolata solo sulle plusvalenze complessivamente nette tassabili
+        stima_tassa = max(0, total_taxable_gain_aud * (tax_r/100))
         
         st.divider()
-        st.subheader("Riepilogo Simulazione di Vendita")
+        st.subheader("Riepilogo Simulazione di Vendita Selettiva (Lotti)")
         
         r1, r2, r3, r4, r5 = st.columns(5)
         
@@ -525,15 +582,18 @@ with tab2:
         
         if total_realized_gain_aud < 0:
             benefit = abs(total_realized_gain_aud * (tax_r/100))
-            r3.metric("Minusvalenza AUD", f"-AUD {abs(total_realized_gain_aud):,.2f}", delta="Deducibile")
-            r4.metric("Tax Saving", f"AUD {benefit:,.2f}")
-            r5.metric("Netto Stimato", f"AUD {sel['A_Out'].sum():,.2f}")
+            r3.metric("Minusvalenza Totale AUD", f"-AUD {abs(total_realized_gain_aud):,.2f}", delta="Deducibile")
+            r4.metric("Tax Saving Stimato", f"AUD {benefit:,.2f}")
+            r5.metric("Netto in Tasca AUD", f"AUD {sel['A_Out'].sum():,.2f}")
         else:
-            r3.metric("Tasse Stimate", f"-AUD {stima_tassa:,.2f}", delta_color="inverse")
-            r4.metric("Netto AUD", f"AUD {(sel['A_Out'].sum() - stima_tassa):,.2f}")
-            r5.metric("ROI (AUD)", f"{(total_realized_gain_aud / (sel['Inv_AUD_Hist'].sum() * sel['% Vendi'].sum()/100) * 100):.2f}%")
+            sconto_applicato = total_realized_gain_aud - total_taxable_gain_aud
+            r3.metric("Tasse Stimate (Con Sconto)", f"-AUD {stima_tassa:,.2f}", 
+                      delta=f"Sconto CGT 50% applicato su lotti idonei" if sconto_applicato > 0 else None, delta_color="inverse")
+            r4.metric("Netto Stimato (Post-Tax)", f"AUD {(sel['A_Out'].sum() - stima_tassa):,.2f}")
+            r5.metric("Plusvalenza Lorda AUD", f"AUD {total_realized_gain_aud:,.2f}")
+            
     else:
-        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' per il calcolo fiscale.")
+        st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' dei singoli lotti datati per valutare l'impatto fiscale mirato.")
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     
