@@ -939,26 +939,64 @@ with tab4:
             lambda r: f"{r['ISIN']} 🔒" if r['Status'] == '🔒 Closed' else r['ISIN'], axis=1
         )
 
+        # Separate open and closed for distinct colouring
+        df_open_bar = df_bar_fx[df_bar_fx['Status'] == '✅ Open']
+        df_closed_bar = df_bar_fx[df_bar_fx['Status'] == '🔒 Closed']
+
         fig_decomp_bar = go.Figure()
+
+        # Open positions — standard colours
         fig_decomp_bar.add_trace(go.Bar(
-            name='Market Return (AUD)',
-            x=df_bar_fx['Label'],
-            y=df_bar_fx['Market Return in AUD (at purchase FX)'],
+            name='Market Return — Open (AUD)',
+            x=df_open_bar['Label'],
+            y=df_open_bar['Market Return in AUD (at purchase FX)'],
             marker_color='#2980b9'
         ))
         fig_decomp_bar.add_trace(go.Bar(
-            name='FX Impact (AUD)',
-            x=df_bar_fx['Label'],
-            y=df_bar_fx['FX Impact (AUD)'],
+            name='FX Impact — Open (AUD)',
+            x=df_open_bar['Label'],
+            y=df_open_bar['FX Impact (AUD)'],
             marker_color='#e74c3c'
         ))
+
+        # Closed positions — muted/hatched to visually separate them
+        fig_decomp_bar.add_trace(go.Bar(
+            name='Market Return — Sold 🔒 (AUD)',
+            x=df_closed_bar['Label'],
+            y=df_closed_bar['Market Return in AUD (at purchase FX)'],
+            marker=dict(
+                color='#85c1e9',           # lighter blue
+                pattern=dict(shape="/")    # hatching to signal "realised"
+            )
+        ))
+        fig_decomp_bar.add_trace(go.Bar(
+            name='FX Impact — Sold 🔒 (AUD)',
+            x=df_closed_bar['Label'],
+            y=df_closed_bar['FX Impact (AUD)'],
+            marker=dict(
+                color='#f1948a',           # lighter red
+                pattern=dict(shape="/")    # hatching
+            )
+        ))
+
         fig_decomp_bar.update_layout(
             barmode='stack',
-            title="AUD P&L Split: Market Return vs FX Impact per Asset (🔒 = fully sold)",
+            title="AUD P&L Split: Market Return vs FX Impact — solid = open, hatched = fully sold 🔒",
             yaxis_title="AUD $",
-            height=380,
+            height=400,
             hovermode="x unified",
-            legend=dict(orientation="h", y=1.1)
+            legend=dict(orientation="h", y=1.15),
+            annotations=[
+                dict(
+                    x=row['Label'],
+                    y=max(row['Market Return in AUD (at purchase FX)'] + row['FX Impact (AUD)'], 0),
+                    text="SOLD",
+                    showarrow=False,
+                    font=dict(size=10, color="#922b21"),
+                    yshift=8
+                )
+                for _, row in df_closed_bar.iterrows()
+            ]
         )
         st.plotly_chart(fig_decomp_bar, use_container_width=True)
 
