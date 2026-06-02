@@ -924,7 +924,34 @@ with tab4:
                    delta_color="normal" if tot_fx_aud >= 0 else "inverse")
         sm4.metric("Total P&L (AUD)", f"${tot_pl_aud:,.2f}",
                    help="Market Return (at buy FX) + FX Impact — reconciles to actual AUD gain/loss")
+# Realised vs Unrealised breakdown
+        df_closed_decomp = df_decomp[df_decomp['Status'] == '🔒 Closed']
+        df_open_decomp   = df_decomp[df_decomp['Status'] == '✅ Open']
 
+        realised_eur   = df_closed_decomp['Market Return (EUR)'].sum()
+        realised_aud   = df_closed_decomp['Total P&L (AUD)'].sum()
+        unrealised_eur = df_open_decomp['Market Return (EUR)'].sum()
+        unrealised_aud = df_open_decomp['Total P&L (AUD)'].sum()
+
+        r_colour = "#27ae60" if realised_aud >= 0 else "#e74c3c"
+        u_colour = "#27ae60" if unrealised_aud >= 0 else "#e74c3c"
+
+        st.markdown(
+            f"""
+            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d; 
+                        padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:8px;">
+                <b>P&L Composition:</b>&nbsp;&nbsp;
+                🔒 <b>Realised (sold assets):</b> 
+                    <span style="color:{r_colour}">€{realised_eur:,.2f} EUR</span> / 
+                    <span style="color:{r_colour}">${realised_aud:,.2f} AUD</span>
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                ✅ <b>Unrealised (open positions):</b> 
+                    <span style="color:{u_colour}">€{unrealised_eur:,.2f} EUR</span> / 
+                    <span style="color:{u_colour}">${unrealised_aud:,.2f} AUD</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.divider()
 
         # Stacked bar per ISIN
