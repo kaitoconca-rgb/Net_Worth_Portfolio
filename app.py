@@ -959,7 +959,7 @@ with tab4:
                 'Market Return in AUD\n(at purchase FX)': '${:,.2f}',
                 'FX Impact (AUD)': '${:,.2f}',
                 'Total P&L (AUD)': '${:,.2f}',
-            }).applymap(
+            }).map(
                 lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
                 else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
                 subset=['Market Return (EUR)', 'FX Impact (AUD)', 'Total P&L (AUD)']
