@@ -812,9 +812,9 @@ with tab4:
 
     st.divider()
 
-    # ── 3. FX DECOMPOSITION TABLE ─────────────────────────────────────────────
+  # ── 3. FX DECOMPOSITION TABLE ─────────────────────────────────────────────
     st.markdown("### Portfolio FX Impact Decomposition (Per Lot)")
-    st.caption("Splits your total AUD P&L into: (a) pure market return and (b) gain/loss caused purely by EUR/AUD rate movement since purchase.")
+    st.caption("Splits your total AUD P&L into: (a) pure market return and (b) gain/loss caused purely by EUR/AUD rate movement since purchase. Includes fully sold positions.")
 
     fx_decomp_rows = []
 
@@ -829,65 +829,77 @@ with tab4:
             p_now_fx = manual
 
         buys = asset_ledger[asset_ledger['Tipo'] == 'BUY'].copy()
-        total_sold = abs(asset_ledger[asset_ledger['Tipo'] == 'SELL']['Qty'].sum())
+        sells = asset_ledger[asset_ledger['Tipo'] == 'SELL'].copy()
+        net_qty = asset_ledger['Qty'].sum()
+        is_closed = abs(net_qty) < 0.001  # fully sold position
+
+        total_sold_fifo = abs(sells['Qty'].sum())
 
         for _, buy_row in buys.iterrows():
             qty_ini = buy_row['Qty']
 
-            # FIFO residual qty
-            if total_sold > 0:
-                if total_sold >= qty_ini:
-                    total_sold -= qty_ini
+            # FIFO: determine residual open qty for this lot
+            if total_sold_fifo > 0:
+                if total_sold_fifo >= qty_ini:
+                    total_sold_fifo -= qty_ini
                     qty_res = 0.0
                 else:
-                    qty_res = qty_ini - total_sold
-                    total_sold = 0.0
+                    qty_res = qty_ini - total_sold_fifo
+                    total_sold_fifo = 0.0
             else:
                 qty_res = qty_ini
 
-            if qty_res < 0.001:
+            # For closed positions, ALL qty was sold — use full lot for realised calc
+            # For open positions, use residual qty only
+            qty_for_calc = qty_ini if is_closed else qty_res
+
+            if qty_for_calc < 0.001:
                 continue
 
-            # Purchase metrics (pro-rated to residual qty)
-            quota = qty_res / qty_ini
-            cost_eur = buy_row['Inv_EUR'] * quota          # what you paid in EUR
-            cost_aud = buy_row['Inv_AUD'] * quota          # what you paid in AUD
-            p_buy = buy_row['Prezzo_Acq']                  # unit purchase price (EUR)
-            fx_buy = cost_aud / cost_eur if cost_eur > 0 else fx_now  # EUR/AUD at purchase
+            quota = qty_for_calc / qty_ini
+            cost_eur = buy_row['Inv_EUR'] * quota
+            cost_aud = buy_row['Inv_AUD'] * quota
+            p_buy = buy_row['Prezzo_Acq']
+            fx_buy = cost_aud / cost_eur if cost_eur > 0 else fx_now
 
-            # Current metrics
-            val_eur_now = qty_res * p_now_fx               # current EUR value
-            val_aud_now = val_eur_now * fx_now             # current AUD value
+            if is_closed:
+                # Realised: use actual sell proceeds
+                # Apportion sell proceeds proportionally if multiple buy lots
+                total_buy_qty = buys['Qty'].sum()
+                lot_share = qty_for_calc / total_buy_qty
+                proceeds_eur = abs(sells['Inv_EUR'].sum()) * lot_share
+                proceeds_aud = abs(sells['Inv_AUD'].sum()) * lot_share
+                val_eur_now = proceeds_eur
+                val_aud_now = proceeds_aud
+                # FX at sale (weighted average)
+                fx_sell = proceeds_aud / proceeds_eur if proceeds_eur > 0 else fx_now
+            else:
+                val_eur_now = qty_for_calc * p_now_fx
+                val_aud_now = val_eur_now * fx_now
+                fx_sell = fx_now
 
             # ── Decomposition ──────────────────────────────────────────────
-            # 1. Market return in EUR (asset price movement only)
             market_return_eur = val_eur_now - cost_eur
-
-            # 2. Market return translated to AUD at the PURCHASE FX rate
-            #    (what you'd have made if FX hadn't moved)
             market_return_aud_at_purchase_fx = market_return_eur * fx_buy
-
-            # 3. FX Impact = difference caused purely by the rate changing
-            #    = current EUR value × (fx_now - fx_buy)
-            fx_impact_aud = val_eur_now * (fx_now - fx_buy)
-
-            # 4. Total AUD P&L (should reconcile: market_return_aud + fx_impact_aud + cost_aud at buy fx vs now)
+            fx_impact_aud = val_eur_now * (fx_sell - fx_buy)
             total_pl_aud = val_aud_now - cost_aud
 
             giorni = (datetime.now().date() - buy_row['Data'].date()).days
+            status = "🔒 Closed" if is_closed else "✅ Open"
 
             fx_decomp_rows.append({
                 'ISIN': isin,
+                'Status': status,
                 'Date Purchased': buy_row['Data'].strftime('%Y-%m-%d'),
                 'Days Held': giorni,
-                'Qty': qty_res,
+                'Qty': qty_for_calc,
                 'Cost (EUR)': cost_eur,
                 'Value Now (EUR)': val_eur_now,
                 'Market Return (EUR)': market_return_eur,
                 'FX at Purchase': fx_buy,
-                'FX Today': fx_now,
-                'FX Δ': fx_now - fx_buy,
-                'Market Return in AUD\n(at purchase FX)': market_return_aud_at_purchase_fx,
+                'FX at Sale/Today': fx_sell,
+                'FX Δ': fx_sell - fx_buy,
+                'Market Return in AUD (at purchase FX)': market_return_aud_at_purchase_fx,
                 'FX Impact (AUD)': fx_impact_aud,
                 'Total P&L (AUD)': total_pl_aud,
             })
@@ -895,49 +907,54 @@ with tab4:
     df_decomp = pd.DataFrame(fx_decomp_rows)
 
     if not df_decomp.empty:
-        # Summary metrics first
+        # Summary metrics
         tot_mkt_eur = df_decomp['Market Return (EUR)'].sum()
-        tot_mkt_aud = df_decomp['Market Return in AUD\n(at purchase FX)'].sum()
+        tot_mkt_aud = df_decomp['Market Return in AUD (at purchase FX)'].sum()
         tot_fx_aud  = df_decomp['FX Impact (AUD)'].sum()
         tot_pl_aud  = df_decomp['Total P&L (AUD)'].sum()
-        
+
         sm1, sm2, sm3, sm4 = st.columns(4)
         sm1.metric("Market Return (EUR)", f"€{tot_mkt_eur:,.2f}",
-                   help="Pure asset price appreciation/depreciation in EUR")
+                   help="Pure asset price appreciation in EUR across all lots (open + closed)")
         sm2.metric("Market Return (AUD at buy FX)", f"${tot_mkt_aud:,.2f}",
-                   help="What your EUR market return would be worth in AUD if the exchange rate had never moved")
+                   help="EUR market return converted at the rate that existed when each lot was purchased")
         sm3.metric("FX Impact (AUD)", f"${tot_fx_aud:,.2f}",
+                   help="Gain/loss caused purely by EUR/AUD rate movement since each purchase",
                    delta=f"{'▲' if tot_fx_aud >= 0 else '▼'} {abs(tot_fx_aud/tot_pl_aud*100):.1f}% of total P&L" if tot_pl_aud != 0 else None,
-                   help="Gain/loss caused purely by EUR/AUD rate movement since each purchase date",
                    delta_color="normal" if tot_fx_aud >= 0 else "inverse")
         sm4.metric("Total P&L (AUD)", f"${tot_pl_aud:,.2f}",
                    help="Market Return (at buy FX) + FX Impact — reconciles to actual AUD gain/loss")
 
         st.divider()
 
-        # Stacked bar: Market return vs FX impact per ISIN
-        df_bar_fx = df_decomp.groupby('ISIN').agg({
-            'Market Return in AUD\n(at purchase FX)': 'sum',
+        # Stacked bar per ISIN
+        df_bar_fx = df_decomp.groupby(['ISIN', 'Status']).agg({
+            'Market Return in AUD (at purchase FX)': 'sum',
             'FX Impact (AUD)': 'sum',
             'Total P&L (AUD)': 'sum'
         }).reset_index()
 
+        # Label closed assets clearly on x-axis
+        df_bar_fx['Label'] = df_bar_fx.apply(
+            lambda r: f"{r['ISIN']} 🔒" if r['Status'] == '🔒 Closed' else r['ISIN'], axis=1
+        )
+
         fig_decomp_bar = go.Figure()
         fig_decomp_bar.add_trace(go.Bar(
             name='Market Return (AUD)',
-            x=df_bar_fx['ISIN'],
-            y=df_bar_fx['Market Return in AUD\n(at purchase FX)'],
+            x=df_bar_fx['Label'],
+            y=df_bar_fx['Market Return in AUD (at purchase FX)'],
             marker_color='#2980b9'
         ))
         fig_decomp_bar.add_trace(go.Bar(
             name='FX Impact (AUD)',
-            x=df_bar_fx['ISIN'],
+            x=df_bar_fx['Label'],
             y=df_bar_fx['FX Impact (AUD)'],
             marker_color='#e74c3c'
         ))
         fig_decomp_bar.update_layout(
             barmode='stack',
-            title="AUD P&L Split: Market Return vs FX Impact per Asset",
+            title="AUD P&L Split: Market Return vs FX Impact per Asset (🔒 = fully sold)",
             yaxis_title="AUD $",
             height=380,
             hovermode="x unified",
@@ -945,30 +962,39 @@ with tab4:
         )
         st.plotly_chart(fig_decomp_bar, use_container_width=True)
 
-        # Detail table
+        # Detail table — highlight closed rows
         st.markdown("#### Lot-Level Detail")
+        
+        def highlight_closed(row):
+            if row['Status'] == '🔒 Closed':
+                return ['background-color: rgba(231,76,60,0.08)'] * len(row)
+            return [''] * len(row)
+
         st.dataframe(
-            df_decomp.style.format({
+            df_decomp.style
+            .apply(highlight_closed, axis=1)
+            .map(
+                lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
+                else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+                subset=['Market Return (EUR)', 'FX Impact (AUD)', 'Total P&L (AUD)']
+            )
+            .format({
                 'Qty': '{:.4f}',
                 'Cost (EUR)': '€{:,.2f}',
                 'Value Now (EUR)': '€{:,.2f}',
                 'Market Return (EUR)': '€{:,.2f}',
                 'FX at Purchase': '{:.4f}',
-                'FX Today': '{:.4f}',
+                'FX at Sale/Today': '{:.4f}',
                 'FX Δ': '{:+.4f}',
-                'Market Return in AUD\n(at purchase FX)': '${:,.2f}',
+                'Market Return in AUD (at purchase FX)': '${:,.2f}',
                 'FX Impact (AUD)': '${:,.2f}',
                 'Total P&L (AUD)': '${:,.2f}',
-            }).map(
-                lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
-                else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
-                subset=['Market Return (EUR)', 'FX Impact (AUD)', 'Total P&L (AUD)']
-            ),
+            }),
             use_container_width=True,
             hide_index=True
         )
     else:
-        st.info("No open lots found to analyse.")
+        st.info("No lots found to analyse.")
 with tab5:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
