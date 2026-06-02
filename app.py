@@ -258,7 +258,7 @@ for _, row in df_sells.iterrows():
 
 df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
 # --- 4. INTERFACCIA ---
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "🛠️ Diagnostics"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Performance", "💸 Simulatore ATO", "📈 Timeline", "💱 FX Analysis", "🛠️ Diagnostics"])
 
 with tab1:
     st.header("Performance Complessiva")
@@ -689,7 +689,287 @@ with tab3:
         )
         
         st.plotly_chart(fig_timeline, use_container_width=True)
+
 with tab4:
+    st.subheader("💱 FX Impact Analysis — AUD/EUR")
+
+    # ── 1. AUD/EUR EXCHANGE RATE CHART ──────────────────────────────────────
+    st.markdown("### EUR/AUD Exchange Rate (Oct 2025 → Today)")
+
+    if fx_hist is not None and not fx_hist.empty:
+        # fx_hist is EURAUD (how many AUD per 1 EUR)
+        fx_display = fx_hist[fx_hist.index >= "2025-10-01"].copy()
+        fx_display.index = pd.to_datetime(fx_display.index)
+
+        fig_fx = go.Figure()
+        fig_fx.add_trace(go.Scatter(
+            x=fx_display.index,
+            y=fx_display.values,
+            mode='lines',
+            name='EUR/AUD',
+            line=dict(color='#f39c12', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(243,156,18,0.10)'
+        ))
+        fig_fx.add_hline(
+            y=fx_now,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Today: {fx_now:.4f}",
+            annotation_position="bottom right"
+        )
+        fig_fx.update_layout(
+            height=350,
+            yaxis_title="AUD per 1 EUR",
+            xaxis_title="Date",
+            hovermode="x unified",
+            margin=dict(t=30, b=30)
+        )
+        st.plotly_chart(fig_fx, use_container_width=True)
+    else:
+        st.warning("FX history not available — check Yahoo Finance connection.")
+
+    st.divider()
+
+    # ── 2. PORTFOLIO VALUE IN EUR AND AUD (HISTORICAL) ───────────────────────
+    st.markdown("### Portfolio Value: EUR vs AUD (Oct 2025 → Today)")
+
+    date_range_fx = pd.date_range("2025-10-01", date.today())
+    df_raw['Data_Solo'] = df_raw['Data'].dt.date
+
+    fx_timeline_rows = []
+
+    for d in date_range_fx:
+        current_date = d.date()
+        snapshot = df_raw[df_raw['Data_Solo'] <= current_date].groupby('ISIN')['Qty'].sum()
+
+        day_val_eur = 0.0
+
+        for isin in df_raw['ISIN'].unique():
+            qty = snapshot.get(isin, 0)
+            if abs(qty) < 0.001:
+                continue
+
+            h = hist_map.get(isin)
+            p = None
+            if h is not None and not h.empty:
+                try:
+                    p = h.asof(d)
+                except:
+                    p = None
+            if p is None or pd.isna(p) or p == 0:
+                ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
+                p = ledger_price.iloc[0] if not ledger_price.empty else 0
+
+            day_val_eur += float(qty * p)
+
+        # Get historical FX for this date
+        fx_day = None
+        if fx_hist is not None and not fx_hist.empty:
+            try:
+                fx_day = float(fx_hist.asof(d))
+            except:
+                fx_day = None
+        if fx_day is None or pd.isna(fx_day) or fx_day == 0:
+            fx_day = fx_now  # fallback
+
+        fx_timeline_rows.append({
+            'Date': d,
+            'Value_EUR': day_val_eur,
+            'Value_AUD': day_val_eur * fx_day,
+            'FX_Rate': fx_day
+        })
+
+    df_fx_timeline = pd.DataFrame(fx_timeline_rows)
+
+    if not df_fx_timeline.empty:
+        fig_dual = go.Figure()
+        fig_dual.add_trace(go.Scatter(
+            x=df_fx_timeline['Date'],
+            y=df_fx_timeline['Value_EUR'],
+            mode='lines',
+            name='Value (EUR €)',
+            line=dict(color='#2980b9', width=2),
+            yaxis='y1'
+        ))
+        fig_dual.add_trace(go.Scatter(
+            x=df_fx_timeline['Date'],
+            y=df_fx_timeline['Value_AUD'],
+            mode='lines',
+            name='Value (AUD $)',
+            line=dict(color='#27ae60', width=2, dash='dot'),
+            yaxis='y2'
+        ))
+        fig_dual.update_layout(
+            height=400,
+            hovermode="x unified",
+            yaxis=dict(title="EUR €", tickprefix="€", side='left'),
+            yaxis2=dict(title="AUD $", tickprefix="$", side='right', overlaying='y'),
+            legend=dict(orientation="h", y=1.08),
+            margin=dict(t=40, b=30)
+        )
+        st.plotly_chart(fig_dual, use_container_width=True)
+
+    st.divider()
+
+    # ── 3. FX DECOMPOSITION TABLE ─────────────────────────────────────────────
+    st.markdown("### Portfolio FX Impact Decomposition (Per Lot)")
+    st.caption("Splits your total AUD P&L into: (a) pure market return and (b) gain/loss caused purely by EUR/AUD rate movement since purchase.")
+
+    fx_decomp_rows = []
+
+    for isin in df_raw['ISIN'].unique():
+        asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data').copy()
+
+        # Current price
+        h = hist_map.get(isin)
+        p_now_fx = float(h.iloc[-1]) if (h is not None and not h.empty) else asset_ledger['Prezzo_Acq'].iloc[0]
+        manual = asset_ledger['Manual_Price'].iloc[-1]
+        if pd.notnull(manual) and manual > 0:
+            p_now_fx = manual
+
+        buys = asset_ledger[asset_ledger['Tipo'] == 'BUY'].copy()
+        total_sold = abs(asset_ledger[asset_ledger['Tipo'] == 'SELL']['Qty'].sum())
+
+        for _, buy_row in buys.iterrows():
+            qty_ini = buy_row['Qty']
+
+            # FIFO residual qty
+            if total_sold > 0:
+                if total_sold >= qty_ini:
+                    total_sold -= qty_ini
+                    qty_res = 0.0
+                else:
+                    qty_res = qty_ini - total_sold
+                    total_sold = 0.0
+            else:
+                qty_res = qty_ini
+
+            if qty_res < 0.001:
+                continue
+
+            # Purchase metrics (pro-rated to residual qty)
+            quota = qty_res / qty_ini
+            cost_eur = buy_row['Inv_EUR'] * quota          # what you paid in EUR
+            cost_aud = buy_row['Inv_AUD'] * quota          # what you paid in AUD
+            p_buy = buy_row['Prezzo_Acq']                  # unit purchase price (EUR)
+            fx_buy = cost_aud / cost_eur if cost_eur > 0 else fx_now  # EUR/AUD at purchase
+
+            # Current metrics
+            val_eur_now = qty_res * p_now_fx               # current EUR value
+            val_aud_now = val_eur_now * fx_now             # current AUD value
+
+            # ── Decomposition ──────────────────────────────────────────────
+            # 1. Market return in EUR (asset price movement only)
+            market_return_eur = val_eur_now - cost_eur
+
+            # 2. Market return translated to AUD at the PURCHASE FX rate
+            #    (what you'd have made if FX hadn't moved)
+            market_return_aud_at_purchase_fx = market_return_eur * fx_buy
+
+            # 3. FX Impact = difference caused purely by the rate changing
+            #    = current EUR value × (fx_now - fx_buy)
+            fx_impact_aud = val_eur_now * (fx_now - fx_buy)
+
+            # 4. Total AUD P&L (should reconcile: market_return_aud + fx_impact_aud + cost_aud at buy fx vs now)
+            total_pl_aud = val_aud_now - cost_aud
+
+            giorni = (datetime.now().date() - buy_row['Data'].date()).days
+
+            fx_decomp_rows.append({
+                'ISIN': isin,
+                'Date Purchased': buy_row['Data'].strftime('%Y-%m-%d'),
+                'Days Held': giorni,
+                'Qty': qty_res,
+                'Cost (EUR)': cost_eur,
+                'Value Now (EUR)': val_eur_now,
+                'Market Return (EUR)': market_return_eur,
+                'FX at Purchase': fx_buy,
+                'FX Today': fx_now,
+                'FX Δ': fx_now - fx_buy,
+                'Market Return in AUD\n(at purchase FX)': market_return_aud_at_purchase_fx,
+                'FX Impact (AUD)': fx_impact_aud,
+                'Total P&L (AUD)': total_pl_aud,
+            })
+
+    df_decomp = pd.DataFrame(fx_decomp_rows)
+
+    if not df_decomp.empty:
+        # Summary metrics first
+        tot_mkt_eur = df_decomp['Market Return (EUR)'].sum()
+        tot_mkt_aud = df_decomp['Market Return in AUD\n(at purchase FX)'].sum()
+        tot_fx_aud  = df_decomp['FX Impact (AUD)'].sum()
+        tot_pl_aud  = df_decomp['Total P&L (AUD)'].sum()
+        
+        sm1, sm2, sm3, sm4 = st.columns(4)
+        sm1.metric("Market Return (EUR)", f"€{tot_mkt_eur:,.2f}",
+                   help="Pure asset price appreciation/depreciation in EUR")
+        sm2.metric("Market Return (AUD at buy FX)", f"${tot_mkt_aud:,.2f}",
+                   help="What your EUR market return would be worth in AUD if the exchange rate had never moved")
+        sm3.metric("FX Impact (AUD)", f"${tot_fx_aud:,.2f}",
+                   delta=f"{'▲' if tot_fx_aud >= 0 else '▼'} {abs(tot_fx_aud/tot_pl_aud*100):.1f}% of total P&L" if tot_pl_aud != 0 else None,
+                   help="Gain/loss caused purely by EUR/AUD rate movement since each purchase date",
+                   delta_color="normal" if tot_fx_aud >= 0 else "inverse")
+        sm4.metric("Total P&L (AUD)", f"${tot_pl_aud:,.2f}",
+                   help="Market Return (at buy FX) + FX Impact — reconciles to actual AUD gain/loss")
+
+        st.divider()
+
+        # Stacked bar: Market return vs FX impact per ISIN
+        df_bar_fx = df_decomp.groupby('ISIN').agg({
+            'Market Return in AUD\n(at purchase FX)': 'sum',
+            'FX Impact (AUD)': 'sum',
+            'Total P&L (AUD)': 'sum'
+        }).reset_index()
+
+        fig_decomp_bar = go.Figure()
+        fig_decomp_bar.add_trace(go.Bar(
+            name='Market Return (AUD)',
+            x=df_bar_fx['ISIN'],
+            y=df_bar_fx['Market Return in AUD\n(at purchase FX)'],
+            marker_color='#2980b9'
+        ))
+        fig_decomp_bar.add_trace(go.Bar(
+            name='FX Impact (AUD)',
+            x=df_bar_fx['ISIN'],
+            y=df_bar_fx['FX Impact (AUD)'],
+            marker_color='#e74c3c'
+        ))
+        fig_decomp_bar.update_layout(
+            barmode='stack',
+            title="AUD P&L Split: Market Return vs FX Impact per Asset",
+            yaxis_title="AUD $",
+            height=380,
+            hovermode="x unified",
+            legend=dict(orientation="h", y=1.1)
+        )
+        st.plotly_chart(fig_decomp_bar, use_container_width=True)
+
+        # Detail table
+        st.markdown("#### Lot-Level Detail")
+        st.dataframe(
+            df_decomp.style.format({
+                'Qty': '{:.4f}',
+                'Cost (EUR)': '€{:,.2f}',
+                'Value Now (EUR)': '€{:,.2f}',
+                'Market Return (EUR)': '€{:,.2f}',
+                'FX at Purchase': '{:.4f}',
+                'FX Today': '{:.4f}',
+                'FX Δ': '{:+.4f}',
+                'Market Return in AUD\n(at purchase FX)': '${:,.2f}',
+                'FX Impact (AUD)': '${:,.2f}',
+                'Total P&L (AUD)': '${:,.2f}',
+            }).applymap(
+                lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
+                else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+                subset=['Market Return (EUR)', 'FX Impact (AUD)', 'Total P&L (AUD)']
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No open lots found to analyse.")
+with tab5:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
     st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
