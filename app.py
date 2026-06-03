@@ -1500,15 +1500,7 @@ with tab5:
         help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
     )
 
-    def add_distribution_units(row):
-        code = row['Instrument Code']
-        weight = RAIZ_MA_WEIGHTS.get(code, 0)
-        dist_value = TOTAL_DISTRIBUTIONS_AUD * weight
-        price = get_raiz_current_price(code)
-        extra_units = dist_value / price if price > 0 else 0
-        return row['Net_Qty'] + extra_units
 
-    holdings['Net_Qty'] = holdings.apply(add_distribution_units, axis=1)
 
     holdings['Current_Price']     = holdings['Instrument Code'].map(get_raiz_current_price)
     holdings['Current_Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
@@ -1525,7 +1517,7 @@ with tab5:
     # ── 1. SUMMARY METRICS ───────────────────────────────────────────────────
     total_deposited = df_raiz[df_raiz['Transaction Type'] == 'BUY']['Amount'].sum()
     total_proceeds  = df_raiz[df_raiz['Transaction Type'] == 'SELL']['Amount'].sum()
-    total_value     = holdings['Current_Value_AUD'].sum()
+    total_value     = holdings['Current_Value_AUD'].sum() + TOTAL_DISTRIBUTIONS_AUD
     total_pl        = total_value - total_deposited + total_proceeds
     total_roi       = total_pl / total_deposited * 100 if total_deposited > 0 else 0
 
@@ -1537,7 +1529,8 @@ with tab5:
     )
     m2.metric(
         "Current Market Value", f"${total_value:,.2f}",
-        delta=f"${(total_value - total_deposited + total_proceeds):+,.2f} total P&L"
+        delta=f"${(total_value - total_deposited + total_proceeds):+,.2f} total P&L",
+        help=f"Includes ${TOTAL_DISTRIBUTIONS_AUD:,.0f} reinvested distributions"
     )
     m3.metric(
         "Unrealised P&L", f"${total_pl:,.2f}",
