@@ -1401,43 +1401,7 @@ with tab5:
     # ── Load data ─────────────────────────────────────────────────────────────
     with st.spinner("Loading latest Raiz CSV from Google Drive..."):
         df_raiz_raw, raiz_file_label = load_raiz_from_gdrive()
-# TEMPORARY DEBUG — remove after fixing
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        import io
 
-        gs = st.secrets["gdrive"]
-        creds_dict = {
-            "type":           gs["type"],
-            "project_id":     gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key":    gs["private_key"],
-            "client_email":   gs["client_email"],
-            "client_id":      gs.get("client_id", ""),
-            "token_uri":      "https://oauth2.googleapis.com/token",
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=["https://www.googleapis.com/auth/drive.readonly"]
-        )
-        service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
-
-        # Check 1: can we see the folder itself?
-        folder = service.files().get(fileId=folder_id, fields="id, name").execute()
-        st.success(f"✅ Folder found: {folder}")
-
-        # Check 2: list ALL files regardless of type
-        all_files = service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id, name, mimeType, modifiedTime)"
-        ).execute()
-        st.write("Files in folder:", all_files.get("files", []))
-
-    except Exception as e:
-        st.error(f"Debug error: {e}")
-    # END TEMPORARY DEBUG
     if df_raiz_raw is None:
         # Drive load failed — show error and offer manual fallback
         st.error(raiz_file_label)
