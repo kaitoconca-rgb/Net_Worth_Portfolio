@@ -1517,7 +1517,12 @@ with tab5:
     # ── 1. SUMMARY METRICS ───────────────────────────────────────────────────
     total_deposited = df_raiz[df_raiz['Transaction Type'] == 'BUY']['Amount'].sum()
     total_proceeds  = df_raiz[df_raiz['Transaction Type'] == 'SELL']['Amount'].sum()
-    total_value     = holdings['Current_Value_AUD'].sum() + TOTAL_DISTRIBUTIONS_AUD
+    # Scale distributions by same market return ratio as the overall portfolio
+    csv_market_value = holdings['Current_Value_AUD'].sum()
+    total_deposited_csv = df_raiz[df_raiz['Transaction Type'] == 'BUY']['Amount'].sum()
+    market_return_ratio = (csv_market_value / total_deposited_csv) if total_deposited_csv > 0 else 1.0
+    distribution_current_value = TOTAL_DISTRIBUTIONS_AUD * market_return_ratio
+    total_value = csv_market_value + distribution_current_value
     total_pl        = total_value - total_deposited + total_proceeds
     total_roi       = total_pl / total_deposited * 100 if total_deposited > 0 else 0
 
