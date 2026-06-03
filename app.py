@@ -1500,7 +1500,7 @@ TOTAL_DISTRIBUTIONS_AUD = st.number_input(
         help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
     )
 
-    def add_distribution_units(row):
+        def add_distribution_units(row):
         code = row['Instrument Code']
         weight = RAIZ_MA_WEIGHTS.get(code, 0)
         dist_value = TOTAL_DISTRIBUTIONS_AUD * weight
