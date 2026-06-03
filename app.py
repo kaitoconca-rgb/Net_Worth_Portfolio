@@ -1464,20 +1464,20 @@ with tab5:
     )
     holdings = holdings[holdings['Net_Qty'].abs() > 0.0001].copy()
 
-    # ── Add reinvested distribution units ────────────────────────────────────
-    # Raiz does not export distributions — inject them using official MA weights
-    # Update TOTAL_DISTRIBUTIONS_AUD periodically from the Raiz app History screen
-    RAIZ_MA_WEIGHTS = {
-        "STW": 0.4360, "RCB": 0.2130, "IAA": 0.1380,
-        "IVV": 0.0890, "IEU": 0.0640, "IAF": 0.0300, "AAA": 0.0300,
-    }
-       TOTAL_DISTRIBUTIONS_AUD = st.number_input(
-        "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
-        min_value=0,
-        value=43000,
-        step=500,
-        help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
-    )
+# ── Add reinvested distribution units ────────────────────────────────────
+        # Raiz does not export distributions — inject them using official MA weights
+        # Update TOTAL_DISTRIBUTIONS_AUD periodically from the Raiz app History screen
+        RAIZ_MA_WEIGHTS = {
+            "STW": 0.4360, "RCB": 0.2130, "IAA": 0.1380,
+            "IVV": 0.0890, "IEU": 0.0640, "IAF": 0.0300, "AAA": 0.0300,
+        }
+        TOTAL_DISTRIBUTIONS_AUD = st.number_input(
+            "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
+            min_value=0,
+            value=43000,
+            step=500,
+            help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
+        )
 
     def add_distribution_units(row):
         code = row['Instrument Code']
