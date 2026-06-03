@@ -1464,6 +1464,27 @@ with tab5:
     )
     holdings = holdings[holdings['Net_Qty'].abs() > 0.0001].copy()
 
+
+    holdings['Total_Invested'] = holdings.apply(
+        lambda r: df_raiz.loc[
+            (df_raiz['Instrument Code'] == r['Instrument Code']) &
+            (df_raiz['Transaction Type'] == 'BUY'), 'Amount'
+        ].sum(), axis=1
+    )
+    holdings['Total_Proceeds'] = holdings.apply(
+        lambda r: df_raiz.loc[
+            (df_raiz['Instrument Code'] == r['Instrument Code']) &
+            (df_raiz['Transaction Type'] == 'SELL'), 'Amount'
+        ].sum(), axis=1
+    )
+
+    # ── Current prices with fallback to last trade price ─────────────────────
+    def get_raiz_current_price(code):
+        p = raiz_prices.get(code)
+        if p and p > 0:
+            return p
+        last = df_raiz[df_raiz['Instrument Code'] == code]['Price'].dropna()
+        return float(last.iloc[-1]) if not last.empty else 0.0
     # ── Add reinvested distribution units ────────────────────────────────────
     # Raiz does not export distributions — inject them using official MA weights
     # Update TOTAL_DISTRIBUTIONS_AUD periodically from the Raiz app History screen
@@ -1488,27 +1509,6 @@ with tab5:
         return row['Net_Qty'] + extra_units
 
     holdings['Net_Qty'] = holdings.apply(add_distribution_units, axis=1)
-    holdings['Total_Invested'] = holdings.apply(
-        lambda r: df_raiz.loc[
-            (df_raiz['Instrument Code'] == r['Instrument Code']) &
-            (df_raiz['Transaction Type'] == 'BUY'), 'Amount'
-        ].sum(), axis=1
-    )
-    holdings['Total_Proceeds'] = holdings.apply(
-        lambda r: df_raiz.loc[
-            (df_raiz['Instrument Code'] == r['Instrument Code']) &
-            (df_raiz['Transaction Type'] == 'SELL'), 'Amount'
-        ].sum(), axis=1
-    )
-
-    # ── Current prices with fallback to last trade price ─────────────────────
-    def get_raiz_current_price(code):
-        p = raiz_prices.get(code)
-        if p and p > 0:
-            return p
-        last = df_raiz[df_raiz['Instrument Code'] == code]['Price'].dropna()
-        return float(last.iloc[-1]) if not last.empty else 0.0
-
     holdings['Current_Price']     = holdings['Instrument Code'].map(get_raiz_current_price)
     holdings['Current_Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
     holdings['Unrealised_PL']     = (
