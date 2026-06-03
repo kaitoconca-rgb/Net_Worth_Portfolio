@@ -1471,7 +1471,7 @@ with tab5:
         "STW": 0.4360, "RCB": 0.2130, "IAA": 0.1380,
         "IVV": 0.0890, "IEU": 0.0640, "IAF": 0.0300, "AAA": 0.0300,
     }
-   TOTAL_DISTRIBUTIONS_AUD = st.number_input(
+       TOTAL_DISTRIBUTIONS_AUD = st.number_input(
         "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
         min_value=0,
         value=43000,
