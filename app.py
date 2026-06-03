@@ -969,7 +969,7 @@ with tab4:
             """,
             unsafe_allow_html=True
         )
-        )
+        
     st.divider()
 
   # ── 3. FX DECOMPOSITION TABLE ─────────────────────────────────────────────
