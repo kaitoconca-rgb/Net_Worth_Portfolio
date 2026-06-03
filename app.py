@@ -1492,7 +1492,7 @@ with tab5:
         "STW": 0.4360, "RCB": 0.2130, "IAA": 0.1380,
         "IVV": 0.0890, "IEU": 0.0640, "IAF": 0.0300, "AAA": 0.0300,
     }
-TOTAL_DISTRIBUTIONS_AUD = st.number_input(
+    TOTAL_DISTRIBUTIONS_AUD = st.number_input(
         "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
         min_value=0,
         value=43141,
@@ -1500,7 +1500,7 @@ TOTAL_DISTRIBUTIONS_AUD = st.number_input(
         help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
     )
 
-def add_distribution_units(row):
+    def add_distribution_units(row):
         code = row['Instrument Code']
         weight = RAIZ_MA_WEIGHTS.get(code, 0)
         dist_value = TOTAL_DISTRIBUTIONS_AUD * weight
