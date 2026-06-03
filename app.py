@@ -1342,12 +1342,7 @@ with tab5:
             import io
 
             # Detect secrets structure
-            if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-                gs = st.secrets["connections"]["gsheets"]
-            elif "gsheets" in st.secrets:
-                gs = st.secrets["gsheets"]
-            else:
-                gs = st.secrets
+            gs = st.secrets["gdrive"]
 
             creds_dict = {
                 "type":           gs.get("type", "service_account"),
