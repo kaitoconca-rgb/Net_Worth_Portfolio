@@ -889,6 +889,7 @@ with tab4:
             'Date': d,
             'Market Return (EUR)': day_mr_eur,
             'Market Return (AUD)': day_mr_aud,
+            'FX Impact (AUD)': day_mr_aud - (day_mr_eur * fx_day),  # <-- add this
             'FX Rate': fx_day
         })
 
@@ -913,7 +914,16 @@ with tab4:
             line=dict(color='#27ae60', width=2, dash='dot'),
             yaxis='y2'
         ))
-
+        fig_mr.add_trace(go.Scatter(
+            x=df_mr_timeline['Date'],
+            y=df_mr_timeline['FX Impact (AUD)'],
+            mode='lines',
+            name='FX Impact (AUD $)',
+            line=dict(color='#e74c3c', width=1.5, dash='dashdot'),
+            fill='tozeroy',
+            fillcolor='rgba(231,76,60,0.07)',
+            yaxis='y2'
+        ))
         # Zero line for reference
         fig_mr.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.4, yref='y1')
 
@@ -943,7 +953,7 @@ with tab4:
 
         # Small callout: gap between EUR and AUD return today
         last = df_mr_timeline.iloc[-1]
-        gap = last['Market Return (AUD)'] - last['Market Return (EUR)'] * fx_now
+        gap = last['FX Impact (AUD)']   # <-- was: last['Market Return (AUD)'] - last['Market Return (EUR)'] * fx_now
         gap_colour = "#27ae60" if gap >= 0 else "#e74c3c"
         gap_label  = "added" if gap >= 0 else "subtracted"
         st.markdown(
@@ -958,6 +968,7 @@ with tab4:
             </div>
             """,
             unsafe_allow_html=True
+        )
         )
     st.divider()
 
