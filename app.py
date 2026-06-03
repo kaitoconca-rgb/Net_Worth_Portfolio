@@ -958,19 +958,20 @@ with tab4:
             height=420,
             hovermode="x unified",
             yaxis=dict(
-                title="EUR € gain/loss",
-                tickprefix="€",
+                title="EUR € / AUD $ gain/loss",
                 side='left',
                 zeroline=True,
                 zerolinecolor='#bdc3c7'
             ),
             yaxis2=dict(
                 title="AUD $ gain/loss",
-                tickprefix="$",
                 side='right',
                 overlaying='y',
+                scaleanchor='y',
+                scaleratio=1,
                 zeroline=True,
-                zerolinecolor='#bdc3c7'
+                zerolinecolor='#bdc3c7',
+                showticklabels=False  # hide right axis ticks since scale is identical
             ),
             legend=dict(orientation="h", y=1.08),
             margin=dict(t=40, b=30)
