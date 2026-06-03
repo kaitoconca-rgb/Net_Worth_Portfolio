@@ -809,7 +809,156 @@ with tab4:
             margin=dict(t=40, b=30)
         )
         st.plotly_chart(fig_dual, use_container_width=True)
+st.divider()
 
+    # ── 2b. MARKET RETURN OVER TIME (EUR vs AUD) ─────────────────────────────
+    st.markdown("### Market Return Over Time: EUR vs AUD (Oct 2025 → Today)")
+    st.caption("Daily unrealised + realised gain/loss. EUR line = pure asset performance. AUD line = same return translated at the historical EUR/AUD rate each day.")
+
+    mr_rows = []
+
+    for d in date_range_fx:
+        current_date = d.date()
+
+        day_mr_eur = 0.0
+        day_mr_aud = 0.0
+
+        # Historical FX for this day
+        fx_day = fx_now  # fallback
+        if fx_hist is not None and not fx_hist.empty:
+            try:
+                v = fx_hist.asof(d)
+                if v and not pd.isna(v):
+                    fx_day = float(v)
+            except:
+                pass
+
+        for isin in df_raw['ISIN'].unique():
+            asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data')
+
+            # Transactions up to and including this day
+            ledger_to_date = asset_ledger[asset_ledger['Data'].dt.date <= current_date]
+            if ledger_to_date.empty:
+                continue
+
+            net_qty = ledger_to_date['Qty'].sum()
+
+            # ── Unrealised component (open qty) ──────────────────────────
+            if abs(net_qty) > 0.001:
+                h = hist_map.get(isin)
+                p_today = None
+                if h is not None and not h.empty:
+                    try:
+                        p_today = h.asof(d)
+                    except:
+                        p_today = None
+                if p_today is None or pd.isna(p_today) or p_today == 0:
+                    ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
+                    p_today = ledger_price.iloc[0] if not ledger_price.empty else 0
+
+                # Weighted average cost of currently held qty (FIFO-ish: use all buys to date)
+                buys_to_date = ledger_to_date[ledger_to_date['Tipo'] == 'BUY']
+                total_buy_qty = buys_to_date['Qty'].sum()
+                avg_cost_eur = buys_to_date['Inv_EUR'].sum() / total_buy_qty if total_buy_qty > 0 else 0
+
+                unrealised_eur = (float(p_today) - avg_cost_eur) * net_qty
+                day_mr_eur += unrealised_eur
+                day_mr_aud += unrealised_eur * fx_day
+
+            # ── Realised component (sold lots up to this day) ─────────────
+            sells_to_date = ledger_to_date[ledger_to_date['Tipo'] == 'SELL']
+            if not sells_to_date.empty:
+                buys_to_date_all = ledger_to_date[ledger_to_date['Tipo'] == 'BUY']
+                total_buy_qty_all = buys_to_date_all['Qty'].sum()
+                avg_cost_eur_all = buys_to_date_all['Inv_EUR'].sum() / total_buy_qty_all if total_buy_qty_all > 0 else 0
+
+                qty_sold = abs(sells_to_date['Qty'].sum())
+                proceeds_eur = abs(sells_to_date['Inv_EUR'].sum())
+                proceeds_aud = abs(sells_to_date['Inv_AUD'].sum())
+                cost_base_eur = qty_sold * avg_cost_eur_all
+
+                realised_eur = proceeds_eur - cost_base_eur
+                # For realised AUD gain: use actual proceeds AUD minus cost base at historical FX
+                cost_base_aud = cost_base_eur * fx_day
+                realised_aud = proceeds_aud - cost_base_aud
+
+                day_mr_eur += realised_eur
+                day_mr_aud += realised_aud
+
+        mr_rows.append({
+            'Date': d,
+            'Market Return (EUR)': day_mr_eur,
+            'Market Return (AUD)': day_mr_aud,
+            'FX Rate': fx_day
+        })
+
+    df_mr_timeline = pd.DataFrame(mr_rows)
+
+    if not df_mr_timeline.empty:
+        fig_mr = go.Figure()
+
+        fig_mr.add_trace(go.Scatter(
+            x=df_mr_timeline['Date'],
+            y=df_mr_timeline['Market Return (EUR)'],
+            mode='lines',
+            name='Market Return (EUR €)',
+            line=dict(color='#2980b9', width=2),
+            yaxis='y1'
+        ))
+        fig_mr.add_trace(go.Scatter(
+            x=df_mr_timeline['Date'],
+            y=df_mr_timeline['Market Return (AUD)'],
+            mode='lines',
+            name='Market Return (AUD $)',
+            line=dict(color='#27ae60', width=2, dash='dot'),
+            yaxis='y2'
+        ))
+
+        # Zero line for reference
+        fig_mr.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.4, yref='y1')
+
+        fig_mr.update_layout(
+            height=420,
+            hovermode="x unified",
+            yaxis=dict(
+                title="EUR € gain/loss",
+                tickprefix="€",
+                side='left',
+                zeroline=True,
+                zerolinecolor='#bdc3c7'
+            ),
+            yaxis2=dict(
+                title="AUD $ gain/loss",
+                tickprefix="$",
+                side='right',
+                overlaying='y',
+                zeroline=True,
+                zerolinecolor='#bdc3c7'
+            ),
+            legend=dict(orientation="h", y=1.08),
+            margin=dict(t=40, b=30)
+        )
+
+        st.plotly_chart(fig_mr, use_container_width=True)
+
+        # Small callout: gap between EUR and AUD return today
+        last = df_mr_timeline.iloc[-1]
+        gap = last['Market Return (AUD)'] - last['Market Return (EUR)'] * fx_now
+        gap_colour = "#27ae60" if gap >= 0 else "#e74c3c"
+        gap_label  = "added" if gap >= 0 else "subtracted"
+        st.markdown(
+            f"""
+            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d;
+                        padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:4px;">
+                <b>Today's FX gap:</b> Converting your current EUR return at today's rate gives 
+                <b>€{last['Market Return (EUR)']:,.2f} × {fx_now:.4f} = ${last['Market Return (EUR)'] * fx_now:,.2f} AUD</b> — 
+                the AUD return line sits at <b>${last['Market Return (AUD)']:,.2f}</b>, 
+                meaning historical FX movements have <span style="color:{gap_colour}"><b>{gap_label} ${abs(gap):,.2f} AUD</b></span> 
+                to your return over the period.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
     st.divider()
 
   # ── 3. FX DECOMPOSITION TABLE ─────────────────────────────────────────────
