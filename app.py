@@ -1341,25 +1341,23 @@ with tab5:
             from googleapiclient.http import MediaIoBaseDownload
             import io
 
-            # Reuse the service account credentials from the gsheets connection
-           # Try both common secrets structures
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            gs = st.secrets["connections"]["gsheets"]
-        elif "gsheets" in st.secrets:
-            gs = st.secrets["gsheets"]
-        else:
-            # Last resort: secrets are flat at root level
-            gs = st.secrets
+            # Detect secrets structure
+            if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+                gs = st.secrets["connections"]["gsheets"]
+            elif "gsheets" in st.secrets:
+                gs = st.secrets["gsheets"]
+            else:
+                gs = st.secrets
 
-        creds_dict = {
-            "type":           gs.get("type", "service_account"),
-            "project_id":     gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key":    gs["private_key"],
-            "client_email":   gs["client_email"],
-            "client_id":      gs.get("client_id", ""),
-            "token_uri":      "https://oauth2.googleapis.com/token",
-        }
+            creds_dict = {
+                "type":           gs.get("type", "service_account"),
+                "project_id":     gs["project_id"],
+                "private_key_id": gs["private_key_id"],
+                "private_key":    gs["private_key"],
+                "client_email":   gs["client_email"],
+                "client_id":      gs.get("client_id", ""),
+                "token_uri":      "https://oauth2.googleapis.com/token",
+            }
 
             creds = service_account.Credentials.from_service_account_info(
                 creds_dict,
