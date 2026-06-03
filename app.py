@@ -814,7 +814,10 @@ with tab4:
     # ── 2b. MARKET RETURN OVER TIME (EUR vs AUD) ─────────────────────────────
     st.markdown("### Market Return Over Time: EUR vs AUD (Oct 2025 → Today)")
     st.caption("Daily unrealised + realised gain/loss. EUR line = pure asset performance. AUD line = same return translated at the historical EUR/AUD rate each day.")
-
+# Weighted average FX rate across all purchases (total AUD paid / total EUR paid)
+    total_inv_eur_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
+    total_inv_aud_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_AUD'].sum()
+    fx_weighted_purchase = total_inv_aud_all / total_inv_eur_all if total_inv_eur_all > 0 else fx_now
     mr_rows = []
 
     for d in date_range_fx:
@@ -889,7 +892,7 @@ with tab4:
             'Date': d,
             'Market Return (EUR)': day_mr_eur,
             'Market Return (AUD)': day_mr_aud,
-            'FX Impact (AUD)': day_mr_aud - (day_mr_eur * fx_day),  # <-- add this
+            'FX Impact (AUD)': day_mr_eur * (fx_day - fx_weighted_purchase),
             'FX Rate': fx_day
         })
 
