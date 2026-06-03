@@ -818,16 +818,13 @@ with tab4:
     total_inv_eur_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
     total_inv_aud_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_AUD'].sum()
     fx_weighted_purchase = total_inv_aud_all / total_inv_eur_all if total_inv_eur_all > 0 else fx_now
-    mr_rows = []
+mr_rows = []
 
     for d in date_range_fx:
         current_date = d.date()
 
-        day_mr_eur = 0.0
-        day_mr_aud = 0.0
-
         # Historical FX for this day
-        fx_day = fx_now  # fallback
+        fx_day = fx_now
         if fx_hist is not None and not fx_hist.empty:
             try:
                 v = fx_hist.asof(d)
@@ -836,63 +833,90 @@ with tab4:
             except:
                 pass
 
+        day_mr_eur = 0.0
+        day_mr_aud = 0.0
+        day_fx_impact = 0.0
+
         for isin in df_raw['ISIN'].unique():
             asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data')
-
-            # Transactions up to and including this day
             ledger_to_date = asset_ledger[asset_ledger['Data'].dt.date <= current_date]
             if ledger_to_date.empty:
                 continue
 
-            net_qty = ledger_to_date['Qty'].sum()
-
-            # ── Unrealised component (open qty) ──────────────────────────
-            if abs(net_qty) > 0.001:
-                h = hist_map.get(isin)
-                p_today = None
-                if h is not None and not h.empty:
-                    try:
-                        p_today = h.asof(d)
-                    except:
-                        p_today = None
-                if p_today is None or pd.isna(p_today) or p_today == 0:
-                    ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
-                    p_today = ledger_price.iloc[0] if not ledger_price.empty else 0
-
-                # Weighted average cost of currently held qty (FIFO-ish: use all buys to date)
-                buys_to_date = ledger_to_date[ledger_to_date['Tipo'] == 'BUY']
-                total_buy_qty = buys_to_date['Qty'].sum()
-                avg_cost_eur = buys_to_date['Inv_EUR'].sum() / total_buy_qty if total_buy_qty > 0 else 0
-
-                unrealised_eur = (float(p_today) - avg_cost_eur) * net_qty
-                day_mr_eur += unrealised_eur
-                day_mr_aud += unrealised_eur * fx_day
-
-            # ── Realised component (sold lots up to this day) ─────────────
+            buys_to_date = ledger_to_date[ledger_to_date['Tipo'] == 'BUY']
             sells_to_date = ledger_to_date[ledger_to_date['Tipo'] == 'SELL']
-            if not sells_to_date.empty:
-                buys_to_date_all = ledger_to_date[ledger_to_date['Tipo'] == 'BUY']
-                total_buy_qty_all = buys_to_date_all['Qty'].sum()
-                avg_cost_eur_all = buys_to_date_all['Inv_EUR'].sum() / total_buy_qty_all if total_buy_qty_all > 0 else 0
+            net_qty = ledger_to_date['Qty'].sum()
+            is_closed = abs(net_qty) < 0.001
 
-                qty_sold = abs(sells_to_date['Qty'].sum())
-                proceeds_eur = abs(sells_to_date['Inv_EUR'].sum())
-                proceeds_aud = abs(sells_to_date['Inv_AUD'].sum())
-                cost_base_eur = qty_sold * avg_cost_eur_all
+            # Current day price
+            h = hist_map.get(isin)
+            p_today = None
+            if h is not None and not h.empty:
+                try:
+                    p_today = h.asof(d)
+                except:
+                    p_today = None
+            if p_today is None or pd.isna(p_today) or p_today == 0:
+                ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
+                p_today = float(ledger_price.iloc[0]) if not ledger_price.empty else 0
 
-                realised_eur = proceeds_eur - cost_base_eur
-                # For realised AUD gain: use actual proceeds AUD minus cost base at historical FX
-                cost_base_aud = cost_base_eur * fx_day
-                realised_aud = proceeds_aud - cost_base_aud
+            # ── Process each buy lot individually ──────────────────────────
+            total_sold_fifo = abs(sells_to_date['Qty'].sum()) if not sells_to_date.empty else 0.0
 
-                day_mr_eur += realised_eur
-                day_mr_aud += realised_aud
+            for _, buy_row in buys_to_date.iterrows():
+                qty_ini = buy_row['Qty']
+
+                # FIFO residual
+                if total_sold_fifo > 0:
+                    if total_sold_fifo >= qty_ini:
+                        total_sold_fifo -= qty_ini
+                        qty_res = 0.0
+                    else:
+                        qty_res = qty_ini - total_sold_fifo
+                        total_sold_fifo = 0.0
+                else:
+                    qty_res = qty_ini
+
+                qty_for_calc = qty_ini if is_closed else qty_res
+                if qty_for_calc < 0.001:
+                    continue
+
+                # Lot-level purchase metrics
+                quota = qty_for_calc / qty_ini
+                cost_eur = buy_row['Inv_EUR'] * quota
+                cost_aud = buy_row['Inv_AUD'] * quota
+                fx_at_purchase = cost_aud / cost_eur if cost_eur > 0 else fx_day
+
+                if is_closed:
+                    # Use actual proceeds for closed lots
+                    total_buy_qty = buys_to_date['Qty'].sum()
+                    lot_share = qty_for_calc / total_buy_qty
+                    proceeds_eur = abs(sells_to_date['Inv_EUR'].sum()) * lot_share
+                    proceeds_aud = abs(sells_to_date['Inv_AUD'].sum()) * lot_share
+                    val_eur_today = proceeds_eur
+                    val_aud_today = proceeds_aud
+                else:
+                    val_eur_today = qty_for_calc * float(p_today)
+                    val_aud_today = val_eur_today * fx_day
+
+                # Market return for this lot
+                lot_mr_eur = val_eur_today - cost_eur
+                lot_mr_aud = val_aud_today - cost_aud
+
+                # FX Impact for this lot on this day:
+                # = what the EUR value is worth today in AUD at today's rate
+                #   minus what it would have been worth at the purchase rate
+                lot_fx_impact = val_eur_today * (fx_day - fx_at_purchase)
+
+                day_mr_eur    += lot_mr_eur
+                day_mr_aud    += lot_mr_aud
+                day_fx_impact += lot_fx_impact
 
         mr_rows.append({
             'Date': d,
             'Market Return (EUR)': day_mr_eur,
             'Market Return (AUD)': day_mr_aud,
-            'FX Impact (AUD)': day_mr_eur * (fx_day - fx_weighted_purchase),
+            'FX Impact (AUD)': day_fx_impact,
             'FX Rate': fx_day
         })
 
