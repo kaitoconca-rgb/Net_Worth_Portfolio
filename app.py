@@ -1495,20 +1495,12 @@ with tab5:
     TOTAL_DISTRIBUTIONS_AUD = st.number_input(
         "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
         min_value=0,
-        value=43000,
-        step=500,
+        value=43141,
+        step=100,
         help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
     )
 
-    def add_distribution_units(row):
-        code = row['Instrument Code']
-        weight = RAIZ_MA_WEIGHTS.get(code, 0)
-        dist_value = TOTAL_DISTRIBUTIONS_AUD * weight
-        price = get_raiz_current_price(code)
-        extra_units = dist_value / price if price > 0 else 0
-        return row['Net_Qty'] + extra_units
 
-    holdings['Net_Qty'] = holdings.apply(add_distribution_units, axis=1)
     holdings['Current_Price']     = holdings['Instrument Code'].map(get_raiz_current_price)
     holdings['Current_Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
     holdings['Unrealised_PL']     = (
