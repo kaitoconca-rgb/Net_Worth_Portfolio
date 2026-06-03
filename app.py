@@ -809,7 +809,7 @@ with tab4:
             margin=dict(t=40, b=30)
         )
         st.plotly_chart(fig_dual, use_container_width=True)
-st.divider()
+        st.divider()
 
     # ── 2b. MARKET RETURN OVER TIME (EUR vs AUD) ─────────────────────────────
     st.markdown("### Market Return Over Time: EUR vs AUD (Oct 2025 → Today)")
