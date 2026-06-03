@@ -818,7 +818,7 @@ with tab4:
     total_inv_eur_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
     total_inv_aud_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_AUD'].sum()
     fx_weighted_purchase = total_inv_aud_all / total_inv_eur_all if total_inv_eur_all > 0 else fx_now
-mr_rows = []
+    mr_rows = []
 
     for d in date_range_fx:
         current_date = d.date()
