@@ -1393,33 +1393,36 @@ with tab5:
         except Exception as e:
             return None, f"❌ Could not load from Google Drive: {e}"
 
-    def get_current_price(code, df_trades, use_manual=True):
-        """
-        Get current price for ETF.
-        If use_manual=True, uses RAIZ_MANUAL_PRICES (accurate but needs updating).
-        Otherwise falls back to CSV or Yahoo.
-        """
-        if use_manual and code in RAIZ_MANUAL_PRICES:
-            return RAIZ_MANUAL_PRICES[code]
-        
-        # Fallback: most recent price from CSV
-        recent_trades = df_trades[df_trades['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
-        if not recent_trades.empty:
-            latest_price = recent_trades.iloc[0]['Price']
-            if latest_price and latest_price > 0:
-                return float(latest_price)
-        
-        # Final fallback: Yahoo (will fail for RCB)
-        ticker = RAIZ_TICKER_MAP.get(code)
-        if ticker:
-            try:
-                t = yf.Ticker(ticker)
-                price = t.fast_info.get('last_price', 0)
-                if price and price > 0:
-                    return float(price)
-            except:
-                pass
-        return 0.0
+def get_current_price_for_etf(code, df_trades, live_bid_prices):
+    """
+    Get current price for ETF with intelligent fallbacks:
+    1. Live bid price from Yahoo (for active ETFs)
+    2. If that fails, most recent price from CSV
+    3. If that fails, average purchase price
+    """
+    
+    # Try Yahoo live bid price first
+    if code in ["IAA", "IEU", "IVV", "AAA", "STW", "IAF"]:
+        bid = live_bid_prices.get(code)
+        if bid and bid > 0:
+            return bid
+    
+    # If Yahoo failed or returned 0, use most recent CSV price
+    recent_trades = df_trades[df_trades['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
+    if not recent_trades.empty:
+        latest_price = recent_trades.iloc[0]['Price']
+        if latest_price and latest_price > 0:
+            return float(latest_price)
+    
+    # Final fallback: average purchase price
+    buys = df_trades[(df_trades['Instrument Code'] == code) & (df_trades['Transaction Type'] == 'BUY')]
+    if not buys.empty:
+        total_cost = buys['Amount'].sum()
+        total_qty = buys['Quantity'].sum()
+        if total_qty > 0:
+            return total_cost / total_qty
+    
+    return 0.0
 
     # --- Date selector ---
     st.markdown("### 📅 Select Valuation Date")
