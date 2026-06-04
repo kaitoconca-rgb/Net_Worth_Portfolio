@@ -1277,17 +1277,17 @@ with tab4:
 # ============================================================
 
 with tab5:
-    st.header("🌱 Raiz Portfolio — Historical Valuation")
+    st.header("🌱 Raiz Portfolio — Automatic Valuation")
 
-    # ── ETF ticker map: ASX code → Yahoo Finance symbol ──────────────────────
+    # ETF ticker map for Yahoo
     RAIZ_TICKER_MAP = {
-        "AAA": "AAA.AX",   # Betashares High Interest Cash
-        "STW": "STW.AX",   # SPDR S&P/ASX 200
-        "IAA": "IAA.AX",   # iShares Asia 50
-        "IEU": "IEU.AX",   # iShares Europe
-        "IAF": "IAF.AX",   # iShares Core Composite Bond
-        "RCB": "RCB.AX",   # Russell Corporate Bond (may be delisted)
-        "IVV": "IVV.AX",   # iShares S&P 500
+        "AAA": "AAA.AX",
+        "STW": "STW.AX",
+        "IAA": "IAA.AX",
+        "IEU": "IEU.AX",
+        "IAF": "IAF.AX",
+        "RCB": "RCB.AX",  # Delisted — will be handled separately
+        "IVV": "IVV.AX",
     }
 
     ETF_NAMES = {
@@ -1296,38 +1296,33 @@ with tab5:
         "IAA": "iShares Asia 50",
         "IEU": "iShares Europe",
         "IAF": "iShares Bond",
-        "RCB": "Russell Corp Bond",
+        "RCB": "Russell Corp Bond (Delisted → Cash)",
         "IVV": "iShares S&P 500",
     }
 
-    # ── Live + historical prices from Yahoo ──────────────────────────────────
     @st.cache_data(ttl=3600)
-    def get_raiz_prices(tickers_tuple, start_date="2025-10-01"):
+    def get_live_bid_prices(tickers_tuple):
+        """Get live bid prices for international ETFs (more accurate than close)"""
         tickers = dict(tickers_tuple)
-        prices = {}
-        hist_prices = {}
+        bid_prices = {}
         for code, ticker in tickers.items():
             try:
-                h = yf.download(ticker, start=start_date, progress=False)['Close']
-                if isinstance(h, pd.DataFrame):
-                    h = h.iloc[:, 0]
-                if not h.empty:
-                    # Patch last NaN with live price
-                    if pd.isna(h.iloc[-1]):
-                        live = yf.Ticker(ticker).history(period="1d")['Close']
-                        if not live.empty:
-                            h.iloc[-1] = float(live.iloc[-1])
-                    prices[code] = float(h.iloc[-1]) if not pd.isna(h.iloc[-1]) else None
-                    hist_prices[code] = h
+                t = yf.Ticker(ticker)
+                # Try to get bid price first (more responsive to NAV)
+                bid = t.info.get('bid')
+                if bid and bid > 0:
+                    bid_prices[code] = float(bid)
                 else:
-                    prices[code] = None
-                    hist_prices[code] = None
+                    # Fallback to regular market price
+                    price = t.fast_info.get('last_price', 0)
+                    if price and price > 0:
+                        bid_prices[code] = float(price)
+                    else:
+                        bid_prices[code] = None
             except:
-                prices[code] = None
-                hist_prices[code] = None
-        return prices, hist_prices
+                bid_prices[code] = None
+        return bid_prices
 
-    # ── Load CSV from Google Drive ────────────────────────────────────────────
     @st.cache_data(ttl=300)
     def load_raiz_from_gdrive():
         try:
@@ -1386,80 +1381,61 @@ with tab5:
         except Exception as e:
             return None, f"❌ Could not load from Google Drive: {e}"
 
-    # ── Core valuation function ──────────────────────────────────────────────
-    def calculate_raiz_portfolio_value(df_trades, valuation_date, hist_prices):
+    def get_current_price_for_etf(code, df_trades, live_bid_prices):
         """
-        Calculate portfolio value on a specific date.
-        
-        Args:
-            df_trades: DataFrame with columns 'Trade Date', 'Transaction Type', 
-                       'Instrument Code', 'Quantity', 'Price', 'Amount'
-            valuation_date: datetime.date or string YYYY-MM-DD
-            hist_prices: dict of {code: Series} from Yahoo Finance
-        
-        Returns:
-            DataFrame with columns: Instrument Code, Net_Qty, Current_Price, Value_AUD
-            Also returns total portfolio value
+        Get current price for ETF with intelligent fallbacks:
+        1. RCB (delisted) → treat as cash value (price = $1.00 per unit)
+        2. International ETFs (IAA, IEU, IVV) → use live bid price
+        3. All others → use most recent CSV price, fallback to live price
         """
-        # Ensure date columns are datetime
-        df = df_trades.copy()
-        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+        # SPECIAL CASE 1: RCB is delisted — Raiz holds as cash
+        if code == "RCB":
+            # RCB is no longer traded. Raiz holds the cash value.
+            # The correct price is $1.00 per unit (cash value)
+            return 1.00
         
-        if isinstance(valuation_date, str):
-            valuation_date = pd.to_datetime(valuation_date).date()
+        # SPECIAL CASE 2: International ETFs — use live bid price
+        if code in ["IAA", "IEU", "IVV"]:
+            bid = live_bid_prices.get(code)
+            if bid and bid > 0:
+                return bid
         
-        # Filter trades up to valuation date
-        df_val = df[df['Trade Date'].dt.date <= valuation_date].copy()
+        # DEFAULT: Use most recent price from CSV (this is Raiz's actual NAV)
+        recent_trades = df_trades[df_trades['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
+        if not recent_trades.empty:
+            latest_price = recent_trades.iloc[0]['Price']
+            if latest_price and latest_price > 0:
+                return float(latest_price)
         
-        # Sign SELLs as negative quantity
-        df_val.loc[df_val['Transaction Type'] == 'SELL', 'Quantity'] = -df_val['Quantity'].abs()
+        # FINAL FALLBACK: Try Yahoo live price
+        ticker = RAIZ_TICKER_MAP.get(code)
+        if ticker:
+            try:
+                t = yf.Ticker(ticker)
+                price = t.fast_info.get('last_price', 0)
+                if price and price > 0:
+                    return float(price)
+            except:
+                pass
         
-        # Aggregate net units per ETF
-        holdings = df_val.groupby('Instrument Code')['Quantity'].sum().reset_index()
-        holdings = holdings[holdings['Quantity'].abs() > 0.0001].copy()
-        holdings.rename(columns={'Quantity': 'Net_Qty'}, inplace=True)
-        
-        # Get prices for valuation date
-        prices = []
-        for code in holdings['Instrument Code']:
-            h = hist_prices.get(code)
-            if h is not None and not h.empty:
-                # Convert valuation_date to pandas Timestamp for asof
-                val_ts = pd.Timestamp(valuation_date)
-                price = h.asof(val_ts)
-                if pd.isna(price):
-                    # Fallback: most recent price before valuation_date
-                    price = h[h.index <= val_ts].iloc[-1] if not h[h.index <= val_ts].empty else 0
-            else:
-                # Fallback to last trade price in CSV
-                last_price = df[df['Instrument Code'] == code]['Price'].dropna()
-                price = float(last_price.iloc[-1]) if not last_price.empty else 0
-            prices.append(float(price) if price and price > 0 else 0)
-        
-        holdings['Current_Price'] = prices
-        holdings['Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
-        
-        total_value = holdings['Value_AUD'].sum()
-        
-        return holdings, total_value
+        return 0.0
 
-    # ── Main UI ──────────────────────────────────────────────────────────────
-    
-    # Date selector for valuation
+    # --- Main UI ---
     st.markdown("### 📅 Select Valuation Date")
     val_date = st.date_input(
         "Calculate portfolio value on this date",
         value=date.today(),
-        help="Choose any date after your first investment. The app uses closing prices from Yahoo Finance."
+        help="Choose any date. For current value, uses live prices for active ETFs and $1.00 for RCB (delisted → cash)."
     )
-    
-    # Fetch prices (cache for all ETFs)
-    raiz_prices, raiz_hist = get_raiz_prices(tuple(RAIZ_TICKER_MAP.items()))
-    
+
+    # Fetch live bid prices for international ETFs
+    with st.spinner("Fetching live prices..."):
+        live_bid_prices = get_live_bid_prices(tuple(RAIZ_TICKER_MAP.items()))
+
     # Load CSV
     with st.spinner("Loading latest Raiz CSV from Google Drive..."):
         df_raiz_raw, raiz_file_label = load_raiz_from_gdrive()
-    
+
     if df_raiz_raw is None:
         st.error(raiz_file_label)
         st.markdown("**Manual fallback:** upload your CSV directly.")
@@ -1477,9 +1453,9 @@ with tab5:
                 "your Google Drive folder, or upload it manually above."
             )
             st.stop()
-    
+
     st.caption(f"📂 {raiz_file_label}")
-    
+
     # Clean and prepare
     df_raiz_raw.columns = [c.strip() for c in df_raiz_raw.columns]
     required_cols = ['Trade Date', 'Transaction Type', 'Instrument Code', 'Quantity', 'Price', 'Amount']
@@ -1487,54 +1463,63 @@ with tab5:
     if missing:
         st.error(f"Missing required columns: {missing}")
         st.stop()
-    
+
     df_raiz_raw['Trade Date'] = pd.to_datetime(df_raiz_raw['Trade Date'], dayfirst=True)
     df_raiz_raw['Quantity'] = pd.to_numeric(df_raiz_raw['Quantity'], errors='coerce')
     df_raiz_raw['Price'] = pd.to_numeric(df_raiz_raw['Price'], errors='coerce')
     df_raiz_raw['Amount'] = pd.to_numeric(df_raiz_raw['Amount'], errors='coerce')
-    
-    # --- Calculate portfolio value on selected date ---
-    with st.spinner(f"Calculating value on {val_date.strftime('%Y-%m-%d')}..."):
-        holdings, total_value = calculate_raiz_portfolio_value(
-            df_raiz_raw, 
-            val_date, 
-            raiz_hist
-        )
-    
-    # --- Display Results ---
-    st.markdown(f"### Portfolio Value on {val_date.strftime('%Y-%m-%d')}")
-    
-    # Big metric
-    st.metric(
-        "Total Portfolio Value (AUD)",
-        f"${total_value:,.2f}"
+
+    # --- Calculate portfolio value ---
+    df_val = df_raiz_raw[df_raiz_raw['Trade Date'].dt.date <= val_date].copy()
+    df_val.loc[df_val['Transaction Type'] == 'SELL', 'Quantity'] = -df_val['Quantity'].abs()
+
+    # Aggregate net units per ETF
+    holdings = df_val.groupby('Instrument Code')['Quantity'].sum().reset_index()
+    holdings = holdings[holdings['Quantity'].abs() > 0.0001].copy()
+    holdings.rename(columns={'Quantity': 'Net_Qty'}, inplace=True)
+
+    # Get current prices for each ETF
+    holdings['Current_Price'] = holdings['Instrument Code'].apply(
+        lambda code: get_current_price_for_etf(code, df_raiz_raw, live_bid_prices)
     )
-    
-    st.divider()
-    
-    # Holdings table
-    st.markdown("### Holdings Detail")
-    
-    # Add ETF names for readability
+    holdings['Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
     holdings['ETF Name'] = holdings['Instrument Code'].map(ETF_NAMES)
-    
-    # Calculate invested amount (cost basis) up to valuation date
+
+    # Calculate cost basis
     df_buys_up_to = df_raiz_raw[
         (df_raiz_raw['Trade Date'].dt.date <= val_date) & 
         (df_raiz_raw['Transaction Type'] == 'BUY')
     ]
     cost_basis = df_buys_up_to.groupby('Instrument Code')['Amount'].sum().reset_index()
     cost_basis.rename(columns={'Amount': 'Cost_Basis_AUD'}, inplace=True)
-    
+
     holdings = holdings.merge(cost_basis, on='Instrument Code', how='left').fillna(0)
     holdings['P&L_AUD'] = holdings['Value_AUD'] - holdings['Cost_Basis_AUD']
     holdings['ROI_%'] = (holdings['P&L_AUD'] / holdings['Cost_Basis_AUD'] * 100).where(
         holdings['Cost_Basis_AUD'] > 0, 0
     )
+
+    total_value = holdings['Value_AUD'].sum()
+
+    # --- Display Results ---
+    st.markdown(f"### Portfolio Value on {val_date.strftime('%Y-%m-%d')}")
     
+    col_total1, col_total2, col_total3 = st.columns(3)
+    col_total1.metric("Total Portfolio Value (AUD)", f"${total_value:,.2f}")
+    col_total2.metric("Total Cost Basis (AUD)", f"${holdings['Cost_Basis_AUD'].sum():,.2f}")
+    col_total3.metric("Total P&L (AUD)", f"${holdings['P&L_AUD'].sum():,.2f}", 
+                      delta=f"{holdings['P&L_AUD'].sum() / holdings['Cost_Basis_AUD'].sum() * 100:.2f}%" if holdings['Cost_Basis_AUD'].sum() > 0 else None)
+
+    st.divider()
+
+    # Note about RCB
+    st.info("💡 **Note:** RCB (Russell Corporate Bond) is delisted from ASX. Raiz holds this as cash value. The calculation uses **$1.00 per unit** to reflect the actual cash value in your account.")
+
+    st.markdown("### Holdings Detail")
+
     display_cols = ['Instrument Code', 'ETF Name', 'Net_Qty', 'Current_Price', 
                     'Cost_Basis_AUD', 'Value_AUD', 'P&L_AUD', 'ROI_%']
-    
+
     st.dataframe(
         holdings[display_cols].style
         .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 
@@ -1551,13 +1536,13 @@ with tab5:
         use_container_width=True,
         hide_index=True
     )
-    
+
     st.divider()
-    
-    # --- Allocation Pie Chart ---
-    col1, col2 = st.columns(2)
-    
-    with col1:
+
+    # Charts
+    col_chart1, col_chart2 = st.columns(2)
+
+    with col_chart1:
         st.markdown("#### Allocation by ETF")
         if not holdings.empty:
             fig_pie = px.pie(
@@ -1569,10 +1554,8 @@ with tab5:
             )
             fig_pie.update_layout(height=400)
             st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.info("No holdings on this date")
-    
-    with col2:
+
+    with col_chart2:
         st.markdown("#### P&L by ETF")
         if not holdings.empty:
             fig_bar = px.bar(
@@ -1586,11 +1569,20 @@ with tab5:
             fig_bar.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
             fig_bar.update_layout(height=400, coloraxis_showscale=False)
             st.plotly_chart(fig_bar, use_container_width=True)
-    
+
     st.divider()
-    
-    # --- Optional: Full trade history expander ---
-    with st.expander("📋 View Full Trade History (all dates)"):
+
+    # Optional: Show live bid prices used
+    with st.expander("📊 Live Price Sources"):
+        st.write("Prices used for current valuation:")
+        price_df = pd.DataFrame([
+            {"ETF": code, "Price (AUD)": get_current_price_for_etf(code, df_raiz_raw, live_bid_prices),
+             "Source": "RCB → Cash ($1.00)" if code == "RCB" else ("Live Bid" if code in ["IAA", "IEU", "IVV"] else "Most recent CSV price")}
+            for code in RAIZ_TICKER_MAP.keys()
+        ])
+        st.dataframe(price_df, hide_index=True, use_container_width=True)
+
+    with st.expander("📋 View Full Trade History"):
         st.dataframe(
             df_raiz_raw[['Trade Date', 'Transaction Type', 'Instrument Code',
                          'Quantity', 'Price', 'Amount']]
@@ -1604,6 +1596,7 @@ with tab5:
             use_container_width=True,
             hide_index=True
         )
+
 
 with tab6:
     st.subheader("Data Health Check")
