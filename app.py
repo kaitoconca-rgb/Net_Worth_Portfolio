@@ -1277,7 +1277,7 @@ with tab4:
 # ============================================================
 
 with tab5:
-    st.header("🌱 Raiz Portfolio")
+    st.header("🌱 Raiz Portfolio — Historical Valuation")
 
     # ── ETF ticker map: ASX code → Yahoo Finance symbol ──────────────────────
     RAIZ_TICKER_MAP = {
@@ -1286,7 +1286,7 @@ with tab5:
         "IAA": "IAA.AX",   # iShares Asia 50
         "IEU": "IEU.AX",   # iShares Europe
         "IAF": "IAF.AX",   # iShares Core Composite Bond
-        "RCB": "RCB.AX",   # Russell Corporate Bond (may be delisted — fallback used)
+        "RCB": "RCB.AX",   # Russell Corporate Bond (may be delisted)
         "IVV": "IVV.AX",   # iShares S&P 500
     }
 
@@ -1302,17 +1302,17 @@ with tab5:
 
     # ── Live + historical prices from Yahoo ──────────────────────────────────
     @st.cache_data(ttl=3600)
-    def get_raiz_prices(tickers_tuple):
+    def get_raiz_prices(tickers_tuple, start_date="2025-10-01"):
         tickers = dict(tickers_tuple)
         prices = {}
         hist_prices = {}
         for code, ticker in tickers.items():
             try:
-                h = yf.download(ticker, start="2025-10-01", progress=False)['Close']
+                h = yf.download(ticker, start=start_date, progress=False)['Close']
                 if isinstance(h, pd.DataFrame):
                     h = h.iloc[:, 0]
                 if not h.empty:
-                    # Try to patch last NaN with live price
+                    # Patch last NaN with live price
                     if pd.isna(h.iloc[-1]):
                         live = yf.Ticker(ticker).history(period="1d")['Close']
                         if not live.empty:
@@ -1330,18 +1330,12 @@ with tab5:
     # ── Load CSV from Google Drive ────────────────────────────────────────────
     @st.cache_data(ttl=300)
     def load_raiz_from_gdrive():
-        """
-        Reads the most recently modified CSV from the RAIZ folder in Google Drive,
-        using the same service account already configured for the gsheets connection.
-        Returns (DataFrame, label_string) or (None, error_string).
-        """
         try:
             from google.oauth2 import service_account
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaIoBaseDownload
             import io
 
-            # Detect secrets structure
             gs = st.secrets["gdrive"]
 
             creds_dict = {
@@ -1360,10 +1354,8 @@ with tab5:
             )
 
             service = build("drive", "v3", credentials=creds, cache_discovery=False)
-
             folder_id = st.secrets["gdrive"]["raiz_folder_id"]
 
-            # Find the most recently modified CSV in the folder
             results = service.files().list(
                 q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
                 orderBy="modifiedTime desc",
@@ -1380,9 +1372,8 @@ with tab5:
             file_name = latest["name"]
             modified  = latest["modifiedTime"][:10]
 
-            # Download file bytes
-            request    = service.files().get_media(fileId=file_id)
-            buffer     = io.BytesIO()
+            request = service.files().get_media(fileId=file_id)
+            buffer = io.BytesIO()
             downloader = MediaIoBaseDownload(buffer, request)
             done = False
             while not done:
@@ -1395,15 +1386,81 @@ with tab5:
         except Exception as e:
             return None, f"❌ Could not load from Google Drive: {e}"
 
-    # ── Fetch prices (cache key must be hashable → convert dict to tuple) ────
-    raiz_prices, raiz_hist = get_raiz_prices(tuple(RAIZ_TICKER_MAP.items()))
+    # ── Core valuation function ──────────────────────────────────────────────
+    def calculate_raiz_portfolio_value(df_trades, valuation_date, hist_prices):
+        """
+        Calculate portfolio value on a specific date.
+        
+        Args:
+            df_trades: DataFrame with columns 'Trade Date', 'Transaction Type', 
+                       'Instrument Code', 'Quantity', 'Price', 'Amount'
+            valuation_date: datetime.date or string YYYY-MM-DD
+            hist_prices: dict of {code: Series} from Yahoo Finance
+        
+        Returns:
+            DataFrame with columns: Instrument Code, Net_Qty, Current_Price, Value_AUD
+            Also returns total portfolio value
+        """
+        # Ensure date columns are datetime
+        df = df_trades.copy()
+        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+        
+        if isinstance(valuation_date, str):
+            valuation_date = pd.to_datetime(valuation_date).date()
+        
+        # Filter trades up to valuation date
+        df_val = df[df['Trade Date'].dt.date <= valuation_date].copy()
+        
+        # Sign SELLs as negative quantity
+        df_val.loc[df_val['Transaction Type'] == 'SELL', 'Quantity'] = -df_val['Quantity'].abs()
+        
+        # Aggregate net units per ETF
+        holdings = df_val.groupby('Instrument Code')['Quantity'].sum().reset_index()
+        holdings = holdings[holdings['Quantity'].abs() > 0.0001].copy()
+        holdings.rename(columns={'Quantity': 'Net_Qty'}, inplace=True)
+        
+        # Get prices for valuation date
+        prices = []
+        for code in holdings['Instrument Code']:
+            h = hist_prices.get(code)
+            if h is not None and not h.empty:
+                # Convert valuation_date to pandas Timestamp for asof
+                val_ts = pd.Timestamp(valuation_date)
+                price = h.asof(val_ts)
+                if pd.isna(price):
+                    # Fallback: most recent price before valuation_date
+                    price = h[h.index <= val_ts].iloc[-1] if not h[h.index <= val_ts].empty else 0
+            else:
+                # Fallback to last trade price in CSV
+                last_price = df[df['Instrument Code'] == code]['Price'].dropna()
+                price = float(last_price.iloc[-1]) if not last_price.empty else 0
+            prices.append(float(price) if price and price > 0 else 0)
+        
+        holdings['Current_Price'] = prices
+        holdings['Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
+        
+        total_value = holdings['Value_AUD'].sum()
+        
+        return holdings, total_value
 
-    # ── Load data ─────────────────────────────────────────────────────────────
+    # ── Main UI ──────────────────────────────────────────────────────────────
+    
+    # Date selector for valuation
+    st.markdown("### 📅 Select Valuation Date")
+    val_date = st.date_input(
+        "Calculate portfolio value on this date",
+        value=date.today(),
+        help="Choose any date after your first investment. The app uses closing prices from Yahoo Finance."
+    )
+    
+    # Fetch prices (cache for all ETFs)
+    raiz_prices, raiz_hist = get_raiz_prices(tuple(RAIZ_TICKER_MAP.items()))
+    
+    # Load CSV
     with st.spinner("Loading latest Raiz CSV from Google Drive..."):
         df_raiz_raw, raiz_file_label = load_raiz_from_gdrive()
-
+    
     if df_raiz_raw is None:
-        # Drive load failed — show error and offer manual fallback
         st.error(raiz_file_label)
         st.markdown("**Manual fallback:** upload your CSV directly.")
         uploaded_raiz = st.file_uploader(
@@ -1417,335 +1474,136 @@ with tab5:
         else:
             st.info(
                 "Download your trade statement from the Raiz app and save it to "
-                "G:\\My Drive\\Australia Tax\\RAIZ, or upload it manually above."
-            )
-            st.markdown(
-                "**Expected columns:** `Trade Date` · `Transaction Type` · "
-                "`Instrument Code` · `Quantity` · `Price` · `Amount`"
+                "your Google Drive folder, or upload it manually above."
             )
             st.stop()
-
-    # ── At this point df_raiz_raw is guaranteed to be a DataFrame ─────────────
+    
     st.caption(f"📂 {raiz_file_label}")
-
-    # ── Parse ─────────────────────────────────────────────────────────────────
-    df_raiz = df_raiz_raw.copy()
-    df_raiz.columns = [c.strip() for c in df_raiz.columns]
-    df_raiz['Trade Date'] = pd.to_datetime(df_raiz['Trade Date'], dayfirst=True)
-    df_raiz['Quantity']   = pd.to_numeric(df_raiz['Quantity'], errors='coerce')
-    df_raiz['Price']      = pd.to_numeric(df_raiz['Price'],    errors='coerce')
-    df_raiz['Amount']     = pd.to_numeric(df_raiz['Amount'],   errors='coerce')
-    df_raiz['Trade Date Only'] = df_raiz['Trade Date'].dt.date
-
-    # Sign: SELLs become negative quantity
-    df_raiz.loc[df_raiz['Transaction Type'] == 'SELL', 'Quantity'] = \
-        -df_raiz['Quantity'].abs()
-    df_raiz = df_raiz.sort_values('Trade Date')
-
-    # ── Net positions ─────────────────────────────────────────────────────────
-   # ── Net positions ─────────────────────────────────────────────────────────
-    def _invested(grp):
-        return df_raiz.loc[
-            (df_raiz['Instrument Code'] == grp.name) &
-            (df_raiz['Transaction Type'] == 'BUY'), 'Amount'
-        ].sum()
-
-    def _proceeds(grp):
-        return df_raiz.loc[
-            (df_raiz['Instrument Code'] == grp.name) &
-            (df_raiz['Transaction Type'] == 'SELL'), 'Amount'
-        ].sum()
-
-    holdings = (
-        df_raiz.groupby('Instrument Code')['Quantity']
-        .sum()
-        .reset_index()
-        .rename(columns={'Quantity': 'Net_Qty'})
+    
+    # Clean and prepare
+    df_raiz_raw.columns = [c.strip() for c in df_raiz_raw.columns]
+    required_cols = ['Trade Date', 'Transaction Type', 'Instrument Code', 'Quantity', 'Price', 'Amount']
+    missing = [c for c in required_cols if c not in df_raiz_raw.columns]
+    if missing:
+        st.error(f"Missing required columns: {missing}")
+        st.stop()
+    
+    df_raiz_raw['Trade Date'] = pd.to_datetime(df_raiz_raw['Trade Date'], dayfirst=True)
+    df_raiz_raw['Quantity'] = pd.to_numeric(df_raiz_raw['Quantity'], errors='coerce')
+    df_raiz_raw['Price'] = pd.to_numeric(df_raiz_raw['Price'], errors='coerce')
+    df_raiz_raw['Amount'] = pd.to_numeric(df_raiz_raw['Amount'], errors='coerce')
+    
+    # --- Calculate portfolio value on selected date ---
+    with st.spinner(f"Calculating value on {val_date.strftime('%Y-%m-%d')}..."):
+        holdings, total_value = calculate_raiz_portfolio_value(
+            df_raiz_raw, 
+            val_date, 
+            raiz_hist
+        )
+    
+    # --- Display Results ---
+    st.markdown(f"### Portfolio Value on {val_date.strftime('%Y-%m-%d')}")
+    
+    # Big metric
+    st.metric(
+        "Total Portfolio Value (AUD)",
+        f"${total_value:,.2f}"
     )
-    holdings = holdings[holdings['Net_Qty'].abs() > 0.0001].copy()
-
-
-    holdings['Total_Invested'] = holdings.apply(
-        lambda r: df_raiz.loc[
-            (df_raiz['Instrument Code'] == r['Instrument Code']) &
-            (df_raiz['Transaction Type'] == 'BUY'), 'Amount'
-        ].sum(), axis=1
-    )
-    holdings['Total_Proceeds'] = holdings.apply(
-        lambda r: df_raiz.loc[
-            (df_raiz['Instrument Code'] == r['Instrument Code']) &
-            (df_raiz['Transaction Type'] == 'SELL'), 'Amount'
-        ].sum(), axis=1
-    )
-
-    # ── Current prices with fallback to last trade price ─────────────────────
-    def get_raiz_current_price(code):
-        p = raiz_prices.get(code)
-        if p and p > 0:
-            return p
-        last = df_raiz[df_raiz['Instrument Code'] == code]['Price'].dropna()
-        return float(last.iloc[-1]) if not last.empty else 0.0
-    # ── Add reinvested distribution units ────────────────────────────────────
-    # Raiz does not export distributions — inject them using official MA weights
-    # Update TOTAL_DISTRIBUTIONS_AUD periodically from the Raiz app History screen
-    RAIZ_MA_WEIGHTS = {
-        "STW": 0.4360, "RCB": 0.2130, "IAA": 0.1380,
-        "IVV": 0.0890, "IEU": 0.0640, "IAF": 0.0300, "AAA": 0.0300,
-    }
-    TOTAL_DISTRIBUTIONS_AUD = st.number_input(
-        "Total Reinvested Distributions (AUD) — update from Raiz app History screen",
-        min_value=0,
-        value=43141,
-        step=100,
-        help="Found in Raiz app under History → Reinvested Dividends. This amount is distributed across ETFs using the official Moderately Aggressive portfolio weights."
-    )
-
-
-
-    holdings['Current_Price']     = holdings['Instrument Code'].map(get_raiz_current_price)
-    holdings['Current_Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
-    holdings['Unrealised_PL']     = (
-        holdings['Current_Value_AUD']
-        - holdings['Total_Invested']
-        + holdings['Total_Proceeds']
-    )
-    holdings['ROI_%'] = (
-        holdings['Unrealised_PL'] / holdings['Total_Invested'] * 100
-    ).where(holdings['Total_Invested'] > 0)
-    holdings['ETF Name'] = holdings['Instrument Code'].map(ETF_NAMES)
-
-    # ── 1. SUMMARY METRICS ───────────────────────────────────────────────────
-    total_deposited = df_raiz[df_raiz['Transaction Type'] == 'BUY']['Amount'].sum()
-    total_proceeds  = df_raiz[df_raiz['Transaction Type'] == 'SELL']['Amount'].sum()
-    # Scale distributions by same market return ratio as the overall portfolio
-    csv_market_value = holdings['Current_Value_AUD'].sum()
-    total_deposited_csv = df_raiz[df_raiz['Transaction Type'] == 'BUY']['Amount'].sum()
-    market_return_ratio = (csv_market_value / total_deposited_csv) if total_deposited_csv > 0 else 1.0
-    distribution_current_value = TOTAL_DISTRIBUTIONS_AUD * market_return_ratio
-    total_value = csv_market_value + distribution_current_value
-    total_pl        = total_value - total_deposited + total_proceeds
-    total_roi       = total_pl / total_deposited * 100 if total_deposited > 0 else 0
-
-    st.markdown("### Portfolio Summary")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric(
-        "Total Deposited (AUD)", f"${total_deposited:,.2f}",
-        help="Sum of all BUY transactions since account opened"
-    )
-    m2.metric(
-        "Current Market Value", f"${total_value:,.2f}",
-        delta=f"${(total_value - total_deposited + total_proceeds):+,.2f} total P&L",
-        help=f"Includes ${TOTAL_DISTRIBUTIONS_AUD:,.0f} reinvested distributions"
-    )
-    m3.metric(
-        "Unrealised P&L", f"${total_pl:,.2f}",
-        delta=f"{total_roi:+.2f}% ROI",
-        delta_color="normal" if total_pl >= 0 else "inverse"
-    )
-    m4.metric(
-        "Realised Proceeds", f"${total_proceeds:,.2f}",
-        help="Cash received from all SELL transactions"
-    )
-
+    
     st.divider()
-
-    # ── 2. HOLDINGS TABLE ────────────────────────────────────────────────────
-    st.markdown("### Current Holdings")
-
-    # Flag RCB if price looks stale (last Yahoo date > 30 days ago)
-    rcb_warning = ""
-    rcb_hist = raiz_hist.get("RCB")
-    if rcb_hist is not None and not rcb_hist.empty:
-        days_stale = (pd.Timestamp.today() - rcb_hist.index[-1]).days
-        if days_stale > 30:
-            rcb_warning = f" ⚠️ RCB price may be stale ({days_stale}d old — ETF delisted from ASX)"
-
-    if rcb_warning:
-        st.warning(rcb_warning)
-
-    display_cols = ['Instrument Code', 'ETF Name', 'Net_Qty', 'Current_Price',
-                    'Total_Invested', 'Current_Value_AUD', 'Unrealised_PL', 'ROI_%']
-
+    
+    # Holdings table
+    st.markdown("### Holdings Detail")
+    
+    # Add ETF names for readability
+    holdings['ETF Name'] = holdings['Instrument Code'].map(ETF_NAMES)
+    
+    # Calculate invested amount (cost basis) up to valuation date
+    df_buys_up_to = df_raiz_raw[
+        (df_raiz_raw['Trade Date'].dt.date <= val_date) & 
+        (df_raiz_raw['Transaction Type'] == 'BUY')
+    ]
+    cost_basis = df_buys_up_to.groupby('Instrument Code')['Amount'].sum().reset_index()
+    cost_basis.rename(columns={'Amount': 'Cost_Basis_AUD'}, inplace=True)
+    
+    holdings = holdings.merge(cost_basis, on='Instrument Code', how='left').fillna(0)
+    holdings['P&L_AUD'] = holdings['Value_AUD'] - holdings['Cost_Basis_AUD']
+    holdings['ROI_%'] = (holdings['P&L_AUD'] / holdings['Cost_Basis_AUD'] * 100).where(
+        holdings['Cost_Basis_AUD'] > 0, 0
+    )
+    
+    display_cols = ['Instrument Code', 'ETF Name', 'Net_Qty', 'Current_Price', 
+                    'Cost_Basis_AUD', 'Value_AUD', 'P&L_AUD', 'ROI_%']
+    
     st.dataframe(
         holdings[display_cols].style
-        .map(
-            lambda v: (
-                'color: #27ae60' if isinstance(v, (int, float)) and v > 0
-                else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else '')
-            ),
-            subset=['Unrealised_PL', 'ROI_%']
-        )
+        .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 
+             else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+             subset=['P&L_AUD', 'ROI_%'])
         .format({
-            'Net_Qty':            '{:.4f}',
-            'Current_Price':      '${:.4f}',
-            'Total_Invested':     '${:,.2f}',
-            'Current_Value_AUD':  '${:,.2f}',
-            'Unrealised_PL':      '${:,.2f}',
-            'ROI_%':              '{:.2f}%',
+            'Net_Qty': '{:.4f}',
+            'Current_Price': '${:.4f}',
+            'Cost_Basis_AUD': '${:,.2f}',
+            'Value_AUD': '${:,.2f}',
+            'P&L_AUD': '${:,.2f}',
+            'ROI_%': '{:.2f}%',
         }),
         use_container_width=True,
         hide_index=True
     )
-
+    
     st.divider()
-
-    # ── 3. ALLOCATION PIE + P&L BAR ─────────────────────────────────────────
-    col_l, col_r = st.columns(2)
-
-    with col_l:
+    
+    # --- Allocation Pie Chart ---
+    col1, col2 = st.columns(2)
+    
+    with col1:
         st.markdown("#### Allocation by ETF")
-        fig_raiz_pie = px.pie(
-            holdings,
-            values='Current_Value_AUD',
-            names='ETF Name',
-            hole=0.4,
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-        fig_raiz_pie.update_layout(height=350, margin=dict(t=20, b=20))
-        st.plotly_chart(fig_raiz_pie, use_container_width=True)
-
-    with col_r:
-        st.markdown("#### Unrealised P&L by ETF")
-        fig_raiz_bar = px.bar(
-            holdings,
-            x='ETF Name',
-            y='Unrealised_PL',
-            color='Unrealised_PL',
-            color_continuous_scale=['#e74c3c', '#95a5a6', '#27ae60'],
-            labels={'Unrealised_PL': 'P&L (AUD $)'}
-        )
-        fig_raiz_bar.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
-        fig_raiz_bar.update_layout(
-            height=350,
-            margin=dict(t=20, b=20),
-            coloraxis_showscale=False
-        )
-        st.plotly_chart(fig_raiz_bar, use_container_width=True)
-
+        if not holdings.empty:
+            fig_pie = px.pie(
+                holdings,
+                values='Value_AUD',
+                names='ETF Name',
+                hole=0.4,
+                title=f"Total: ${total_value:,.2f}"
+            )
+            fig_pie.update_layout(height=400)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("No holdings on this date")
+    
+    with col2:
+        st.markdown("#### P&L by ETF")
+        if not holdings.empty:
+            fig_bar = px.bar(
+                holdings,
+                x='ETF Name',
+                y='P&L_AUD',
+                color='P&L_AUD',
+                color_continuous_scale=['#e74c3c', '#95a5a6', '#27ae60'],
+                labels={'P&L_AUD': 'Profit / Loss (AUD)'}
+            )
+            fig_bar.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+            fig_bar.update_layout(height=400, coloraxis_showscale=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+    
     st.divider()
-
-    # ── 4. PORTFOLIO VALUE OVER TIME ─────────────────────────────────────────
-    st.markdown("### Portfolio Value Over Time (Oct 2025 → Today)")
-    st.caption("Market value of open positions vs cumulative amount deposited.")
-
-    raiz_date_range = pd.date_range("2025-10-01", date.today())
-    raiz_timeline   = []
-
-    for d in raiz_date_range:
-        current_date = d.date()
-
-        snapshot = (
-            df_raiz[df_raiz['Trade Date Only'] <= current_date]
-            .groupby('Instrument Code')['Quantity']
-            .sum()
-        )
-
-        day_value    = 0.0
-        day_invested = df_raiz[
-            (df_raiz['Trade Date Only'] <= current_date) &
-            (df_raiz['Transaction Type'] == 'BUY')
-        ]['Amount'].sum()
-
-        for code in RAIZ_TICKER_MAP:
-            qty = float(snapshot.get(code, 0))
-            if abs(qty) < 0.0001:
-                continue
-
-            h = raiz_hist.get(code)
-            p = None
-            if h is not None and not h.empty:
-                try:
-                    p = h.asof(d)
-                except:
-                    p = None
-            if p is None or pd.isna(p) or p == 0:
-                last_p = df_raiz[df_raiz['Instrument Code'] == code]['Price'].dropna()
-                p = float(last_p.iloc[-1]) if not last_p.empty else 0.0
-
-            day_value += qty * float(p)
-
-        raiz_timeline.append({
-            'Date':                  d,
-            'Portfolio Value (AUD)': day_value,
-            'Total Invested (AUD)':  day_invested,
-        })
-
-    df_raiz_timeline = pd.DataFrame(raiz_timeline)
-
-    if not df_raiz_timeline.empty:
-        fig_raiz_time = go.Figure()
-        fig_raiz_time.add_trace(go.Scatter(
-            x=df_raiz_timeline['Date'],
-            y=df_raiz_timeline['Portfolio Value (AUD)'],
-            mode='lines',
-            name='Market Value',
-            line=dict(color='#27ae60', width=2),
-            fill='tozeroy',
-            fillcolor='rgba(39,174,96,0.08)'
-        ))
-        fig_raiz_time.add_trace(go.Scatter(
-            x=df_raiz_timeline['Date'],
-            y=df_raiz_timeline['Total Invested (AUD)'],
-            mode='lines',
-            name='Cumulative Invested',
-            line=dict(color='#2980b9', width=2, dash='dash')
-        ))
-        fig_raiz_time.update_layout(
-            height=400,
-            hovermode="x unified",
-            yaxis=dict(title="AUD $", tickprefix="$"),
-            legend=dict(orientation="h", y=1.08),
-            margin=dict(t=40, b=30)
-        )
-        st.plotly_chart(fig_raiz_time, use_container_width=True)
-
-    st.divider()
-
-    # ── 5. P&L OVER TIME ─────────────────────────────────────────────────────
-    st.markdown("### Unrealised P&L Over Time (Oct 2025 → Today)")
-
-    df_raiz_timeline['P&L (AUD)'] = (
-        df_raiz_timeline['Portfolio Value (AUD)']
-        - df_raiz_timeline['Total Invested (AUD)']
-    )
-
-    fig_raiz_pl = go.Figure()
-    fig_raiz_pl.add_trace(go.Scatter(
-        x=df_raiz_timeline['Date'],
-        y=df_raiz_timeline['P&L (AUD)'],
-        mode='lines',
-        name='Unrealised P&L',
-        line=dict(color='#e67e22', width=2),
-        fill='tozeroy',
-        fillcolor='rgba(230,126,34,0.08)'
-    ))
-    fig_raiz_pl.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.4)
-    fig_raiz_pl.update_layout(
-        height=320,
-        hovermode="x unified",
-        yaxis=dict(title="AUD $ gain/loss", tickprefix="$"),
-        margin=dict(t=30, b=30)
-    )
-    st.plotly_chart(fig_raiz_pl, use_container_width=True)
-
-    st.divider()
-
-    # ── 6. TRADE HISTORY ─────────────────────────────────────────────────────
-    with st.expander("📋 View Full Trade History"):
+    
+    # --- Optional: Full trade history expander ---
+    with st.expander("📋 View Full Trade History (all dates)"):
         st.dataframe(
-            df_raiz[['Trade Date', 'Transaction Type', 'Instrument Code',
-                     'Quantity', 'Price', 'Amount']]
+            df_raiz_raw[['Trade Date', 'Transaction Type', 'Instrument Code',
+                         'Quantity', 'Price', 'Amount']]
             .sort_values('Trade Date', ascending=False)
             .style.format({
-                'Trade Date':       lambda x: x.strftime('%Y-%m-%d'),
-                'Quantity':         '{:.6f}',
-                'Price':            '${:.4f}',
-                'Amount':           '${:,.4f}',
+                'Trade Date': lambda x: x.strftime('%Y-%m-%d'),
+                'Quantity': '{:.6f}',
+                'Price': '${:.4f}',
+                'Amount': '${:,.4f}',
             }),
             use_container_width=True,
             hide_index=True
         )
-
 
 with tab6:
     st.subheader("Data Health Check")
