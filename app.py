@@ -1942,10 +1942,15 @@ with tab6:
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
     def save_cash_balances(balances_dict):
+        st.write("DEBUG: save function called")
+        st.write("DEBUG: balances =", balances_dict)
         try:
-            from streamlit_gsheets import GSheetsConnection
+            st.write("DEBUG: importing gspread...")
             import gspread
+            st.write("DEBUG: gspread imported")
             from google.oauth2 import service_account
+            st.write("DEBUG: service_account imported")
+           
 
             gs = st.secrets["gdrive"]
             creds = service_account.Credentials.from_service_account_info(
@@ -2041,7 +2046,6 @@ with tab6:
         result = save_cash_balances(new_balances)
         if result:
             st.success("✅ Balances saved to Google Sheet!")
-            st.rerun()
 
     st.divider()
 
