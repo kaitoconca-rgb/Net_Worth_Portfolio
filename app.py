@@ -2045,10 +2045,16 @@ with tab6:
             )
         st.caption(f"BRL/AUD rate: {brl_to_aud:.4f}")
 
-    if st.button("💾 Save Balances", type="primary", key="cash_save_btn"):
+if st.button("💾 Save Balances", type="primary", key="cash_save_btn"):
         result = save_cash_balances(new_balances)
         if result:
             st.success("✅ Balances saved to Google Sheet!")
+        else:
+            try:
+                with open("/tmp/cash_error.txt") as f:
+                    st.code(f.read())
+            except:
+                st.warning("Save failed but no error log found")
 
     st.divider()
 
