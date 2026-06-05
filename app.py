@@ -1669,15 +1669,19 @@ with tab6:
             st.error(f"Could not save: {e}")
             return False
 
-    current_balances = load_cash_balances()
-    with st.expander("🔍 Debug — raw sheet data"):
-        try:
-            _conn = st.connection("gsheets_cash", type=GSheetsConnection)
-            _df = _conn.read(ttl=0, usecols=[0, 1])
-            st.write(_df)
-            st.write("Keys returned:", list(_df['Account'].values))
-        except Exception as e:
-            st.error(str(e))
+   current_balances = load_cash_balances()
+
+    # Pre-populate session state from sheet on first load or after refresh
+    for acc in ACCOUNTS:
+        key = f"cash_{acc['name']}"
+        if key not in st.session_state:
+            st.session_state[key] = float(current_balances.get(acc["name"], 0.0))
+
+    if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
+        for acc in ACCOUNTS:
+            key = f"cash_{acc['name']}"
+            st.session_state[key] = float(current_balances.get(acc["name"], 0.0))
+        st.rerun()
     
     # ── Input form ────────────────────────────────────────────────────────────
     st.markdown("### Update Balances")
