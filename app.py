@@ -1955,45 +1955,39 @@ with tab6:
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
     def save_cash_balances(balances_dict):
-        st.write("step 1")
         try:
-            st.write("step 2")
             from google.oauth2 import service_account
-            st.write("step 3")
             from googleapiclient.discovery import build
-            st.write("step 4")
+
             gs = st.secrets["gdrive"]
-            st.write("step 5")
-            creds = service_account.Credentials.from_service_account_info(
-                {
-                    "type": "service_account",
-                    "project_id": gs["project_id"],
-                    "private_key_id": gs["private_key_id"],
-                    "private_key": gs["private_key"],
-                    "client_email": gs["client_email"],
-                    "client_id": gs.get("client_id", ""),
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                },
-                scopes=["https://www.googleapis.com/auth/spreadsheets"]
-            )
-            st.write("step 6")
+            creds = service_account.Credentials.from_service_account_info({
+                "type": "service_account",
+                "project_id": gs["project_id"],
+                "private_key_id": gs["private_key_id"],
+                "private_key": gs["private_key"],
+                "client_email": gs["client_email"],
+                "client_id": gs.get("client_id", ""),
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+
             service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-            st.write("step 7")
-            rows = [["Account", "Balance"]]
-            for k, v in balances_dict.items():
-                rows.append([k, float(v)])
-            st.write("step 8", rows)
-            result = service.spreadsheets().values().update(
+
+            rows = [["Account", "Balance"]] + [[k, v] for k, v in balances_dict.items()]
+
+            service.spreadsheets().values().update(
                 spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
                 range="Cash!A1",
                 valueInputOption="RAW",
                 body={"values": rows}
             ).execute()
-            st.write("step 9", result)
             return True
+
         except Exception as e:
-            st.error(f"Could not save: {repr(e)}")
-            st.exception(e)
+            import traceback
+            tb = traceback.format_exc()
+            # Write to a file since st.error causes white page
+            with open("/tmp/cash_error.txt", "w") as f:
+                f.write(tb)
             return False
     current_balances = load_cash_balances()
 
