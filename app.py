@@ -2038,7 +2038,8 @@ with tab6:
         st.caption(f"BRL/AUD rate: {brl_to_aud:.4f}")
 
     if st.button("💾 Save Balances", type="primary"):
-        if save_cash_balances(new_balances):
+        result = save_cash_balances(new_balances)
+        if result:
             st.success("✅ Balances saved to Google Sheet!")
             st.rerun()
 
