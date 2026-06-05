@@ -1642,15 +1642,21 @@ with tab6:
 
     # ── Read current balances from Google Sheet ───────────────────────────────
     @st.cache_data(ttl=30)
+    @st.cache_data(ttl=0)
     def load_cash_balances():
         try:
             conn_cash = st.connection("gsheets", type=GSheetsConnection)
-            df = conn_cash.read(worksheet="Cash", ttl=0)
+            df = conn_cash.read(
+                worksheet="Cash",
+                usecols=[0, 1],
+                ttl=0
+            )
             df.columns = [c.strip() for c in df.columns]
+            df = df.dropna(subset=['Account'])
             df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0)
             return df.set_index('Account')['Balance'].to_dict()
         except Exception as e:
-            st.warning(f"Could not load balances from Google Sheet: {e}")
+            st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
 
     # ── Write updated balances back to Google Sheet ───────────────────────────
@@ -1670,6 +1676,11 @@ with tab6:
 
     current_balances = load_cash_balances()
 
+
+    if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+    
     # ── Input form ────────────────────────────────────────────────────────────
     st.markdown("### Update Balances")
 
