@@ -495,7 +495,8 @@ with tab0:
             st.cache_data.clear()
             return True
         except Exception as e:
-            st.error(f"Could not save snapshot: {e}")
+            st.error(f"Could not save: {repr(e)}")
+            st.exception(e)
             return False
 
     # Auto-save on last day of month
