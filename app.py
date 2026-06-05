@@ -258,9 +258,9 @@ for _, row in df_sells.iterrows():
 
 df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
 # --- 4. INTERFACCIA ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Performance", "💸 Simulatore ATO", "📈 Timeline",
-    "💱 FX Analysis", "🌱 Raiz", "🛠️ Diagnostics"
+    "💱 FX Analysis", "🌱 Raiz", "🏦 Cash", "🛠️ Diagnostics"
 ])
 
 with tab1:
@@ -1609,8 +1609,196 @@ with tab5:
             use_container_width=True,
             hide_index=True
         )
-
 with tab6:
+    st.header("🏦 Cash & Savings Accounts")
+    st.caption("Balances stored in your Google Sheet — update here and they save automatically.")
+
+    ACCOUNTS = [
+        {"name": "CBA",             "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "ME Bank",         "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Rabobank",        "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Up",              "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Vanguard ETF",    "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Trade Republic",  "currency": "EUR", "flag": "🇩🇪"},
+        {"name": "N26",             "currency": "EUR", "flag": "🇩🇪"},
+        {"name": "BUNQ",            "currency": "EUR", "flag": "🇳🇱"},
+        {"name": "BPM Cash",        "currency": "EUR", "flag": "🇮🇹"},
+        {"name": "BPM Bonds",       "currency": "EUR", "flag": "🇮🇹"},
+        {"name": "Revolut Metals",  "currency": "EUR", "flag": "🇬🇧"},
+        {"name": "C6 Cash",         "currency": "BRL", "flag": "🇧🇷"},
+        {"name": "C6 Investments",  "currency": "BRL", "flag": "🇧🇷"},
+    ]
+
+    # ── BRL/AUD exchange rate ─────────────────────────────────────────────────
+    @st.cache_data(ttl=600)
+    def get_brl_aud():
+        try:
+            t = yf.Ticker("BRLAUD=X")
+            return float(t.fast_info['last_price'])
+        except:
+            return 0.27  # fallback ~0.27 AUD per 1 BRL
+
+    brl_to_aud = get_brl_aud()
+
+    # ── Read current balances from Google Sheet ───────────────────────────────
+    @st.cache_data(ttl=30)
+    def load_cash_balances():
+        try:
+            conn_cash = st.connection("gsheets", type=GSheetsConnection)
+            df = conn_cash.read(worksheet="Cash", ttl=0)
+            df.columns = [c.strip() for c in df.columns]
+            df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0)
+            return df.set_index('Account')['Balance'].to_dict()
+        except Exception as e:
+            st.warning(f"Could not load balances from Google Sheet: {e}")
+            return {a["name"]: 0.0 for a in ACCOUNTS}
+
+    # ── Write updated balances back to Google Sheet ───────────────────────────
+    def save_cash_balances(balances_dict):
+        try:
+            conn_cash = st.connection("gsheets", type=GSheetsConnection)
+            df_save = pd.DataFrame([
+                {"Account": k, "Balance": v}
+                for k, v in balances_dict.items()
+            ])
+            conn_cash.update(worksheet="Cash", data=df_save)
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"Could not save: {e}")
+            return False
+
+    current_balances = load_cash_balances()
+
+    # ── Input form ────────────────────────────────────────────────────────────
+    st.markdown("### Update Balances")
+
+    aud_accounts = [a for a in ACCOUNTS if a["currency"] == "AUD"]
+    eur_accounts = [a for a in ACCOUNTS if a["currency"] == "EUR"]
+    brl_accounts = [a for a in ACCOUNTS if a["currency"] == "BRL"]
+
+    col_aud, col_eur, col_brl = st.columns(3)
+    new_balances = {}
+
+    with col_aud:
+        st.markdown("**🇦🇺 AUD Accounts**")
+        for acc in aud_accounts:
+            new_balances[acc["name"]] = st.number_input(
+                f"{acc['flag']} {acc['name']} (AUD)",
+                min_value=0.0,
+                value=float(current_balances.get(acc["name"], 0.0)),
+                step=100.0,
+                format="%.2f",
+                key=f"cash_{acc['name']}"
+            )
+
+    with col_eur:
+        st.markdown("**🇪🇺 EUR Accounts**")
+        for acc in eur_accounts:
+            new_balances[acc["name"]] = st.number_input(
+                f"{acc['flag']} {acc['name']} (EUR)",
+                min_value=0.0,
+                value=float(current_balances.get(acc["name"], 0.0)),
+                step=100.0,
+                format="%.2f",
+                key=f"cash_{acc['name']}"
+            )
+
+    with col_brl:
+        st.markdown("**🇧🇷 BRL Accounts**")
+        for acc in brl_accounts:
+            new_balances[acc["name"]] = st.number_input(
+                f"{acc['flag']} {acc['name']} (BRL)",
+                min_value=0.0,
+                value=float(current_balances.get(acc["name"], 0.0)),
+                step=100.0,
+                format="%.2f",
+                key=f"cash_{acc['name']}"
+            )
+        st.caption(f"BRL/AUD rate: {brl_to_aud:.4f}")
+
+    if st.button("💾 Save Balances", type="primary"):
+        if save_cash_balances(new_balances):
+            st.success("✅ Balances saved to Google Sheet!")
+            st.rerun()
+
+    st.divider()
+
+    # ── Summary calculations ──────────────────────────────────────────────────
+    total_aud_cash   = sum(new_balances[a["name"]] for a in ACCOUNTS if a["currency"] == "AUD")
+    total_eur_cash   = sum(new_balances[a["name"]] for a in ACCOUNTS if a["currency"] == "EUR")
+    total_brl_cash   = sum(new_balances[a["name"]] for a in ACCOUNTS if a["currency"] == "BRL")
+    total_eur_in_aud = total_eur_cash * fx_now
+    total_brl_in_aud = total_brl_cash * brl_to_aud
+    total_cash_aud   = total_aud_cash + total_eur_in_aud + total_brl_in_aud
+    total_cash_eur   = total_cash_aud / fx_now if fx_now else 0
+
+    st.markdown("### Summary")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("AUD Cash",     f"${total_aud_cash:,.2f}")
+    m2.metric("EUR Cash",     f"€{total_eur_cash:,.2f}")
+    m3.metric("BRL Cash",     f"R${total_brl_cash:,.2f}")
+    m4.metric("Total in AUD", f"${total_cash_aud:,.2f}",
+              help=f"EUR @ {fx_now:.4f} · BRL @ {brl_to_aud:.4f}")
+    m5.metric("Total in EUR", f"€{total_cash_eur:,.2f}")
+
+    st.divider()
+
+    # ── Per-account breakdown table ───────────────────────────────────────────
+    st.markdown("### Account Breakdown")
+
+    rows = []
+    for acc in ACCOUNTS:
+        bal = new_balances[acc["name"]]
+        if acc["currency"] == "AUD":
+            bal_aud = bal
+            bal_eur = bal / fx_now if fx_now else 0
+        elif acc["currency"] == "EUR":
+            bal_eur = bal
+            bal_aud = bal * fx_now
+        else:  # BRL
+            bal_aud = bal * brl_to_aud
+            bal_eur = bal_aud / fx_now if fx_now else 0
+
+        rows.append({
+            "Account":     f"{acc['flag']} {acc['name']}",
+            "Currency":    acc["currency"],
+            "Balance":     bal,
+            "Value (AUD)": bal_aud,
+            "Value (EUR)": bal_eur,
+        })
+
+    df_cash = pd.DataFrame(rows)
+
+    st.dataframe(
+        df_cash.style.format({
+            "Balance":     "{:,.2f}",
+            "Value (AUD)": "${:,.2f}",
+            "Value (EUR)": "€{:,.2f}",
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.divider()
+
+    # ── Allocation pie ────────────────────────────────────────────────────────
+    df_cash_plot = df_cash[df_cash["Value (AUD)"] > 0]
+    if not df_cash_plot.empty:
+        st.markdown("### Allocation")
+        fig_cash_pie = px.pie(
+            df_cash_plot,
+            values="Value (AUD)",
+            names="Account",
+            hole=0.4,
+            title=f"Total Cash: ${total_cash_aud:,.2f} AUD",
+            color_discrete_sequence=px.colors.qualitative.Set2
+        )
+        fig_cash_pie.update_layout(height=400, margin=dict(t=40, b=20))
+        st.plotly_chart(fig_cash_pie, use_container_width=True)
+    else:
+        st.info("Enter balances above to see allocation chart.")
+with tab7:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
     st.table(pd.DataFrame.from_dict(diag_logs, orient='index'))
