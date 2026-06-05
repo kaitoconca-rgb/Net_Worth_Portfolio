@@ -494,7 +494,11 @@ with tab0:
             conn_nw.update(data=df_updated)
             st.cache_data.clear()
             return True
-
+        except Exception as e:
+            st.error(f"Type: {type(e).__name__}")
+            st.error(f"Args: {e.args}")
+            st.error(f"Repr: {repr(e)}")
+            return False
 
     # Auto-save on last day of month
     today = date.today()
