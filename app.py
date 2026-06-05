@@ -1675,12 +1675,9 @@ with tab6:
             _conn = st.connection("gsheets_cash", type=GSheetsConnection)
             _df = _conn.read(ttl=0, usecols=[0, 1])
             st.write(_df)
+            st.write("Keys returned:", list(_df['Account'].values))
         except Exception as e:
             st.error(str(e))
-
-    if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
-        st.cache_data.clear()
-        st.rerun()
     
     # ── Input form ────────────────────────────────────────────────────────────
     st.markdown("### Update Balances")
