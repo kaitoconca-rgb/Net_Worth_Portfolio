@@ -1942,12 +1942,16 @@ with tab6:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
-    def save_cash_balances(balances_dict):
+def save_cash_balances(balances_dict):
+        st.write("step 1")
         try:
+            st.write("step 2")
             from google.oauth2 import service_account
+            st.write("step 3")
             from googleapiclient.discovery import build
-
+            st.write("step 4")
             gs = st.secrets["gdrive"]
+            st.write("step 5")
             creds = service_account.Credentials.from_service_account_info(
                 {
                     "type": "service_account",
@@ -1960,22 +1964,21 @@ with tab6:
                 },
                 scopes=["https://www.googleapis.com/auth/spreadsheets"]
             )
-
+            st.write("step 6")
             service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-
+            st.write("step 7")
             rows = [["Account", "Balance"]]
             for k, v in balances_dict.items():
                 rows.append([k, float(v)])
-
-            service.spreadsheets().values().update(
+            st.write("step 8", rows)
+            result = service.spreadsheets().values().update(
                 spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
                 range="Cash!A1",
                 valueInputOption="RAW",
                 body={"values": rows}
             ).execute()
-
+            st.write("step 9", result)
             return True
-
         except Exception as e:
             st.error(f"Could not save: {repr(e)}")
             st.exception(e)
