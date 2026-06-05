@@ -496,8 +496,11 @@ with tab0:
             return True
         except Exception as e:
             import traceback
-            tb = traceback.format_exc()
-            st.code(tb)
+            try:
+                with open("/tmp/err.txt", "w") as f:
+                    f.write(traceback.format_exc())
+            except:
+                pass
             return False
 
     # Auto-save on last day of month
@@ -551,8 +554,17 @@ with tab0:
             st.rerun()
         except Exception as e:
             st.error(f"Could not save: {e}")
-if st.button("💾 Save Balances", type="primary"):
-        st.write("button clicked")
+    if st.button("💾 Save Balances", type="primary", key="cash_save_btn"):
+        result = save_cash_balances(new_balances)
+        if result:
+            st.success("✅ Saved!")
+        else:
+            try:
+                with open("/tmp/err.txt") as f:
+                    content = f.read()
+                st.text(content)
+            except Exception as read_err:
+                st.text(f"Could not read error file: {read_err}")
 
 
 with tab1:
