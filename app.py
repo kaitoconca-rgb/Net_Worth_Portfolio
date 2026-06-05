@@ -2060,7 +2060,7 @@ with tab6:
                     st.code(f.read())
             except:
                 st.warning("Save failed but no error log found")
-     if st.button("Check packages", key="pkg_check"):
+    if st.button("Check packages", key="pkg_check"):
         try:
             with open("/tmp/pkg_check.txt") as f:
                 st.code(f.read())
