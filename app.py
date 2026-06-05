@@ -1367,7 +1367,9 @@ with tab5:
             st.stop()
 
     st.caption(f"📂 {csv_label}")
-
+    if st.button("🔄 Refresh Prices", key="raiz_price_refresh"):
+        st.cache_data.clear()
+        st.rerun()
     # ─────────────────────────────────────────────────────────────────
     # CLEAN AND PREPARE
     # ─────────────────────────────────────────────────────────────────
@@ -1415,12 +1417,51 @@ with tab5:
     # GET CURRENT PRICE FROM CSV (MOST RECENT PRICE FOR EACH ETF)
     # This is the KEY FIX: uses CSV's Price column as source of truth
     # ─────────────────────────────────────────────────────────────────
+    RAIZ_TICKER_MAP = {
+        'AAA': 'AAA.AX', 'STW': 'STW.AX', 'IAA': 'IAA.AX',
+        'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
+    }
+
+    @st.cache_data(ttl=300)
+    def get_raiz_live_prices(codes_tuple):
+        prices = {}
+        for code in codes_tuple:
+            ticker = RAIZ_TICKER_MAP.get(code)
+            if not ticker:
+                prices[code] = None
+                continue
+            # Try fast_info first
+            try:
+                t = yf.Ticker(ticker)
+                p = t.fast_info.get('last_price', None)
+                if p and float(p) > 0:
+                    prices[code] = float(p)
+                    continue
+            except:
+                pass
+            # Fallback: 5d history
+            try:
+                h = yf.download(ticker, period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame):
+                    h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    prices[code] = float(h.iloc[-1])
+                    continue
+            except:
+                pass
+            prices[code] = None
+        return prices
+
+    live_prices = get_raiz_live_prices(tuple(holdings['Instrument Code'].unique()))
+
     def get_most_recent_csv_price(code):
-        """Get the most recent price from CSV for this ETF (Raiz's actual NAV)"""
+        # Live Yahoo price first, fall back to CSV last trade price
+        p = live_prices.get(code)
+        if p and p > 0:
+            return p
         recent = df_csv[df_csv['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
-        if not recent.empty:
-            return float(recent.iloc[0]['Price'])
-        return 0.0
+        return float(recent.iloc[0]['Price']) if not recent.empty else 0.0
 
     holdings['Current_Price'] = holdings['Instrument Code'].apply(get_most_recent_csv_price)
     holdings['Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
@@ -1526,13 +1567,18 @@ with tab5:
     with st.expander("📊 Price Sources (How values are calculated)"):
         price_info = []
         for code in holdings['Instrument Code'].unique():
+            live_p = live_prices.get(code)
             recent = df_csv[df_csv['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
-            last_date = recent.iloc[0]['Trade Date'].strftime('%Y-%m-%d') if not recent.empty else "Unknown"
-            last_price = recent.iloc[0]['Price'] if not recent.empty else 0
+            csv_p = float(recent.iloc[0]['Price']) if not recent.empty else 0
+            csv_date = recent.iloc[0]['Trade Date'].strftime('%Y-%m-%d') if not recent.empty else 'Unknown'
+            source = "🟢 Yahoo Live" if (live_p and live_p > 0) else "🟡 CSV fallback"
+            price_used = live_p if (live_p and live_p > 0) else csv_p
             price_info.append({
                 "ETF": code,
-                "Price Used": f"${last_price:.2f}",
-                "Source": f"CSV last trade on {last_date}",
+                "Price Used": f"${price_used:.4f}",
+                "Source": source,
+                "CSV Last Price": f"${csv_p:.4f}",
+                "CSV Last Date": csv_date,
             })
         st.dataframe(pd.DataFrame(price_info), hide_index=True, use_container_width=True)
         
