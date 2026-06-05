@@ -537,7 +537,7 @@ with tab0:
         st.info("Net worth history will appear here after the first end-of-month snapshot. You can also add historical data manually to the Net_Worth sheet.")
 
     # Manual save button for testing / off-cycle saves
-    if st.button("💾 Save Snapshot Now", help="Manually record today's net worth"):
+    if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn", help="Manually record today's net worth"):
         # Override month check for manual saves
         try:
             conn_nw = st.connection("gsheets_networth", type=GSheetsConnection)
@@ -1993,7 +1993,7 @@ with tab6:
             st.session_state[f"cash_{acc['name']}"] = float(current_balances.get(acc["name"], 0.0))
         st.session_state["cash_loaded"] = True
 
-    if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
+    if st.button("🔄 Refresh from Sheet", key="cash_refresh_btn"):
         # Force reload from sheet
         del st.session_state["cash_loaded"]
         for acc in ACCOUNTS:
@@ -2047,7 +2047,7 @@ with tab6:
             )
         st.caption(f"BRL/AUD rate: {brl_to_aud:.4f}")
 
-    if st.button("💾 Save Balances", type="primary"):
+    if st.button("💾 Save Balances", type="primary", key="cash_save_btn"):
         result = save_cash_balances(new_balances)
         if result:
             st.success("✅ Balances saved to Google Sheet!")
