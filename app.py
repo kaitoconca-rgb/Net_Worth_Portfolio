@@ -1377,7 +1377,17 @@ with tab5:
     df_csv['Price'] = pd.to_numeric(df_csv['Price'], errors='coerce')
     df_csv['Amount'] = pd.to_numeric(df_csv['Amount'], errors='coerce')
     df_csv['Trade Date Only'] = df_csv['Trade Date'].dt.date
+# ── IVV Split Adjustment ──────────────────────────────────────────────────
+    # Raiz CSV does not adjust pre-split IVV quantities for the Dec 2022 unit split
+    # Sharesight-verified correct total: 521.9618 units
+    # Adjustment factor: 521.9618 / 60.9715 = 8.561x applied to pre-split rows only
+    IVV_SPLIT_DATE = pd.Timestamp('2022-12-09')
+    IVV_SPLIT_FACTOR = 521.9618 / 60.9715  # = 8.561
 
+    ivv_mask = df_csv['Instrument Code'] == 'IVV'
+    pre_split_mask = ivv_mask & (df_csv['Trade Date'] < IVV_SPLIT_DATE)
+    df_csv.loc[pre_split_mask, 'Quantity'] = df_csv.loc[pre_split_mask, 'Quantity'] * IVV_SPLIT_FACTOR
+    df_csv.loc[pre_split_mask, 'Price'] = df_csv.loc[pre_split_mask, 'Price'] / IVV_SPLIT_FACTOR
     # Sign SELLs as negative
     df_csv.loc[df_csv['Transaction Type'] == 'SELL', 'Quantity'] = -df_csv['Quantity'].abs()
 
