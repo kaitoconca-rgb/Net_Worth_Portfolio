@@ -1941,14 +1941,34 @@ with tab6:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
-    def save_cash_balances(balances_dict):
+   def save_cash_balances(balances_dict):
         try:
-            conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
-            df_save = pd.DataFrame([
-                {"Account": k, "Balance": v}
-                for k, v in balances_dict.items()
-            ])
-            conn_cash.update(data=df_save)
+            from streamlit_gsheets import GSheetsConnection
+            import gspread
+            from google.oauth2 import service_account
+
+            gs = st.secrets["gdrive"]
+            creds = service_account.Credentials.from_service_account_info(
+                {
+                    "type": "service_account",
+                    "project_id": gs["project_id"],
+                    "private_key_id": gs["private_key_id"],
+                    "private_key": gs["private_key"],
+                    "client_email": gs["client_email"],
+                    "client_id": gs.get("client_id", ""),
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                },
+                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            )
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key("1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8")
+            ws = sh.get_worksheet_by_id(1604553457)
+            
+            # Build data to write
+            rows = [["Account", "Balance"]]
+            for k, v in balances_dict.items():
+                rows.append([k, v])
+            ws.update("A1", rows)
             st.cache_data.clear()
             return True
         except Exception as e:
