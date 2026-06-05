@@ -495,9 +495,12 @@ with tab0:
             st.cache_data.clear()
             return True
         except Exception as e:
-            st.error(f"Type: {type(e).__name__}")
-            st.error(f"Args: {e.args}")
-            st.error(f"Repr: {repr(e)}")
+            import traceback
+            with open("/tmp/save_error.txt", "w") as f:
+                f.write(f"Type: {type(e).__name__}\n")
+                f.write(f"Args: {e.args}\n")
+                f.write(f"Repr: {repr(e)}\n")
+                f.write(traceback.format_exc())
             return False
 
     # Auto-save on last day of month
@@ -551,6 +554,14 @@ with tab0:
             st.rerun()
         except Exception as e:
             st.error(f"Could not save: {e}")
+    if st.button("📋 Show Last Error", key="show_error"):
+        try:
+            with open("/tmp/save_error.txt", "r") as f:
+                st.code(f.read())
+        except:
+            st.write("No error log found yet")
+
+
 with tab1:
     st.header("Performance Complessiva")
 
