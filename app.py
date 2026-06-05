@@ -17,7 +17,7 @@ except:
 # --- 0. PROTEZIONE ---
 def check_password():
     def password_guessed():
-        if st.session_state["password"] == st.secrets["auth"]["password"]:
+        if st.session_state.get("password", "") == st.secrets["auth"]["password"]:
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
