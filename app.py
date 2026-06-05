@@ -554,12 +554,8 @@ with tab0:
             st.rerun()
         except Exception as e:
             st.error(f"Could not save: {e}")
-    if st.button("📋 Show Last Error", key="show_error"):
-        try:
-            with open("/tmp/save_error.txt", "r") as f:
-                st.code(f.read())
-        except:
-            st.write("No error log found yet")
+if st.button("💾 Save Balances", type="primary"):
+        st.write("button clicked")
 
 
 with tab1:
