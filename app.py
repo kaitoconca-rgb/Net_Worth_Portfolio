@@ -1615,16 +1615,16 @@ with tab6:
 
     ACCOUNTS = [
         {"name": "CBA",             "currency": "AUD", "flag": "🇦🇺"},
-        {"name": "ME Bank",         "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Me Bank",         "currency": "AUD", "flag": "🇦🇺"},
         {"name": "Rabobank",        "currency": "AUD", "flag": "🇦🇺"},
         {"name": "Up",              "currency": "AUD", "flag": "🇦🇺"},
         {"name": "Vanguard ETF",    "currency": "AUD", "flag": "🇦🇺"},
+        {"name": "Revolut Metals",  "currency": "AUD", "flag": "🇦🇺"},
         {"name": "Trade Republic",  "currency": "EUR", "flag": "🇩🇪"},
         {"name": "N26",             "currency": "EUR", "flag": "🇩🇪"},
         {"name": "BUNQ",            "currency": "EUR", "flag": "🇳🇱"},
         {"name": "BPM Cash",        "currency": "EUR", "flag": "🇮🇹"},
         {"name": "BPM Bonds",       "currency": "EUR", "flag": "🇮🇹"},
-        {"name": "Revolut Metals",  "currency": "AUD", "flag": "🇦🇺"},
         {"name": "C6 Cash",         "currency": "BRL", "flag": "🇧🇷"},
         {"name": "C6 Investments",  "currency": "BRL", "flag": "🇧🇷"},
     ]
@@ -1670,7 +1670,13 @@ with tab6:
             return False
 
     current_balances = load_cash_balances()
-
+    with st.expander("🔍 Debug — raw sheet data"):
+        try:
+            _conn = st.connection("gsheets_cash", type=GSheetsConnection)
+            _df = _conn.read(ttl=0, usecols=[0, 1])
+            st.write(_df)
+        except Exception as e:
+            st.error(str(e))
 
     if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
         st.cache_data.clear()
