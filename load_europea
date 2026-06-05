@@ -54,14 +54,9 @@ def get_fx_data():
 fx_now, fx_hist = get_fx_data()
 
 # --- 2. EUROPEAN PORTFOLIO DATA ---
-@st.cache_data(ttl=60)
-def load_european_data():
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df = conn.read(ttl=60)
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-df_input = load_european_data()
+conn = st.connection("gsheets", type=GSheetsConnection)
+df_input = conn.read(ttl=60)
+df_input.columns = [c.strip() for c in df_input.columns]
 
 df_raw = pd.DataFrame()
 df_raw['Data'] = pd.to_datetime(df_input['Fecha Valor'], dayfirst=True)
