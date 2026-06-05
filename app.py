@@ -1941,7 +1941,7 @@ with tab6:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
-       def save_cash_balances(balances_dict):
+    def save_cash_balances(balances_dict):
         try:
             from streamlit_gsheets import GSheetsConnection
             import gspread
