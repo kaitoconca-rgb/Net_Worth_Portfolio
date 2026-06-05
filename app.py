@@ -1956,12 +1956,12 @@ with tab6:
         try:
             from google.oauth2 import service_account
             from googleapiclient.discovery import build
-        if st.button("Check packages", key="pkg_check"):
-            try:
-                with open("/tmp/pkg_check.txt") as f:
-                    st.code(f.read())
-                except:
-                    st.write("file not found")
+    if st.button("Check packages", key="pkg_check"):
+        try:
+            with open("/tmp/pkg_check.txt") as f:
+                st.code(f.read())
+            except:
+                st.write("file not found")
 
             gs = st.secrets["gdrive"]
             creds = service_account.Credentials.from_service_account_info({
