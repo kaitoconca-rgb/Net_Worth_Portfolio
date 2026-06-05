@@ -1655,7 +1655,7 @@ with tab6:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
-     def save_cash_balances(balances_dict):
+    def save_cash_balances(balances_dict):
         try:
             conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
             df_save = pd.DataFrame([
