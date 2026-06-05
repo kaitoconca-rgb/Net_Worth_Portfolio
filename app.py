@@ -496,11 +496,8 @@ with tab0:
             return True
         except Exception as e:
             import traceback
-            with open("/tmp/save_error.txt", "w") as f:
-                f.write(f"Type: {type(e).__name__}\n")
-                f.write(f"Args: {e.args}\n")
-                f.write(f"Repr: {repr(e)}\n")
-                f.write(traceback.format_exc())
+            tb = traceback.format_exc()
+            st.code(tb)
             return False
 
     # Auto-save on last day of month
