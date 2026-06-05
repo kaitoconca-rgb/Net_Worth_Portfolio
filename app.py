@@ -1642,7 +1642,7 @@ with tab6:
 
     # ── Read current balances from Google Sheet ───────────────────────────────
     @st.cache_data(ttl=30)
-    @st.cache_data(ttl=0)
+   
     def load_cash_balances():
         try:
             conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
