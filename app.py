@@ -1624,7 +1624,7 @@ with tab6:
         {"name": "BUNQ",            "currency": "EUR", "flag": "🇳🇱"},
         {"name": "BPM Cash",        "currency": "EUR", "flag": "🇮🇹"},
         {"name": "BPM Bonds",       "currency": "EUR", "flag": "🇮🇹"},
-        {"name": "Revolut Metals",  "currency": "EUR", "flag": "🇬🇧"},
+        {"name": "Revolut Metals",  "currency": "AUD", "flag": "🇦🇺"},
         {"name": "C6 Cash",         "currency": "BRL", "flag": "🇧🇷"},
         {"name": "C6 Investments",  "currency": "BRL", "flag": "🇧🇷"},
     ]
@@ -1642,15 +1642,11 @@ with tab6:
 
     # ── Read current balances from Google Sheet ───────────────────────────────
     @st.cache_data(ttl=30)
-    @st.cache_data(ttl=0)
+        @st.cache_data(ttl=0)
     def load_cash_balances():
         try:
-            conn_cash = st.connection("gsheets", type=GSheetsConnection)
-            df = conn_cash.read(
-                worksheet="Cash",
-                usecols=[0, 1],
-                ttl=0
-            )
+            conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
+            df = conn_cash.read(ttl=0, usecols=[0, 1])
             df.columns = [c.strip() for c in df.columns]
             df = df.dropna(subset=['Account'])
             df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0)
@@ -1658,16 +1654,15 @@ with tab6:
         except Exception as e:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
-
     # ── Write updated balances back to Google Sheet ───────────────────────────
-    def save_cash_balances(balances_dict):
+     def save_cash_balances(balances_dict):
         try:
-            conn_cash = st.connection("gsheets", type=GSheetsConnection)
+            conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
             df_save = pd.DataFrame([
                 {"Account": k, "Balance": v}
                 for k, v in balances_dict.items()
             ])
-            conn_cash.update(worksheet="Cash", data=df_save)
+            conn_cash.update(data=df_save)
             st.cache_data.clear()
             return True
         except Exception as e:
