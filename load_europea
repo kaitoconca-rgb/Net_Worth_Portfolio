@@ -6,15 +6,13 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 import time
 from streamlit_gsheets import GSheetsConnection
-
 # --- FETCH CURRENT FX RATE ---
 try:
     fx_data = yf.Ticker("EURAUD=X").history(period="1d")
-    FX_AUD_EUR = 1 / fx_data['Close'].iloc[-1]
+    FX_AUD_EUR = 1 / fx_data['Close'].iloc[-1] 
 except:
     FX_AUD_EUR = 0.61
-
-# --- 0. PASSWORD ---
+# --- 0. PROTEZIONE ---
 def check_password():
     def password_guessed():
         if st.session_state.get("password", "") == st.secrets["auth"]["password"]:
@@ -30,7 +28,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. CONFIG ---
+# --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
 ticker_map = {
@@ -48,14 +46,13 @@ def get_fx_data():
         hist = yf.download("EURAUD=X", start="2024-01-01", progress=False)['Close']
         if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
         return now, hist
-    except:
-        return 1.6500, None
+    except: return 1.6500, None
 
 fx_now, fx_hist = get_fx_data()
 
-# --- 2. EUROPEAN PORTFOLIO DATA ---
+# --- 2. DATI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-df_input = conn.read(ttl=60)
+df_input = conn.read(ttl=0)
 df_input.columns = [c.strip() for c in df_input.columns]
 
 df_raw = pd.DataFrame()
@@ -64,18 +61,17 @@ df_raw['ISIN'] = df_input['ISIN']
 df_raw['Tipo'] = df_input['Tipo'].str.upper().fillna('BUY')
 df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
 df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
-df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
+df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce') 
 df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
 df_raw.loc[df_raw['Tipo'] == 'SELL', 'Qty'] = -df_raw['Qty'].abs()
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
-
 def get_fx_at(dt):
     try: return float(fx_hist.asof(dt))
     except: return 1.6500
 
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Data'].apply(get_fx_at)
 
-# --- 3. MARKET DATA ---
+# --- 3. PREZZI E STORICO ---
 @st.cache_data(ttl=3600)
 def get_full_market_context(isins_list, current_ticker_map):
     prices_hist = {}
@@ -103,10 +99,10 @@ def get_full_market_context(isins_list, current_ticker_map):
                 if not market_time:
                     market_time = h.index[-1].strftime("%Y-%m-%d") + " (EOD)"
                 logs[isin] = {
-                    "status": "LIVE",
+                    "status": "LIVE", 
                     "Price": f"€{current_val:.2f}",
                     "Market Time": market_time,
-                    "updated": datetime.now().strftime("%H:%M"),
+                    "updated": datetime.now().strftime("%H:%M"), 
                     "source": f"Yahoo ({symbol})"
                 }
             else:
@@ -123,7 +119,7 @@ portfolio = portfolio[portfolio['Qty'].abs() > 0.001]
 
 def get_current_val(row):
     manual = df_raw[df_raw['ISIN'] == row['ISIN']]['Manual_Price'].iloc[-1]
-    if pd.notnull(manual) and manual > 0:
+    if pd.notnull(manual) and manual > 0: 
         return manual
     h = hist_map.get(row['ISIN'])
     if h is not None and not h.empty:
@@ -154,7 +150,7 @@ for isin in df_raw['ISIN'].unique():
     profit_eur = (v_at_market_eur + cash_in_eur) - cash_out_eur
     cash_in_aud = asset_data[asset_data['Tipo'] == 'SELL']['Inv_AUD'].abs().sum()
     cash_out_aud = asset_data[asset_data['Tipo'] == 'BUY']['Inv_AUD'].sum()
-    v_at_market_aud = v_at_market_eur * fx_now
+    v_at_market_aud = v_at_market_eur * fx_now 
     profit_aud = (v_at_market_aud + cash_in_aud) - cash_out_aud
     asset_performance.append({
         'ISIN': isin, 'Profit_EUR': profit_eur, 'Profit_AUD': profit_aud,
@@ -211,14 +207,12 @@ def get_raiz_total_for_dashboard():
             "token_uri": "https://oauth2.googleapis.com/token",
         }
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-        )
+            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
         folder_id = st.secrets["gdrive"]["raiz_folder_id"]
         results = service.files().list(
             q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-            orderBy="modifiedTime desc", pageSize=1,
-            fields="files(id, name, modifiedTime)"
+            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
         ).execute()
         files = results.get("files", [])
         if not files:
@@ -272,7 +266,7 @@ def get_raiz_total_for_dashboard():
 raiz_total_aud = get_raiz_total_for_dashboard()
 
 # ── CASH TOTAL (hoisted for dashboard) ───────────────────────────────────────
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=0)
 def get_cash_total_for_dashboard():
     try:
         ACCOUNTS_CURR = {
@@ -283,7 +277,7 @@ def get_cash_total_for_dashboard():
             "C6 Cash": "BRL", "C6 Investments": "BRL",
         }
         conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=60, usecols=[0, 1])
+        df_c = conn_c.read(ttl=0, usecols=[0, 1])
         df_c.columns = [c.strip() for c in df_c.columns]
         df_c = df_c.dropna(subset=['Account'])
         df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
@@ -308,7 +302,7 @@ def get_cash_total_for_dashboard():
 
 cash_total_aud = get_cash_total_for_dashboard()
 
-# ── SAVE CASH BALANCES (global function, uses Sheets API) ────────────────────
+# ── GLOBAL SAVE FUNCTIONS ─────────────────────────────────────────────────────
 def save_cash_balances(balances_dict):
     try:
         from google.oauth2 import service_account
@@ -336,7 +330,6 @@ def save_cash_balances(balances_dict):
         import traceback
         return False, traceback.format_exc()
 
-# ── SAVE NET WORTH SNAPSHOT (global function) ────────────────────────────────
 def save_net_worth_snapshot(total, force=False):
     try:
         from google.oauth2 import service_account
@@ -352,18 +345,19 @@ def save_net_worth_snapshot(total, force=False):
             "token_uri": "https://oauth2.googleapis.com/token",
         }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        # Read existing data
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A:B"
         ).execute()
         existing = result.get('values', [['Date', 'Total_AUD']])
         today = date.today()
-        # Check if already saved this month (unless forced)
         if not force and len(existing) > 1:
-            last_date = pd.to_datetime(existing[-1][0])
-            if last_date.year == today.year and last_date.month == today.month:
-                return False, "Already saved this month"
+            try:
+                last_date = pd.to_datetime(existing[-1][0])
+                if last_date.year == today.year and last_date.month == today.month:
+                    return False, "Already saved this month"
+            except:
+                pass
         existing.append([today.strftime('%Y-%m-%d'), str(round(total, 2))])
         service.spreadsheets().values().update(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
@@ -376,7 +370,6 @@ def save_net_worth_snapshot(total, force=False):
         import traceback
         return False, traceback.format_exc()
 
-# ── LOAD NET WORTH HISTORY ───────────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
@@ -389,33 +382,28 @@ def load_net_worth_history():
     except:
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
 
-# --- 4. TABS ---
+# --- 4. INTERFACCIA ---
 tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🌐 Dashboard", "📊 Performance", "💸 Simulatore ATO", "📈 Timeline",
     "💱 FX Analysis", "🌱 Raiz", "🏦 Cash", "🛠️ Diagnostics"
 ])
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab0:
     st.header("🌐 Net Worth Dashboard")
-
     european_aud = current_market_value_eur * fx_now
     total_net_worth_aud = european_aud + raiz_total_aud + cash_total_aud
     total_net_worth_eur = total_net_worth_aud / fx_now if fx_now else 0
-
     st.markdown("### Total Net Worth")
     c1, c2 = st.columns(2)
     c1.metric("Total (AUD)", f"${total_net_worth_aud:,.2f}")
     c2.metric("Total (EUR)", f"€{total_net_worth_eur:,.2f}")
     st.divider()
-
     st.markdown("### Breakdown")
     b1, b2, b3 = st.columns(3)
     b1.metric("🇪🇺 European Portfolio", f"${european_aud:,.2f}", f"€{current_market_value_eur:,.2f}")
     b2.metric("🌱 Raiz Portfolio", f"${raiz_total_aud:,.2f}")
     b3.metric("🏦 Cash & Savings", f"${cash_total_aud:,.2f}")
     st.divider()
-
     st.markdown("### Asset Allocation")
     col_pie, col_bar = st.columns(2)
     df_alloc = pd.DataFrame([
@@ -430,14 +418,12 @@ with tab0:
         st.plotly_chart(fig_alloc_pie, use_container_width=True)
     with col_bar:
         fig_alloc_bar = px.bar(df_alloc, x="Category", y="Value (AUD)", color="Category",
-                               color_discrete_sequence=["#2980b9", "#27ae60", "#f39c12"])
+                               color_discrete_sequence=["#2980b9", "#27ae60", "#f39c12"],
+                               labels={"Value (AUD)": "AUD $"})
         fig_alloc_bar.update_layout(height=350, showlegend=False, yaxis_tickprefix="$", margin=dict(t=20, b=20))
         st.plotly_chart(fig_alloc_bar, use_container_width=True)
     st.divider()
-
     st.markdown("### Net Worth History")
-
-    # Auto-save on last day of month
     today = date.today()
     import calendar
     last_day = calendar.monthrange(today.year, today.month)[1]
@@ -445,7 +431,6 @@ with tab0:
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=False)
         if ok:
             st.success(f"✅ Monthly snapshot saved: ${total_net_worth_aud:,.2f} AUD")
-
     df_history = load_net_worth_history()
     if not df_history.empty:
         fig_history = go.Figure()
@@ -460,20 +445,16 @@ with tab0:
         st.plotly_chart(fig_history, use_container_width=True)
     else:
         st.info("Net worth history will appear here after the first end-of-month snapshot. Use the button below to save manually.")
-
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn", help="Manually record today's net worth"):
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
         if ok:
-            st.cache_data.clear()
             st.success(f"✅ Snapshot saved: ${total_net_worth_aud:,.2f} AUD")
             st.rerun()
         else:
             st.error(f"Could not save: {err}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.header("Performance Complessiva")
-
     df_realized = df_perf[df_perf['Current_Value'] < 0.01].copy()
     df_unrealized = df_perf[df_perf['Current_Value'] >= 0.01].copy()
     active_isins = df_unrealized['ISIN'].tolist()
@@ -481,24 +462,24 @@ with tab1:
     active_inv_eur = df_active_ledger[df_active_ledger['Tipo'] == 'BUY']['Inv_EUR'].sum()
     active_inv_aud = df_active_ledger[df_active_ledger['Tipo'] == 'BUY']['Inv_AUD'].sum()
     curr_val_aud = current_market_value_eur * fx_now
-
     col_a, col_b = st.columns(2)
     col_a.metric("Profitto Totale EUR", f"€{df_perf['Profit_EUR'].sum():,.0f}", f"Incassato: €{df_realized['Profit_EUR'].sum():,.0f}")
     col_b.metric("Profitto Totale AUD", f"${df_perf['Profit_AUD'].sum():,.0f}", f"Incassato: ${df_realized['Profit_AUD'].sum():,.0f}")
     st.divider()
-
     st.subheader("Analisi Portafoglio Attivo")
     c1, c2, c3 = st.columns(3)
     with c1:
         st.write("**Esposizione EUR**")
         st.metric("Investito", f"€{active_inv_eur:,.0f}")
         st.metric("Valore", f"€{current_market_value_eur:,.0f}")
-        st.write(f"**Plusvalenza: €{current_market_value_eur - active_inv_eur:,.2f}**")
+        diff_eur = current_market_value_eur - active_inv_eur
+        st.write(f"**Plusvalenza: €{diff_eur:,.2f}**")
     with c2:
         st.write("**Esposizione AUD**")
         st.metric("Investito", f"${active_inv_aud:,.0f}")
         st.metric("Valore", f"${curr_val_aud:,.0f}")
-        st.write(f"**Plusvalenza: ${curr_val_aud - active_inv_aud:,.2f}**")
+        diff_aud = curr_val_aud - active_inv_aud
+        st.write(f"**Plusvalenza: ${diff_aud:,.2f}**")
     with c3:
         st.write("**Rendimento % (ROI)**")
         roi_eur = (df_unrealized['Profit_EUR'].sum() / active_inv_eur * 100) if active_inv_eur != 0 else 0
@@ -506,7 +487,6 @@ with tab1:
         st.metric("ROI Attivo (EUR)", f"{roi_eur:.2f}%")
         st.metric("ROI Attivo (AUD)", f"{roi_aud:.2f}%")
     st.divider()
-
     st.subheader("Storico Operazioni di Vendita")
     df_vendite = df_raw[df_raw['Tipo'].str.upper() == 'SELL'].copy()
     if not df_vendite.empty:
@@ -549,7 +529,6 @@ with tab1:
     else:
         st.info("Nessuna vendita registrata.")
     st.divider()
-
     col_left, col_right = st.columns(2)
     with col_left:
         st.subheader("Allocation % (Solo Attivi)")
@@ -561,14 +540,13 @@ with tab1:
                          labels={'value': 'Profitto (€/$)', 'variable': 'Valuta'},
                          color_discrete_map={'Profit_EUR': '#1f77b4', 'Profit_AUD': '#2ca02c'})
         st.plotly_chart(fig_bar, use_container_width=True)
-
     if not df_realized.empty:
         with st.expander("Visualizza Dettaglio Posizioni Chiuse (es. LU)"):
             st.write("Questi asset sono stati venduti completamente. Il profitto è già consolidato.")
             st.dataframe(df_realized[['ISIN', 'Profit_EUR', 'Profit_AUD']].style.format(
-                {'Profit_EUR': '€{:,.2f}', 'Profit_AUD': '${:,.2f}'}), hide_index=True, use_container_width=True)
+                {'Profit_EUR': '€{:,.2f}', 'Profit_AUD': '${:,.2f}'}),
+                hide_index=True, use_container_width=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("Simulatore Cash-out & Tasse (Granulare per Lotto d'Acquisto)")
     tax_brackets = {
@@ -579,7 +557,6 @@ with tab2:
     selected_bracket = st.select_slider("Marginal Tax Rate", options=list(tax_brackets.keys()), value="37% (AUD 135,001 – 190,000)")
     tax_r = tax_brackets[selected_bracket]
     st.info("L'impatto fiscale ATO è calcolato sulla plusvalenza del singolo lotto in AUD.")
-
     lotti_aperti = []
     for isin in df_raw['ISIN'].unique():
         asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data').copy()
@@ -621,7 +598,6 @@ with tab2:
                     'Att EUR (€)': att_eur_val, 'Var % EUR': var_eur, 'Inv AUD ($)': inv_aud_residual,
                     'Att AUD ($)': att_aud_val, 'Var % AUD': var_aud, '% Vendi': 0.0
                 })
-
     df_sim_lotti = pd.DataFrame(lotti_aperti)
     if not df_sim_lotti.empty:
         tot_inv_eur = df_sim_lotti['Inv EUR (€)'].sum()
@@ -635,7 +611,6 @@ with tab2:
         m3.metric("Capitale Investito (AUD)", f"AUD {tot_inv_aud:,.2f}")
         m4.metric("Valore Attuale (AUD)", f"AUD {tot_att_aud:,.2f}", f"AUD {(tot_att_aud - tot_inv_aud):+,.2f}")
         st.divider()
-
     column_config = {
         "ISIN": st.column_config.TextColumn("ISIN", width="medium"),
         "Data Acquisto": st.column_config.TextColumn("Data Acquisto", width="small"),
@@ -654,7 +629,6 @@ with tab2:
     display_cols = ['ISIN', 'Data Acquisto', 'Stato', 'CGT', 'Qty Residua', 'Prezzo Acq (€)',
                     'Inv EUR (€)', 'Att EUR (€)', 'Var % EUR', 'Inv AUD ($)', 'Att AUD ($)', 'Var % AUD', '% Vendi']
     ed = st.data_editor(df_sim_lotti[display_cols], column_config=column_config, hide_index=True, use_container_width=True)
-
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
         sel['E_Out'] = sel['Att EUR (€)'] * (sel['% Vendi']/100)
@@ -687,7 +661,6 @@ with tab2:
     else:
         st.write("⬆️ Inserisci una percentuale nella colonna '% Vendi' dei singoli lotti datati per valutare l'impatto fiscale mirato.")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
     st.subheader("Evoluzione Reale del Portafoglio (Market Value)")
     date_range = pd.date_range(date(2025, 10, 1), date.today())
@@ -723,13 +696,14 @@ with tab3:
     if not df_timeline.empty:
         fig_timeline = px.area(df_timeline, x='Date', y='MarketValue', color='ISIN',
                                title="Evoluzione Capitale (€) - Storico Completo", custom_data=['TotalDay'])
-        fig_timeline.update_layout(hovermode="x unified", hoverlabel=dict(namelength=-1, bgcolor="white", font_size=12),
-                                   height=600, yaxis_title="Valore Mercato (€)", xaxis_title="Timeline",
-                                   legend_title="Asset (ISIN)", hoverdistance=100, spikedistance=1000)
+        fig_timeline.update_layout(
+            hovermode="x unified",
+            hoverlabel=dict(namelength=-1, bgcolor="white", font_size=12),
+            height=600, yaxis_title="Valore Mercato (€)", xaxis_title="Timeline",
+            legend_title="Asset (ISIN)", hoverdistance=100, spikedistance=1000)
         fig_timeline.update_traces(hovertemplate="€%{y:,.2f}<extra></extra>")
         st.plotly_chart(fig_timeline, use_container_width=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab4:
     st.subheader("💱 FX Impact Analysis — AUD/EUR")
     st.markdown("### EUR/AUD Exchange Rate (Oct 2025 → Today)")
@@ -795,7 +769,7 @@ with tab4:
         st.divider()
 
     st.markdown("### Market Return Over Time: EUR vs AUD (Oct 2025 → Today)")
-    st.caption("Daily unrealised + realised gain/loss.")
+    st.caption("Daily unrealised + realised gain/loss. EUR line = pure asset performance. AUD line = same return translated at the historical EUR/AUD rate each day.")
     total_inv_eur_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
     total_inv_aud_all = df_raw[df_raw['Tipo'] == 'BUY']['Inv_AUD'].sum()
     fx_weighted_purchase = total_inv_aud_all / total_inv_eur_all if total_inv_eur_all > 0 else fx_now
@@ -880,27 +854,30 @@ with tab4:
                                     mode='lines', name='FX Impact (AUD $)', line=dict(color='#e74c3c', width=1.5, dash='dashdot'),
                                     fill='tozeroy', fillcolor='rgba(231,76,60,0.07)', yaxis='y2'))
         fig_mr.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.4, yref='y1')
-        fig_mr.update_layout(height=420, hovermode="x unified",
-                             yaxis=dict(title="EUR € / AUD $ gain/loss", side='left', zeroline=True, zerolinecolor='#bdc3c7'),
-                             yaxis2=dict(title="AUD $ gain/loss", side='right', overlaying='y', scaleanchor='y', scaleratio=1,
-                                        zeroline=True, zerolinecolor='#bdc3c7', showticklabels=False),
-                             legend=dict(orientation="h", y=1.08), margin=dict(t=40, b=30))
+        fig_mr.update_layout(
+            height=420, hovermode="x unified",
+            yaxis=dict(title="EUR € / AUD $ gain/loss", side='left', zeroline=True, zerolinecolor='#bdc3c7'),
+            yaxis2=dict(title="AUD $ gain/loss", side='right', overlaying='y', scaleanchor='y', scaleratio=1,
+                        zeroline=True, zerolinecolor='#bdc3c7', showticklabels=False),
+            legend=dict(orientation="h", y=1.08), margin=dict(t=40, b=30))
         st.plotly_chart(fig_mr, use_container_width=True)
         last = df_mr_timeline.iloc[-1]
         gap = last['FX Impact (AUD)']
         gap_colour = "#27ae60" if gap >= 0 else "#e74c3c"
         gap_label = "added" if gap >= 0 else "subtracted"
         st.markdown(f"""
-            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d; padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:4px;">
+            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d;
+                        padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:4px;">
                 <b>Today's FX gap:</b> Converting your current EUR return at today's rate gives 
                 <b>€{last['Market Return (EUR)']:,.2f} × {fx_now:.4f} = ${last['Market Return (EUR)'] * fx_now:,.2f} AUD</b> — 
                 the AUD return line sits at <b>${last['Market Return (AUD)']:,.2f}</b>, 
-                meaning historical FX movements have <span style="color:{gap_colour}"><b>{gap_label} ${abs(gap):,.2f} AUD</b></span> to your return.
+                meaning historical FX movements have <span style="color:{gap_colour}"><b>{gap_label} ${abs(gap):,.2f} AUD</b></span> 
+                to your return over the period.
             </div>""", unsafe_allow_html=True)
     st.divider()
 
     st.markdown("### Portfolio FX Impact Decomposition (Per Lot)")
-    st.caption("Splits your total AUD P&L into: (a) pure market return and (b) gain/loss caused purely by EUR/AUD rate movement since purchase.")
+    st.caption("Splits your total AUD P&L into: (a) pure market return and (b) gain/loss caused purely by EUR/AUD rate movement since purchase. Includes fully sold positions.")
     fx_decomp_rows = []
     for isin in df_raw['ISIN'].unique():
         asset_ledger = df_raw[df_raw['ISIN'] == isin].sort_values('Data').copy()
@@ -965,13 +942,12 @@ with tab4:
         tot_fx_aud = df_decomp['FX Impact (AUD)'].sum()
         tot_pl_aud = df_decomp['Total P&L (AUD)'].sum()
         sm1, sm2, sm3, sm4 = st.columns(4)
-        sm1.metric("Market Return (EUR)", f"€{tot_mkt_eur:,.2f}")
-        sm2.metric("Market Return (AUD at buy FX)", f"${tot_mkt_aud:,.2f}")
+        sm1.metric("Market Return (EUR)", f"€{tot_mkt_eur:,.2f}", help="Pure asset price appreciation in EUR across all lots (open + closed)")
+        sm2.metric("Market Return (AUD at buy FX)", f"${tot_mkt_aud:,.2f}", help="EUR market return converted at the rate that existed when each lot was purchased")
         sm3.metric("FX Impact (AUD)", f"${tot_fx_aud:,.2f}",
                    delta=f"{'▲' if tot_fx_aud >= 0 else '▼'} {abs(tot_fx_aud/tot_pl_aud*100):.1f}% of total P&L" if tot_pl_aud != 0 else None,
                    delta_color="normal" if tot_fx_aud >= 0 else "inverse")
         sm4.metric("Total P&L (AUD)", f"${tot_pl_aud:,.2f}")
-
         df_closed_decomp = df_decomp[df_decomp['Status'] == '🔒 Closed']
         df_open_decomp = df_decomp[df_decomp['Status'] == '✅ Open']
         realised_eur = df_closed_decomp['Market Return (EUR)'].sum()
@@ -981,14 +957,18 @@ with tab4:
         r_colour = "#27ae60" if realised_aud >= 0 else "#e74c3c"
         u_colour = "#27ae60" if unrealised_aud >= 0 else "#e74c3c"
         st.markdown(f"""
-            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d; padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:8px;">
+            <div style="background:#f8f9fa; border-left:4px solid #7f8c8d; 
+                        padding:10px 16px; border-radius:4px; font-size:0.9rem; margin-top:8px;">
                 <b>P&L Composition:</b>&nbsp;&nbsp;
-                🔒 <b>Realised:</b> <span style="color:{r_colour}">€{realised_eur:,.2f} EUR</span> / <span style="color:{r_colour}">${realised_aud:,.2f} AUD</span>
+                🔒 <b>Realised (sold assets):</b> 
+                    <span style="color:{r_colour}">€{realised_eur:,.2f} EUR</span> / 
+                    <span style="color:{r_colour}">${realised_aud:,.2f} AUD</span>
                 &nbsp;&nbsp;|&nbsp;&nbsp;
-                ✅ <b>Unrealised:</b> <span style="color:{u_colour}">€{unrealised_eur:,.2f} EUR</span> / <span style="color:{u_colour}">${unrealised_aud:,.2f} AUD</span>
+                ✅ <b>Unrealised (open positions):</b> 
+                    <span style="color:{u_colour}">€{unrealised_eur:,.2f} EUR</span> / 
+                    <span style="color:{u_colour}">${unrealised_aud:,.2f} AUD</span>
             </div>""", unsafe_allow_html=True)
         st.divider()
-
         df_bar_fx = df_decomp.groupby(['ISIN', 'Status']).agg({
             'Market Return in AUD (at purchase FX)': 'sum', 'FX Impact (AUD)': 'sum', 'Total P&L (AUD)': 'sum'
         }).reset_index()
@@ -1007,14 +987,13 @@ with tab4:
                                         y=df_closed_bar['FX Impact (AUD)'],
                                         marker=dict(color='#f1948a', pattern=dict(shape="/"))))
         fig_decomp_bar.update_layout(
-            barmode='stack', title="AUD P&L Split: Market Return vs FX Impact",
+            barmode='stack', title="AUD P&L Split: Market Return vs FX Impact — solid = open, hatched = fully sold 🔒",
             yaxis_title="AUD $", height=400, hovermode="x unified", legend=dict(orientation="h", y=1.15),
             annotations=[dict(x=row['Label'],
                               y=max(row['Market Return in AUD (at purchase FX)'] + row['FX Impact (AUD)'], 0),
                               text="SOLD", showarrow=False, font=dict(size=10, color="#922b21"), yshift=8)
                          for _, row in df_closed_bar.iterrows()])
         st.plotly_chart(fig_decomp_bar, use_container_width=True)
-
         st.markdown("#### Lot-Level Detail")
         def highlight_closed(row):
             if row['Status'] == '🔒 Closed':
@@ -1033,10 +1012,8 @@ with tab4:
     else:
         st.info("No lots found to analyse.")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab5:
-    st.header("🌱 Raiz Portfolio")
-
+    st.header("🌱 Raiz Portfolio — Using CSV Prices (Source of Truth)")
     ETF_NAMES = {
         "AAA": "Betashares Cash", "STW": "SPDR ASX 200", "IAA": "iShares Asia 50",
         "IEU": "iShares Europe", "IAF": "iShares Bond", "RCB": "Russell Corp Bond", "IVV": "iShares S&P 500",
@@ -1102,7 +1079,6 @@ with tab5:
     df_csv['Price'] = pd.to_numeric(df_csv['Price'], errors='coerce')
     df_csv['Amount'] = pd.to_numeric(df_csv['Amount'], errors='coerce')
     df_csv['Trade Date Only'] = df_csv['Trade Date'].dt.date
-
     IVV_SPLIT_DATE = pd.Timestamp('2022-12-09')
     IVV_SPLIT_FACTOR = 15.317277
     ivv_mask = df_csv['Instrument Code'] == 'IVV'
@@ -1113,7 +1089,6 @@ with tab5:
 
     st.markdown("### 📅 Select Valuation Date")
     val_date = st.date_input("Calculate portfolio value on this date", value=date.today())
-
     df_val = df_csv[df_csv['Trade Date Only'] <= val_date].copy()
     holdings = df_val.groupby('Instrument Code')['Quantity'].sum().reset_index()
     holdings = holdings[holdings['Quantity'].abs() > 0.0001].copy()
@@ -1164,14 +1139,12 @@ with tab5:
     holdings['Current_Price'] = holdings['Instrument Code'].apply(get_most_recent_csv_price)
     holdings['Value_AUD'] = holdings['Net_Qty'] * holdings['Current_Price']
     holdings['ETF Name'] = holdings['Instrument Code'].map(ETF_NAMES)
-
     df_buys_up_to = df_csv[(df_csv['Trade Date Only'] <= val_date) & (df_csv['Transaction Type'] == 'BUY')]
     cost_basis = df_buys_up_to.groupby('Instrument Code')['Amount'].sum().reset_index()
     cost_basis.rename(columns={'Amount': 'Cost_Basis_AUD'}, inplace=True)
     holdings = holdings.merge(cost_basis, on='Instrument Code', how='left').fillna(0)
     holdings['P&L_AUD'] = holdings['Value_AUD'] - holdings['Cost_Basis_AUD']
     holdings['ROI_%'] = (holdings['P&L_AUD'] / holdings['Cost_Basis_AUD'] * 100).where(holdings['Cost_Basis_AUD'] > 0, 0)
-
     total_value = holdings['Value_AUD'].sum()
     total_cost = holdings['Cost_Basis_AUD'].sum()
     total_pl = holdings['P&L_AUD'].sum()
@@ -1186,9 +1159,11 @@ with tab5:
     st.divider()
 
     st.markdown("### Current Holdings")
-    st.dataframe(holdings[['Instrument Code', 'ETF Name', 'Net_Qty', 'Current_Price', 'Cost_Basis_AUD', 'Value_AUD', 'P&L_AUD', 'ROI_%']].style
+    display_cols = ['Instrument Code', 'ETF Name', 'Net_Qty', 'Current_Price', 'Cost_Basis_AUD', 'Value_AUD', 'P&L_AUD', 'ROI_%']
+    st.dataframe(holdings[display_cols].style
                  .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
-                      else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), subset=['P&L_AUD', 'ROI_%'])
+                      else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+                      subset=['P&L_AUD', 'ROI_%'])
                  .format({'Net_Qty': '{:.4f}', 'Current_Price': '${:.4f}', 'Cost_Basis_AUD': '${:,.2f}',
                           'Value_AUD': '${:,.2f}', 'P&L_AUD': '${:,.2f}', 'ROI_%': '{:.2f}%'}),
                  use_container_width=True, hide_index=True)
@@ -1209,7 +1184,7 @@ with tab5:
         st.plotly_chart(fig_bar, use_container_width=True)
     st.divider()
 
-    with st.expander("📊 Price Sources"):
+    with st.expander("📊 Price Sources (How values are calculated)"):
         price_info = []
         for code in holdings['Instrument Code'].unique():
             live_p = live_prices.get(code)
@@ -1230,7 +1205,6 @@ with tab5:
                                     'Price': '${:.4f}', 'Amount': '${:,.4f}'}),
                      use_container_width=True, hide_index=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab6:
     st.header("🏦 Cash & Savings Accounts")
     st.caption("Balances stored in your Google Sheet — update here and save.")
@@ -1362,7 +1336,6 @@ with tab6:
     else:
         st.info("Enter balances above to see allocation chart.")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 with tab7:
     st.subheader("Data Health Check")
     st.write(f"FX EURAUD Live: {fx_now:.4f}")
