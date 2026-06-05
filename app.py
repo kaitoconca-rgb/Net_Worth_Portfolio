@@ -1942,7 +1942,7 @@ with tab6:
             st.warning(f"Could not load cash balances: {e}")
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
-def save_cash_balances(balances_dict):
+    def save_cash_balances(balances_dict):
         st.write("step 1")
         try:
             st.write("step 2")
