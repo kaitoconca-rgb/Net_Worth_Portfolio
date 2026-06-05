@@ -257,12 +257,298 @@ for _, row in df_sells.iterrows():
     })
 
 df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
+
+# ── RAIZ TOTAL (hoisted for dashboard) ───────────────────────────────────────
+@st.cache_data(ttl=300)
+def get_raiz_total_for_dashboard():
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+
+        gs = st.secrets["gdrive"]
+        creds_dict = {
+            "type":           gs.get("type", "service_account"),
+            "project_id":     gs["project_id"],
+            "private_key_id": gs["private_key_id"],
+            "private_key":    gs["private_key"],
+            "client_email":   gs["client_email"],
+            "client_id":      gs.get("client_id", ""),
+            "token_uri":      "https://oauth2.googleapis.com/token",
+        }
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
+            orderBy="modifiedTime desc", pageSize=1,
+            fields="files(id, name, modifiedTime)"
+        ).execute()
+        files = results.get("files", [])
+        if not files:
+            return 0.0
+        request = service.files().get_media(fileId=files[0]["id"])
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buffer.seek(0)
+        df = pd.read_csv(buffer)
+        df.columns = [c.strip() for c in df.columns]
+        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+        df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
+        df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+
+        # IVV split adjustment
+        IVV_SPLIT_DATE   = pd.Timestamp('2022-12-09')
+        IVV_SPLIT_FACTOR = 15.317277
+        ivv_pre = (df['Instrument Code'] == 'IVV') & (df['Trade Date'] < IVV_SPLIT_DATE)
+        df.loc[ivv_pre, 'Quantity'] = df.loc[ivv_pre, 'Quantity'] * IVV_SPLIT_FACTOR
+        df.loc[ivv_pre, 'Price']    = df.loc[ivv_pre, 'Price']    / IVV_SPLIT_FACTOR
+
+        df.loc[df['Transaction Type'] == 'SELL', 'Quantity'] = -df['Quantity'].abs()
+
+        RAIZ_TICKERS = {
+            'AAA': 'AAA.AX', 'STW': 'STW.AX', 'IAA': 'IAA.AX',
+            'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
+        }
+
+        holdings = df.groupby('Instrument Code')['Quantity'].sum().reset_index()
+        holdings = holdings[holdings['Quantity'].abs() > 0.0001]
+
+        total = 0.0
+        for _, row in holdings.iterrows():
+            code = row['Instrument Code']
+            ticker = RAIZ_TICKERS.get(code)
+            price = None
+            if ticker:
+                try:
+                    t = yf.Ticker(ticker)
+                    p = t.fast_info.get('last_price', None)
+                    if p and float(p) > 0:
+                        price = float(p)
+                except:
+                    pass
+            if not price:
+                recent = df[df['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
+                price = float(recent.iloc[0]['Price']) if not recent.empty else 0.0
+            total += row['Quantity'] * price
+        return total
+    except:
+        return 0.0
+
+raiz_total_aud = get_raiz_total_for_dashboard()
+
+# ── CASH TOTAL (hoisted for dashboard) ───────────────────────────────────────
+@st.cache_data(ttl=0)
+def get_cash_total_for_dashboard():
+    try:
+        ACCOUNTS_CURR = {
+            "CBA": "AUD", "Me Bank": "AUD", "Rabobank": "AUD",
+            "Up": "AUD", "Vanguard ETF": "AUD", "Revolut Metals": "AUD",
+            "Trade Republic": "EUR", "N26": "EUR", "BUNQ": "EUR",
+            "BPM Cash": "EUR", "BPM Bonds": "EUR",
+            "C6 Cash": "BRL", "C6 Investments": "BRL",
+        }
+        conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
+        df_c = conn_c.read(ttl=0, usecols=[0, 1])
+        df_c.columns = [c.strip() for c in df_c.columns]
+        df_c = df_c.dropna(subset=['Account'])
+        df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
+        bal = df_c.set_index('Account')['Balance'].to_dict()
+
+        brl_rate = 0.27
+        try:
+            brl_rate = float(yf.Ticker("BRLAUD=X").fast_info['last_price'])
+        except:
+            pass
+
+        total = 0.0
+        for name, currency in ACCOUNTS_CURR.items():
+            b = bal.get(name, 0.0)
+            if currency == "AUD":
+                total += b
+            elif currency == "EUR":
+                total += b * fx_now
+            else:
+                total += b * brl_rate
+        return total
+    except:
+        return 0.0
+
+cash_total_aud = get_cash_total_for_dashboard()
+
 # --- 4. INTERFACCIA ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📊 Performance", "💸 Simulatore ATO", "📈 Timeline",
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "🌐 Dashboard", "📊 Performance", "💸 Simulatore ATO", "📈 Timeline",
     "💱 FX Analysis", "🌱 Raiz", "🏦 Cash", "🛠️ Diagnostics"
 ])
+with tab0:
+    st.header("🌐 Net Worth Dashboard")
 
+    # ── Key values ────────────────────────────────────────────────────────────
+    european_aud = current_market_value_eur * fx_now
+    total_net_worth_aud = european_aud + raiz_total_aud + cash_total_aud
+    total_net_worth_eur = total_net_worth_aud / fx_now if fx_now else 0
+
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    st.markdown("### Total Net Worth")
+    c1, c2 = st.columns(2)
+    c1.metric("Total (AUD)", f"${total_net_worth_aud:,.2f}")
+    c2.metric("Total (EUR)", f"€{total_net_worth_eur:,.2f}")
+
+    st.divider()
+
+    # ── Breakdown by bucket ───────────────────────────────────────────────────
+    st.markdown("### Breakdown")
+    b1, b2, b3 = st.columns(3)
+    b1.metric("🇪🇺 European Portfolio",
+              f"${european_aud:,.2f}",
+              f"€{current_market_value_eur:,.2f}",
+              help="From your European brokerage (EUR-denominated ETFs)")
+    b2.metric("🌱 Raiz Portfolio",
+              f"${raiz_total_aud:,.2f}",
+              help="ASX ETFs via Raiz")
+    b3.metric("🏦 Cash & Savings",
+              f"${cash_total_aud:,.2f}",
+              help="All cash accounts across AUD, EUR and BRL")
+
+    st.divider()
+
+    # ── Allocation pie ────────────────────────────────────────────────────────
+    st.markdown("### Asset Allocation")
+    col_pie, col_bar = st.columns(2)
+
+    df_alloc = pd.DataFrame([
+        {"Category": "🇪🇺 European Portfolio", "Value (AUD)": european_aud},
+        {"Category": "🌱 Raiz Portfolio",       "Value (AUD)": raiz_total_aud},
+        {"Category": "🏦 Cash & Savings",       "Value (AUD)": cash_total_aud},
+    ])
+
+    with col_pie:
+        fig_alloc_pie = px.pie(
+            df_alloc,
+            values="Value (AUD)",
+            names="Category",
+            hole=0.45,
+            color_discrete_sequence=["#2980b9", "#27ae60", "#f39c12"]
+        )
+        fig_alloc_pie.update_layout(height=350, margin=dict(t=20, b=20))
+        st.plotly_chart(fig_alloc_pie, use_container_width=True)
+
+    with col_bar:
+        fig_alloc_bar = px.bar(
+            df_alloc,
+            x="Category",
+            y="Value (AUD)",
+            color="Category",
+            color_discrete_sequence=["#2980b9", "#27ae60", "#f39c12"],
+            labels={"Value (AUD)": "AUD $"}
+        )
+        fig_alloc_bar.update_layout(
+            height=350,
+            showlegend=False,
+            yaxis_tickprefix="$",
+            margin=dict(t=20, b=20)
+        )
+        st.plotly_chart(fig_alloc_bar, use_container_width=True)
+
+    st.divider()
+
+    # ── Monthly snapshot (auto end-of-month) ──────────────────────────────────
+    st.markdown("### Net Worth History")
+
+    @st.cache_data(ttl=0)
+    def load_net_worth_history():
+        try:
+            conn_nw = st.connection("gsheets_networth", type=GSheetsConnection)
+            df_nw = conn_nw.read(ttl=0)
+            df_nw.columns = [c.strip() for c in df_nw.columns]
+            df_nw['Date'] = pd.to_datetime(df_nw['Date'])
+            df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
+            return df_nw.dropna()
+        except:
+            return pd.DataFrame(columns=['Date', 'Total_AUD'])
+
+    def save_net_worth_snapshot(total):
+        try:
+            conn_nw = st.connection("gsheets_networth", type=GSheetsConnection)
+            df_existing = load_net_worth_history()
+            today = date.today()
+            # Check if we already have an entry for this month
+            if not df_existing.empty:
+                last = df_existing['Date'].max()
+                if last.year == today.year and last.month == today.month:
+                    return False  # already saved this month
+            new_row = pd.DataFrame([{
+                'Date': today.strftime('%Y-%m-%d'),
+                'Total_AUD': round(total, 2)
+            }])
+            df_updated = pd.concat([df_existing[['Date', 'Total_AUD']].astype(str), 
+                                    new_row.astype(str)], ignore_index=True)
+            conn_nw.update(data=df_updated)
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"Could not save snapshot: {e}")
+            return False
+
+    # Auto-save on last day of month
+    today = date.today()
+    import calendar
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    if today.day == last_day:
+        saved = save_net_worth_snapshot(total_net_worth_aud)
+        if saved:
+            st.success(f"✅ Monthly snapshot saved: ${total_net_worth_aud:,.2f} AUD")
+
+    # Chart history
+    df_history = load_net_worth_history()
+    if not df_history.empty:
+        fig_history = go.Figure()
+        fig_history.add_trace(go.Scatter(
+            x=df_history['Date'],
+            y=df_history['Total_AUD'],
+            mode='lines+markers',
+            name='Net Worth (AUD)',
+            line=dict(color='#2980b9', width=2),
+            marker=dict(size=8),
+            fill='tozeroy',
+            fillcolor='rgba(41,128,185,0.08)'
+        ))
+        fig_history.update_layout(
+            height=350,
+            hovermode="x unified",
+            yaxis=dict(title="AUD $", tickprefix="$"),
+            margin=dict(t=20, b=30)
+        )
+        st.plotly_chart(fig_history, use_container_width=True)
+    else:
+        st.info("Net worth history will appear here after the first end-of-month snapshot. You can also add historical data manually to the Net_Worth sheet.")
+
+    # Manual save button for testing / off-cycle saves
+    if st.button("💾 Save Snapshot Now", help="Manually record today's net worth"):
+        # Override month check for manual saves
+        try:
+            conn_nw = st.connection("gsheets_networth", type=GSheetsConnection)
+            df_existing = load_net_worth_history()
+            new_row = pd.DataFrame([{
+                'Date': today.strftime('%Y-%m-%d'),
+                'Total_AUD': round(total_net_worth_aud, 2)
+            }])
+            df_updated = pd.concat([df_existing[['Date', 'Total_AUD']].astype(str),
+                                    new_row.astype(str)], ignore_index=True)
+            conn_nw.update(data=df_updated)
+            st.cache_data.clear()
+            st.success(f"✅ Snapshot saved: ${total_net_worth_aud:,.2f} AUD")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not save: {e}")
 with tab1:
     st.header("Performance Complessiva")
 
