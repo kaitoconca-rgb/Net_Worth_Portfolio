@@ -1943,15 +1943,9 @@ with tab6:
             return {a["name"]: 0.0 for a in ACCOUNTS}
     # ── Write updated balances back to Google Sheet ───────────────────────────
     def save_cash_balances(balances_dict):
-        st.write("DEBUG: save function called")
-        st.write("DEBUG: balances =", balances_dict)
         try:
-            st.write("DEBUG: importing gspread...")
-            import gspread
-            st.write("DEBUG: gspread imported")
             from google.oauth2 import service_account
-            st.write("DEBUG: service_account imported")
-           
+            from googleapiclient.discovery import build
 
             gs = st.secrets["gdrive"]
             creds = service_account.Credentials.from_service_account_info(
@@ -1966,21 +1960,26 @@ with tab6:
                 },
                 scopes=["https://www.googleapis.com/auth/spreadsheets"]
             )
-            gc = gspread.authorize(creds)
-            sh = gc.open_by_key("1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8")
-            ws = sh.get_worksheet_by_id(1604553457)
-            
-            # Build data to write
+
+            service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+
             rows = [["Account", "Balance"]]
             for k, v in balances_dict.items():
-                rows.append([k, v])
-            ws.update("A1", rows)
-            st.cache_data.clear()
-            return True
-        except Exception as e:
-            st.error(f"Could not save: {e}")
-            return False
+                rows.append([k, float(v)])
 
+            service.spreadsheets().values().update(
+                spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
+                range="Cash!A1",
+                valueInputOption="RAW",
+                body={"values": rows}
+            ).execute()
+
+            return True
+
+        except Exception as e:
+            st.error(f"Could not save: {repr(e)}")
+            st.exception(e)
+            return False
     current_balances = load_cash_balances()
 
     # Force session state to match sheet values on first load
