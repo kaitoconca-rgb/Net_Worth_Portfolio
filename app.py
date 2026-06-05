@@ -1382,7 +1382,7 @@ with tab5:
     # Sharesight-verified correct total: 521.9618 units
     # Adjustment factor: 521.9618 / 60.9715 = 8.561x applied to pre-split rows only
     IVV_SPLIT_DATE = pd.Timestamp('2022-12-09')
-    IVV_SPLIT_FACTOR = 521.9618 / 60.9715  # = 8.561
+    IVV_SPLIT_FACTOR = 15.317277
 
     ivv_mask = df_csv['Instrument Code'] == 'IVV'
     pre_split_mask = ivv_mask & (df_csv['Trade Date'] < IVV_SPLIT_DATE)
