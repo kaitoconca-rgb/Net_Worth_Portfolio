@@ -1223,6 +1223,7 @@ with tab6:
         {"name": "BPM Bonds",      "currency": "EUR", "flag": "🇮🇹"},
         {"name": "C6 Cash",        "currency": "BRL", "flag": "🇧🇷"},
         {"name": "C6 Investments", "currency": "BRL", "flag": "🇧🇷"},
+        {"name": "Super",          "currency": "AUD", "flag": "AU"},
     ]
 
     @st.cache_data(ttl=600)
