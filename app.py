@@ -274,7 +274,7 @@ def get_cash_total_for_dashboard():
             "Up": "AUD", "Vanguard ETF": "AUD", "Revolut Metals": "AUD",
             "Trade Republic": "EUR", "N26": "EUR", "BUNQ": "EUR",
             "BPM Cash": "EUR", "BPM Bonds": "EUR",
-            "C6 Cash": "BRL", "C6 Investments": "BRL",
+            "C6 Cash": "BRL", "C6 Investments": "BRL", "AU Super":"AUD",
         }
         conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
         df_c = conn_c.read(ttl=0, usecols=[0, 1])
