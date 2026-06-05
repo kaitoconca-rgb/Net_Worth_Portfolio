@@ -1671,16 +1671,17 @@ with tab6:
 
     current_balances = load_cash_balances()
 
-    # Pre-populate session state from sheet on first load or after refresh
-    for acc in ACCOUNTS:
-        key = f"cash_{acc['name']}"
-        if key not in st.session_state:
-            st.session_state[key] = float(current_balances.get(acc["name"], 0.0))
+    # Force session state to match sheet values on first load
+    if "cash_loaded" not in st.session_state:
+        for acc in ACCOUNTS:
+            st.session_state[f"cash_{acc['name']}"] = float(current_balances.get(acc["name"], 0.0))
+        st.session_state["cash_loaded"] = True
 
     if st.button("🔄 Refresh from Sheet", key="cash_refresh"):
+        # Force reload from sheet
+        del st.session_state["cash_loaded"]
         for acc in ACCOUNTS:
-            key = f"cash_{acc['name']}"
-            st.session_state[key] = float(current_balances.get(acc["name"], 0.0))
+            st.session_state[f"cash_{acc['name']}"] = float(current_balances.get(acc["name"], 0.0))
         st.rerun()
     
     # ── Input form ────────────────────────────────────────────────────────────
