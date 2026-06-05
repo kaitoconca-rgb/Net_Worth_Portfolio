@@ -1669,7 +1669,7 @@ with tab6:
             st.error(f"Could not save: {e}")
             return False
 
-   current_balances = load_cash_balances()
+    current_balances = load_cash_balances()
 
     # Pre-populate session state from sheet on first load or after refresh
     for acc in ACCOUNTS:
