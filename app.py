@@ -320,6 +320,56 @@ def get_vanguard_total_for_dashboard():
 
 vanguard_total_aud = get_vanguard_total_for_dashboard()
 
+# ── SHARES TOTAL (hoisted for dashboard) ─────────────────────────────────────
+SHARES_TICKERS = {
+    'NHF': 'NHF.AX',
+    'TPG': 'TPG.AX',
+    'TUA': 'TUA.AX',
+    'WBC': 'WBC.AX',
+}
+
+@st.cache_data(ttl=300)
+def get_shares_data():
+    try:
+        df_s = _sheets_read(PORTFOLIO_SHEET_ID, "Shares!A:B")
+        if df_s.empty:
+            return pd.DataFrame(), 0.0
+        df_s.columns = [c.strip() for c in df_s.columns]
+        df_s['Quantity'] = pd.to_numeric(df_s['Quantity'], errors='coerce').fillna(0)
+        df_s = df_s[df_s['Quantity'] > 0].copy()
+        rows = []
+        total = 0.0
+        for _, row in df_s.iterrows():
+            code = str(row['Share']).strip()
+            qty = row['Quantity']
+            ticker = SHARES_TICKERS.get(code, f"{code}.AX")
+            price = None
+            try:
+                h = yf.download(ticker, period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    price = float(h.iloc[-1])
+            except:
+                pass
+            value = qty * price if price else 0.0
+            total += value
+            rows.append({
+                'Code': code,
+                'Name': {'NHF': 'NIB Holdings', 'TPG': 'TPG Telecom',
+                         'TUA': 'Tuas Limited', 'WBC': 'Westpac'}.get(code, code),
+                'Ticker': ticker,
+                'Quantity': qty,
+                'Live Price (AUD)': price,
+                'Value (AUD)': value,
+                'Source': '🟢 Live' if price else '🔴 N/A'
+            })
+        return pd.DataFrame(rows), total
+    except Exception as e:
+        return pd.DataFrame(), 0.0
+
+df_shares, shares_total_aud = get_shares_data()
+
 # ── COMMODITIES TOTAL (hoisted for dashboard) ─────────────────────────────────
 @st.cache_data(ttl=300)
 def get_commodities_total_for_dashboard():
@@ -637,7 +687,7 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
 with tab0:
     st.header("🌐 Net Worth Dashboard")
     european_aud = current_market_value_eur * fx_now
-    raiz_vanguard_aud = raiz_total_aud + vanguard_total_aud
+    raiz_vanguard_aud = raiz_total_aud + vanguard_total_aud + shares_total_aud
     total_net_worth_aud = european_aud + raiz_vanguard_aud + commodities_total_aud + super_total_aud + cash_total_aud
     total_net_worth_eur = total_net_worth_aud / fx_now if fx_now else 0
 
@@ -650,8 +700,8 @@ with tab0:
     st.markdown("### Breakdown")
     b1, b2, b3, b4, b5 = st.columns(5)
     b1.metric("🇪🇺 N26 European", f"${european_aud:,.2f}", f"€{current_market_value_eur:,.2f}")
-    b2.metric("🌱 Raiz & Vanguard", f"${raiz_vanguard_aud:,.2f}",
-              f"Raiz ${raiz_total_aud:,.0f} + VDAL ${vanguard_total_aud:,.0f}")
+    b2.metric("🌱 Raiz, Vanguard & Shares", f"${raiz_vanguard_aud:,.2f}",
+              f"Raiz ${raiz_total_aud:,.0f} + VDAL ${vanguard_total_aud:,.0f} + Shares ${shares_total_aud:,.0f}")
     b3.metric("🪙 Commodities", f"${commodities_total_aud:,.2f}", "Metals (XAU/XAG/XPT)")
     b4.metric("🏛️ Super", f"${super_total_aud:,.2f}", "Mercer SmartPath")
     b5.metric("🏦 Cash & Savings", f"${cash_total_aud:,.2f}")
@@ -661,7 +711,7 @@ with tab0:
     col_pie, col_bar = st.columns(2)
     df_alloc = pd.DataFrame([
         {"Category": "🇪🇺 N26 European", "Value (AUD)": european_aud},
-        {"Category": "🌱 Raiz & Vanguard", "Value (AUD)": raiz_vanguard_aud},
+        {"Category": "🌱 Raiz, Vanguard & Shares", "Value (AUD)": raiz_vanguard_aud},
         {"Category": "🪙 Commodities", "Value (AUD)": commodities_total_aud},
         {"Category": "🏛️ Super", "Value (AUD)": super_total_aud},
         {"Category": "🏦 Cash & Savings", "Value (AUD)": cash_total_aud},
@@ -1584,24 +1634,64 @@ with tab5:
 
     st.divider()
 
+    # ── ASX SHARES SECTION ────────────────────────────────────────────────────
+    st.subheader("🇦🇺 ASX Shares")
+    if st.button("🔄 Refresh Share Prices", key="shares_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+    if not df_shares.empty:
+        sh1, sh2 = st.columns(2)
+        sh1.metric("Total Value (AUD)", f"${shares_total_aud:,.2f}")
+        sh2.metric("Holdings", f"{len(df_shares)} stocks")
+
+        st.dataframe(df_shares[['Code', 'Name', 'Quantity', 'Live Price (AUD)', 'Value (AUD)', 'Source']].style
+                     .format({'Quantity': '{:.0f}',
+                              'Live Price (AUD)': lambda x: f'${x:,.4f}' if x else 'N/A',
+                              'Value (AUD)': lambda x: f'${x:,.2f}' if x else 'N/A'}),
+                     use_container_width=True, hide_index=True)
+
+        col_sp, col_sb = st.columns(2)
+        with col_sp:
+            fig_shares_pie = px.pie(df_shares[df_shares['Value (AUD)'] > 0],
+                                    values='Value (AUD)', names='Name', hole=0.4,
+                                    title=f"Shares Allocation — ${shares_total_aud:,.2f}",
+                                    color_discrete_sequence=px.colors.qualitative.Set3)
+            fig_shares_pie.update_layout(height=320)
+            st.plotly_chart(fig_shares_pie, use_container_width=True)
+        with col_sb:
+            fig_shares_bar = px.bar(df_shares[df_shares['Value (AUD)'] > 0],
+                                    x='Name', y='Value (AUD)', color='Name',
+                                    color_discrete_sequence=px.colors.qualitative.Set3,
+                                    title="Value by Stock (AUD)")
+            fig_shares_bar.update_layout(height=320, showlegend=False, yaxis_tickprefix="$")
+            st.plotly_chart(fig_shares_bar, use_container_width=True)
+    else:
+        st.info("No share data available. Check your Shares tab in Google Sheets.")
+
+    st.divider()
+
     # ── COMBINED SUMMARY ──────────────────────────────────────────────────────
-    st.subheader("📊 Combined Raiz + Vanguard Summary")
-    combined_value = raiz_total_aud + vanguard_total_aud
+    st.subheader("📊 Combined ASX Portfolio Summary")
+    combined_value = raiz_total_aud + vanguard_total_aud + shares_total_aud
     df_combined = pd.DataFrame([
         {"Portfolio": "🌱 Raiz ETFs", "Value (AUD)": raiz_total_aud},
         {"Portfolio": "📈 Vanguard VDAL", "Value (AUD)": vanguard_total_aud},
+        {"Portfolio": "🇦🇺 ASX Shares", "Value (AUD)": shares_total_aud},
     ])
     cs1, cs2 = st.columns(2)
     with cs1:
         fig_combined = px.pie(df_combined, values="Value (AUD)", names="Portfolio", hole=0.4,
                               title=f"Total: ${combined_value:,.2f} AUD",
-                              color_discrete_sequence=["#27ae60", "#2ecc71"])
+                              color_discrete_sequence=["#27ae60", "#2ecc71", "#1abc9c"])
         fig_combined.update_layout(height=300)
         st.plotly_chart(fig_combined, use_container_width=True)
     with cs2:
-        st.metric("Raiz", f"${raiz_total_aud:,.2f}")
+        st.metric("Raiz ETFs", f"${raiz_total_aud:,.2f}")
         st.metric("Vanguard VDAL", f"${vanguard_total_aud:,.2f}")
-        st.metric("Combined Total", f"${combined_value:,.2f}", delta=f"€{combined_value/fx_now:,.2f} EUR equiv.")
+        st.metric("ASX Shares", f"${shares_total_aud:,.2f}")
+        st.metric("Combined Total", f"${combined_value:,.2f}",
+                  delta=f"€{combined_value/fx_now:,.2f} EUR equiv.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6 — COMMODITIES (Revolut Metals)
