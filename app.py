@@ -1457,23 +1457,23 @@ with tab6:
 
     @st.cache_data(ttl=300)
     def load_metal_data():
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        gs = st.secrets["gdrive"]
-        creds = service_account.Credentials.from_service_account_info({
-            "type": "service_account",
-            "project_id": gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key": gs["private_key"],
-            "client_email": gs["client_email"],
-            "client_id": gs.get("client_id", ""),
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
-        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        result = service.spreadsheets().values().get(
-            spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Metal!A:E"
+        try:
+            from google.oauth2 import service_account
+            from googleapiclient.discovery import build
+            gs = st.secrets["gdrive"]
+            creds = service_account.Credentials.from_service_account_info({
+                "type": "service_account",
+                "project_id": gs["project_id"],
+                "private_key_id": gs["private_key_id"],
+                "private_key": gs["private_key"],
+                "client_email": gs["client_email"],
+                "client_id": gs.get("client_id", ""),
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+            service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            result = service.spreadsheets().values().get(
+                spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
+                range="Metal!A:E"
         ).execute()
         rows = result.get("values", [])
         if len(rows) < 2:
