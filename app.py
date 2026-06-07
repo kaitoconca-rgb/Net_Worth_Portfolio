@@ -492,8 +492,9 @@ def save_net_worth_snapshot(total, force=False):
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        conn_nw = st.connection("gsheets_networth", type=GSheetsConnection)
-        df_nw = conn_nw.read(ttl=60)
+        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:B")
+        if df_nw.empty:
+            return pd.DataFrame(columns=['Date', 'Total_AUD'])
         df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
         df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
@@ -692,13 +693,44 @@ with tab0:
         fig_history = go.Figure()
         fig_history.add_trace(go.Scatter(
             x=df_history['Date'], y=df_history['Total_AUD'],
-            mode='lines+markers', name='Net Worth (AUD)',
-            line=dict(color='#2980b9', width=2), marker=dict(size=8),
-            fill='tozeroy', fillcolor='rgba(41,128,185,0.08)'
+            mode='lines+markers+text',
+            name='Net Worth (AUD)',
+            line=dict(color='#2980b9', width=2),
+            marker=dict(size=10, color='#2980b9'),
+            fill='tozeroy', fillcolor='rgba(41,128,185,0.08)',
+            text=[f"${v:,.0f}" for v in df_history['Total_AUD']],
+            textposition='top center',
+            textfont=dict(size=11, color='#2980b9'),
+            hovertemplate='%{x|%Y-%m-%d}<br><b>$%{y:,.2f} AUD</b><extra></extra>'
         ))
-        fig_history.update_layout(height=350, hovermode="x unified",
-                                   yaxis=dict(title="AUD $", tickprefix="$"), margin=dict(t=20, b=30))
+        # Delta annotation between first and last
+        if len(df_history) > 1:
+            delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
+            delta_pct = delta / df_history['Total_AUD'].iloc[0] * 100
+            delta_colour = "#27ae60" if delta >= 0 else "#e74c3c"
+            sign = "+" if delta >= 0 else ""
+            fig_history.add_annotation(
+                x=df_history['Date'].iloc[-1], y=df_history['Total_AUD'].iloc[-1],
+                text=f"  {sign}${delta:,.0f} ({sign}{delta_pct:.2f}%) since {df_history['Date'].iloc[0].strftime('%d %b %Y')}",
+                showarrow=False, xanchor='left', yanchor='middle',
+                font=dict(size=12, color=delta_colour)
+            )
+        fig_history.update_layout(
+            height=400, hovermode="x unified",
+            yaxis=dict(title="AUD $", tickprefix="$"),
+            margin=dict(t=30, b=30, r=200))
         st.plotly_chart(fig_history, use_container_width=True)
+        # Summary stats
+        if len(df_history) > 1:
+            h1, h2, h3 = st.columns(3)
+            h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
+                      df_history['Date'].iloc[0].strftime('%d %b %Y'))
+            h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
+                      df_history['Date'].iloc[-1].strftime('%d %b %Y'))
+            delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
+            h3.metric("Total Change", f"${delta:+,.2f}",
+                      f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
+                      delta_color="normal" if delta >= 0 else "inverse")
     else:
         st.info("Net worth history will appear here after the first end-of-month snapshot.")
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
@@ -2051,4 +2083,3 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
-    
