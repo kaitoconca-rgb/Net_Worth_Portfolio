@@ -668,7 +668,7 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
         return total_cost * get_hist_fx_rate(currency, 'AUD', date_str)
 
 # --- 4. INTERFACCIA ---
-(tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9) = st.tabs([
+(tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10) = st.tabs([
     "🌐 Dashboard",
     "📊 N26 Performance",
     "💸 N26 Simulatore ATO",
@@ -678,7 +678,8 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
     "🪙 Commodities",
     "🏛️ Super",
     "🏦 Cash",
-    "🛠️ Diagnostics"
+    "🛠️ Diagnostics",
+    "📈 Forecast"
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2147,6 +2148,459 @@ with tab8:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 9 — DIAGNOSTICS
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — FORECAST
+# ══════════════════════════════════════════════════════════════════════════════
+with tab10:
+    st.header("📈 5-Year Financial Forecast")
+    st.caption("Project your net worth over 60 months using income, expenses, investment returns and cash interest.")
+
+    FORECAST_SHEET_ID = PORTFOLIO_SHEET_ID
+
+    # ── LOAD / SAVE FORECAST INPUTS ───────────────────────────────────────────
+    @st.cache_data(ttl=0)
+    def load_forecast_inputs():
+        try:
+            df_f = _sheets_read(FORECAST_SHEET_ID, "Forecast!A:C")
+            if df_f.empty:
+                return {}
+            df_f.columns = [c.strip() for c in df_f.columns]
+            df_f['Value'] = pd.to_numeric(df_f['Value'], errors='coerce').fillna(0)
+            result = {}
+            for _, row in df_f.iterrows():
+                cat = str(row['Category']).strip()
+                key = str(row['Key']).strip()
+                result[f"{cat}_{key}"] = float(row['Value'])
+            return result
+        except:
+            return {}
+
+    def save_forecast_inputs(inputs_dict):
+        try:
+            from google.oauth2 import service_account
+            from googleapiclient.discovery import build
+            gs = st.secrets["gdrive"]
+            creds = service_account.Credentials.from_service_account_info({
+                "type": "service_account",
+                "project_id": gs["project_id"],
+                "private_key_id": gs["private_key_id"],
+                "private_key": gs["private_key"],
+                "client_email": gs["client_email"],
+                "client_id": gs.get("client_id", ""),
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            CATEGORY_KEY_MAP = [
+                ("Income",   "rent_eur"),
+                ("Expense",  "housing"),
+                ("Expense",  "food"),
+                ("Expense",  "transport"),
+                ("Expense",  "travel"),
+                ("Expense",  "health"),
+                ("Expense",  "other"),
+                ("Interest", "CBA"),
+                ("Interest", "Me Bank"),
+                ("Interest", "Rabobank"),
+                ("Interest", "Up"),
+                ("Interest", "Trade Republic"),
+                ("Interest", "N26"),
+                ("Interest", "BUNQ"),
+                ("Interest", "BPM Cash"),
+                ("Interest", "BPM Bonds"),
+                ("Returns",  "metals_pct"),
+            ]
+            rows = [["Category", "Key", "Value"]]
+            for cat, key in CATEGORY_KEY_MAP:
+                val = inputs_dict.get(f"{cat}_{key}", 0.0)
+                rows.append([cat, key, str(val)])
+            service.spreadsheets().values().update(
+                spreadsheetId=FORECAST_SHEET_ID,
+                range="Forecast!A1",
+                valueInputOption="RAW",
+                body={"values": rows}
+            ).execute()
+            return True, None
+        except Exception as e:
+            import traceback
+            return False, traceback.format_exc()
+
+    # ── COMPUTE HISTORICAL RETURNS ─────────────────────────────────────────────
+    @st.cache_data(ttl=3600)
+    def compute_historical_returns():
+        """Compute annualised return % for each portfolio from actual data."""
+        returns = {}
+
+        # N26 — use df_perf profit vs invested
+        try:
+            total_inv = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
+            total_profit = df_perf['Profit_EUR'].sum()
+            # Annualise over portfolio age
+            first_date = df_raw['Data'].min()
+            years = max((datetime.now() - first_date).days / 365.25, 0.5)
+            n26_ret = ((current_market_value_eur + df_perf[df_perf['Current_Value'] < 0.01]['Profit_EUR'].sum()) /
+                       total_inv) ** (1/years) - 1
+            returns['n26'] = round(n26_ret * 100, 2)
+        except:
+            returns['n26'] = 7.0
+
+        # Raiz — use holdings cost vs value
+        try:
+            raiz_cost = 0
+            raiz_val = raiz_total_aud
+            if df_csv is not None:
+                buys_r = df_csv[df_csv['Transaction Type'] == 'BUY']
+                raiz_cost = buys_r['Amount'].sum()
+                first_r = df_csv['Trade Date'].min()
+                years_r = max((datetime.now() - first_r).days / 365.25, 0.5)
+                if raiz_cost > 0:
+                    raiz_ret = (raiz_val / raiz_cost) ** (1/years_r) - 1
+                    returns['raiz'] = round(raiz_ret * 100, 2)
+                else:
+                    returns['raiz'] = 8.0
+            else:
+                returns['raiz'] = 8.0
+        except:
+            returns['raiz'] = 8.0
+
+        # Vanguard VDAL — use lot cost vs current value
+        try:
+            if not df_vdal.empty and vanguard_total_aud > 0:
+                buys_v = df_vdal[df_vdal['Transaction'].str.upper() == 'BUY']
+                cost_v = (buys_v['Quantity'].abs() * buys_v['Purchase Price']).sum()
+                first_v = df_vdal['Date'].min()
+                years_v = max((datetime.now() - first_v).days / 365.25, 0.5)
+                if cost_v > 0:
+                    vdal_ret = (vanguard_total_aud / cost_v) ** (1/years_v) - 1
+                    returns['vanguard'] = round(vdal_ret * 100, 2)
+                else:
+                    returns['vanguard'] = 9.0
+            else:
+                returns['vanguard'] = 9.0
+        except:
+            returns['vanguard'] = 9.0
+
+        # Shares — use ASX benchmark ~10% p.a. (insufficient history for individual stocks)
+        returns['shares'] = 10.0
+
+        return returns
+
+    hist_returns = compute_historical_returns()
+    forecast_inputs = load_forecast_inputs()
+
+    # ── INPUT PANELS ──────────────────────────────────────────────────────────
+    st.markdown("### ⚙️ Forecast Assumptions")
+    st.caption("Edit and save — values persist in your Google Sheet.")
+
+    col_inc, col_exp, col_int = st.columns(3)
+
+    new_inputs = {}
+
+    with col_inc:
+        st.markdown("**💰 Monthly Income**")
+        new_inputs['Income_rent_eur'] = st.number_input(
+            "Spanish Rent (EUR/month)", min_value=0.0,
+            value=float(forecast_inputs.get('Income_rent_eur', 500.0)),
+            step=50.0, format="%.2f")
+        rent_aud = new_inputs['Income_rent_eur'] * fx_now
+        st.caption(f"≈ ${rent_aud:,.2f} AUD/month at current rate")
+
+        st.markdown("**📈 Expected Investment Returns (% p.a.)**")
+        st.caption("Pre-filled from historical performance — edit to adjust.")
+        new_inputs['Returns_n26_pct'] = st.number_input(
+            "N26 European ETFs", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_n26_pct', hist_returns['n26'])),
+            step=0.5, format="%.2f")
+        new_inputs['Returns_raiz_pct'] = st.number_input(
+            "Raiz ETFs", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_raiz_pct', hist_returns['raiz'])),
+            step=0.5, format="%.2f")
+        new_inputs['Returns_vanguard_pct'] = st.number_input(
+            "Vanguard VDAL", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_vanguard_pct', hist_returns['vanguard'])),
+            step=0.5, format="%.2f")
+        new_inputs['Returns_shares_pct'] = st.number_input(
+            "ASX Shares", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_shares_pct', hist_returns['shares'])),
+            step=0.5, format="%.2f")
+        new_inputs['Returns_metals_pct'] = st.number_input(
+            "Precious Metals", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_metals_pct', 5.0)),
+            step=0.5, format="%.2f")
+        new_inputs['Returns_super_pct'] = st.number_input(
+            "Super (Mercer SmartPath)", min_value=-20.0, max_value=50.0,
+            value=float(forecast_inputs.get('Returns_super_pct', 8.6)),
+            step=0.5, format="%.2f")
+
+    with col_exp:
+        st.markdown("**💸 Monthly Expenses (AUD)**")
+        expense_cats = {
+            'housing': 'Housing & Rent',
+            'food': 'Food & Groceries',
+            'transport': 'Transport',
+            'travel': 'Travel',
+            'health': 'Health & Medical',
+            'other': 'Other'
+        }
+        for key, label in expense_cats.items():
+            new_inputs[f'Expense_{key}'] = st.number_input(
+                label, min_value=0.0,
+                value=float(forecast_inputs.get(f'Expense_{key}', 0.0)),
+                step=50.0, format="%.2f")
+        total_expenses = sum(new_inputs[f'Expense_{k}'] for k in expense_cats)
+        st.metric("Total Monthly Expenses", f"${total_expenses:,.2f} AUD")
+
+    with col_int:
+        st.markdown("**🏦 Cash Interest Rates (% p.a.)**")
+        interest_accounts = [
+            'CBA', 'Me Bank', 'Rabobank', 'Up',
+            'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'
+        ]
+        for acc in interest_accounts:
+            new_inputs[f'Interest_{acc}'] = st.number_input(
+                acc, min_value=0.0, max_value=20.0,
+                value=float(forecast_inputs.get(f'Interest_{acc}', 0.0)),
+                step=0.1, format="%.2f")
+
+    if st.button("💾 Save Assumptions", type="primary", key="forecast_save_btn"):
+        # Map back to Category/Key structure
+        save_dict = {}
+        for k, v in new_inputs.items():
+            parts = k.split('_', 1)
+            if len(parts) == 2:
+                save_dict[k] = v
+        ok, err = save_forecast_inputs(new_inputs)
+        if ok:
+            st.success("✅ Assumptions saved!")
+            load_forecast_inputs.clear()
+        else:
+            st.error(f"Could not save: {err}")
+
+    st.divider()
+
+    # ── PROJECTION ENGINE ──────────────────────────────────────────────────────
+    st.markdown("### 📊 5-Year Net Worth Projection")
+
+    # Starting values from live portfolio
+    start_nw = total_net_worth_aud
+
+    # Monthly return rates
+    def annual_to_monthly(pct):
+        return (1 + pct/100) ** (1/12) - 1
+
+    monthly_r = {
+        'n26':      annual_to_monthly(new_inputs.get('Returns_n26_pct', hist_returns['n26'])),
+        'raiz':     annual_to_monthly(new_inputs.get('Returns_raiz_pct', hist_returns['raiz'])),
+        'vanguard': annual_to_monthly(new_inputs.get('Returns_vanguard_pct', hist_returns['vanguard'])),
+        'shares':   annual_to_monthly(new_inputs.get('Returns_shares_pct', hist_returns['shares'])),
+        'metals':   annual_to_monthly(new_inputs.get('Returns_metals_pct', 5.0)),
+        'super':    annual_to_monthly(new_inputs.get('Returns_super_pct', 8.6)),
+    }
+
+    # Load cash balances for interest calculation
+    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
+    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
+    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
+    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
+    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
+
+    # Monthly cash interest income
+    def monthly_cash_interest():
+        total_int = 0.0
+        for acc in interest_accounts:
+            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
+            # Get balance in AUD
+            bal = cash_bal.get(acc, 0.0)
+            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
+                bal = bal * fx_now
+            total_int += bal * rate
+        return total_int
+
+    monthly_interest = monthly_cash_interest()
+    monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
+    monthly_expenses = sum(new_inputs.get(f'Expense_{k}', 0.0) for k in expense_cats)
+    monthly_net_income = monthly_rent_aud + monthly_interest - monthly_expenses
+
+    # Simulate month by month
+    months = 60
+    projection_rows = []
+    nw = start_nw
+    n26_v = current_market_value_eur * fx_now
+    raiz_v = raiz_total_aud
+    vdal_v = vanguard_total_aud
+    shares_v = shares_total_aud
+    metals_v = commodities_total_aud
+    super_v = super_total_aud
+    cash_v = cash_total_aud
+
+    today = date.today()
+
+    for m in range(1, months + 1):
+        proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
+
+        # Grow each portfolio
+        n26_v    *= (1 + monthly_r['n26'])
+        raiz_v   *= (1 + monthly_r['raiz'])
+        vdal_v   *= (1 + monthly_r['vanguard'])
+        shares_v *= (1 + monthly_r['shares'])
+        metals_v *= (1 + monthly_r['metals'])
+        super_v  *= (1 + monthly_r['super'])
+
+        # Cash grows by interest, shrinks by net expenses
+        cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+
+        nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
+
+        projection_rows.append({
+            'Date': proj_date,
+            'Month': m,
+            'Projected NW': nw,
+            'N26': n26_v,
+            'Raiz': raiz_v,
+            'Vanguard': vdal_v,
+            'Shares': shares_v,
+            'Metals': metals_v,
+            'Super': super_v,
+            'Cash': cash_v,
+            'Monthly Income': monthly_rent_aud + monthly_interest,
+            'Monthly Expenses': monthly_expenses,
+            'Monthly Net': monthly_net_income,
+        })
+
+    df_proj = pd.DataFrame(projection_rows)
+
+    # ── CHART ─────────────────────────────────────────────────────────────────
+    # Load actuals
+    df_actual = load_net_worth_history()
+
+    fig_proj = go.Figure()
+
+    # Stacked area for portfolio components
+    components = [
+        ('N26', '#2980b9'),
+        ('Raiz', '#27ae60'),
+        ('Vanguard', '#2ecc71'),
+        ('Shares', '#1abc9c'),
+        ('Metals', '#f39c12'),
+        ('Super', '#8e44ad'),
+        ('Cash', '#e67e22'),
+    ]
+    for comp, colour in components:
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'], y=df_proj[comp],
+            name=comp, stackgroup='one',
+            line=dict(color=colour, width=0.5),
+            fillcolor=colour.replace('#', 'rgba(') + ',0.6)' if False else colour,
+            hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
+        ))
+
+    # Total projected line
+    fig_proj.add_trace(go.Scatter(
+        x=df_proj['Date'], y=df_proj['Projected NW'],
+        name='Total Projected', mode='lines',
+        line=dict(color='white', width=2, dash='dot'),
+        hovertemplate='Total: $%{y:,.0f}<extra></extra>'
+    ))
+
+    # Actual net worth dots
+    if not df_actual.empty:
+        fig_proj.add_trace(go.Scatter(
+            x=df_actual['Date'], y=df_actual['Total_AUD'],
+            name='✅ Actual', mode='markers',
+            marker=dict(size=12, color='#e74c3c', symbol='circle',
+                        line=dict(color='white', width=2)),
+            hovertemplate='Actual: $%{y:,.2f}<extra></extra>'
+        ))
+
+    # Today marker
+    fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white",
+                       opacity=0.5, annotation_text="Today",
+                       annotation_position="top right")
+
+    fig_proj.update_layout(
+        height=550, hovermode="x unified",
+        yaxis=dict(title="Net Worth (AUD $)", tickprefix="$"),
+        xaxis=dict(title=""),
+        legend=dict(orientation="h", y=1.05),
+        margin=dict(t=60, b=30),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
+    )
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+    # ── KEY MILESTONES ─────────────────────────────────────────────────────────
+    st.markdown("### 🎯 Key Milestones")
+    milestones = [500000, 750000, 1000000, 1500000, 2000000, 2500000, 3000000]
+    milestone_rows = []
+    for m_val in milestones:
+        if m_val <= start_nw:
+            milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '✅ Already achieved', 'ETA': '—'})
+        else:
+            hit = df_proj[df_proj['Projected NW'] >= m_val]
+            if not hit.empty:
+                eta = hit.iloc[0]['Date']
+                months_away = hit.iloc[0]['Month']
+                milestone_rows.append({
+                    'Milestone': f"${m_val/1e6:.1f}M AUD",
+                    'Status': '🎯 Projected',
+                    'ETA': eta.strftime('%b %Y'),
+                    'Months Away': int(months_away)
+                })
+            else:
+                milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '⏳ Beyond 5yr', 'ETA': '>2031'})
+    st.dataframe(pd.DataFrame(milestone_rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── MONTHLY CASH FLOW SUMMARY ──────────────────────────────────────────────
+    st.markdown("### 💵 Monthly Cash Flow Assumptions")
+    cf1, cf2, cf3, cf4 = st.columns(4)
+    cf1.metric("Spanish Rent", f"${monthly_rent_aud:,.2f} AUD",
+               f"€{new_inputs.get('Income_rent_eur', 500):,.2f} EUR")
+    cf2.metric("Cash Interest", f"${monthly_interest:,.2f} AUD/month",
+               f"${monthly_interest*12:,.2f} p.a.")
+    cf3.metric("Total Expenses", f"-${monthly_expenses:,.2f} AUD/month")
+    cf4.metric("Net Monthly Cash Flow", f"${monthly_net_income:,.2f} AUD",
+               delta_color="normal" if monthly_net_income >= 0 else "inverse",
+               delta=f"${monthly_net_income*12:,.2f} p.a.")
+
+    st.divider()
+
+    # ── FORECAST vs ACTUALS TABLE ──────────────────────────────────────────────
+    st.markdown("### 📋 Forecast vs Actuals")
+    st.caption("Actual dots appear as you save monthly net worth snapshots.")
+    if not df_actual.empty:
+        df_vs = df_actual.copy()
+        df_vs['Month'] = df_vs['Date'].apply(
+            lambda d: round((d - pd.Timestamp(today)).days / 30.44))
+        df_vs = df_vs.merge(
+            df_proj[['Month', 'Projected NW']].rename(columns={'Projected NW': 'Projected'}),
+            on='Month', how='left')
+        df_vs['Variance ($)'] = df_vs['Total_AUD'] - df_vs['Projected']
+        df_vs['Variance (%)'] = (df_vs['Variance ($)'] / df_vs['Projected'] * 100).round(2)
+        df_vs['Date'] = df_vs['Date'].dt.strftime('%Y-%m-%d')
+        st.dataframe(df_vs[['Date', 'Total_AUD', 'Projected', 'Variance ($)', 'Variance (%)']].style
+                     .format({'Total_AUD': '${:,.2f}', 'Projected': '${:,.2f}',
+                              'Variance ($)': '${:+,.2f}', 'Variance (%)': '{:+.2f}%'})
+                     .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
+                          else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+                          subset=['Variance ($)', 'Variance (%)']),
+                     use_container_width=True, hide_index=True)
+    else:
+        st.info("No actuals yet — save a net worth snapshot from the Dashboard to start tracking.")
+
+    st.divider()
+
+    # ── PROJECTION TABLE ───────────────────────────────────────────────────────
+    with st.expander("📋 Full 5-Year Monthly Projection Table"):
+        df_proj_display = df_proj.copy()
+        df_proj_display['Date'] = df_proj_display['Date'].dt.strftime('%Y-%m-%d')
+        st.dataframe(df_proj_display[['Date', 'N26', 'Raiz', 'Vanguard', 'Shares',
+                                       'Metals', 'Super', 'Cash', 'Projected NW']].style
+                     .format({c: '${:,.0f}' for c in ['N26', 'Raiz', 'Vanguard', 'Shares',
+                                                        'Metals', 'Super', 'Cash', 'Projected NW']}),
+                     use_container_width=True, hide_index=True)
+
 with tab9:
     st.header("🛠️ Diagnostics")
     st.write(f"**FX EUR/AUD Live:** {fx_now:.4f}")
