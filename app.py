@@ -1497,13 +1497,52 @@ with tab6:
     @st.cache_data(ttl=300)
     def load_metal_data():
         try:
-            df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:E")
+            df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
             if df_m.empty:
                 return pd.DataFrame(), None
             df_m.columns = [c.strip() for c in df_m.columns]
             return df_m, None
         except Exception as e:
             return None, str(e)
+
+    @st.cache_data(ttl=3600)
+    def get_hist_fx_rate(from_currency, to_currency, dt_str):
+        if from_currency == to_currency:
+            return 1.0
+        ticker = f"{from_currency}{to_currency}=X"
+        try:
+            hist = yf.download(ticker, start=dt_str, period="5d", progress=False)['Close']
+            if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
+            hist = hist.dropna()
+            if not hist.empty:
+                return float(hist.iloc[0])
+        except:
+            pass
+        try:
+            return float(yf.Ticker(ticker).fast_info['last_price'])
+        except:
+            return 1.0
+
+    def convert_purchase_to_aud(total_cost, currency, date_str):
+        currency = str(currency).strip().upper()
+        if currency in ('AUD', 'A$'):
+            return total_cost
+        elif currency == 'BTC':
+            return total_cost * get_hist_fx_rate('BTC', 'AUD', date_str)
+        elif currency in ('CAD', 'CA$'):
+            return total_cost * get_hist_fx_rate('CAD', 'AUD', date_str)
+        elif currency in ('NOK', 'SEK', 'DKK', 'KR'):
+            for kr in ['NOK', 'SEK', 'DKK']:
+                rate = get_hist_fx_rate(kr, 'AUD', date_str)
+                if 0.10 < rate < 0.25:
+                    return total_cost * rate
+            return total_cost * get_hist_fx_rate('SEK', 'AUD', date_str)
+        elif currency == 'EUR':
+            return total_cost * get_hist_fx_rate('EUR', 'AUD', date_str)
+        elif currency == 'USD':
+            return total_cost * get_hist_fx_rate('USD', 'AUD', date_str)
+        else:
+            return total_cost * get_hist_fx_rate(currency, 'AUD', date_str)
 
     df_metal, metal_error = load_metal_data()
     metal_prices = get_metal_prices()
@@ -1514,15 +1553,28 @@ with tab6:
         df_metal['Date'] = pd.to_datetime(df_metal['Date'], dayfirst=True)
         df_metal['Quantity'] = pd.to_numeric(df_metal['Quantity'], errors='coerce').fillna(0)
         df_metal['Purchase Price'] = pd.to_numeric(df_metal['Purchase Price'], errors='coerce')
+        if 'Currency' not in df_metal.columns:
+            df_metal['Currency'] = 'AUD'
+        df_metal['Currency'] = df_metal['Currency'].fillna('AUD').str.strip().str.upper()
         df_metal.loc[df_metal['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_metal['Quantity'].abs()
         df_metal = df_metal.sort_values('Date')
+
+        def row_cost_aud(row):
+            if row['Transaction'].upper() != 'BUY':
+                return 0.0
+            date_str = row['Date'].strftime('%Y-%m-%d')
+            return convert_purchase_to_aud(
+                row['Purchase Price'] * abs(row['Quantity']),
+                row['Currency'],
+                date_str
+            )
+        df_metal['Cost_AUD'] = df_metal.apply(row_cost_aud, axis=1)
 
         if st.button("🔄 Refresh Metal Prices", key="metal_refresh"):
             st.cache_data.clear()
             st.rerun()
 
-        # FX rate info
-        st.info(f"USD/AUD rate: {usd_to_aud:.4f} | EUR/AUD rate: {fx_now:.4f}")
+        st.info(f"USD/AUD: {usd_to_aud:.4f} | EUR/AUD: {fx_now:.4f} — Purchase prices converted to AUD at historical rates")
 
         # Per-metal cards
         metals_summary = []
@@ -1538,16 +1590,16 @@ with tab6:
             price_usd = price_info.get('usd')
             price_aud = price_info.get('aud')
 
-            # Purchase price is in EUR (Revolut charges in EUR)
             buys = df_m_metal[df_m_metal['Transaction'].str.upper() == 'BUY']
-            cost_aud = (buys['Quantity'] * buys['Purchase Price']).sum()
+            cost_aud = buys['Cost_AUD'].sum()
 
             if price_aud:
                 value_aud = net_qty * price_aud
             else:
-                # fallback to last purchase price in AUD
                 last_pp = df_m_metal['Purchase Price'].dropna().iloc[-1]
-                value_aud = net_qty * float(last_pp)
+                last_curr = df_m_metal['Currency'].iloc[-1]
+                last_date = df_m_metal['Date'].iloc[-1].strftime('%Y-%m-%d')
+                value_aud = convert_purchase_to_aud(net_qty * float(last_pp), last_curr, last_date)
 
             value_eur = value_aud / fx_now
             cost_eur = cost_aud / fx_now
@@ -1649,7 +1701,7 @@ with tab6:
                 with st.expander(f"📋 {metal} ({cfg['symbol']}) — Trade History"):
                     lots = []
                     sold_qty = abs(df_m_metal[df_m_metal['Transaction'].str.upper() == 'SELL']['Quantity'].sum())
-                    buys_m = df_m_metal[df_m_metal['Transaction'].str.upper() == 'BUY']
+                    buys_m = df_m_metal[df_m_metal['Transaction'].str.upper() == 'BUY'].copy()
                     for _, row in buys_m.iterrows():
                         qty_ini = row['Quantity']
                         if sold_qty > 0:
@@ -1662,16 +1714,20 @@ with tab6:
                         else:
                             qty_res = qty_ini
                         if qty_res < 0.00001: continue
-                        cost_aud_lot = qty_res * row['Purchase Price']
+                        # Cost in AUD using historical FX at purchase date
+                        ratio = qty_res / qty_ini if qty_ini > 0 else 1.0
+                        cost_aud_lot = row['Cost_AUD'] * ratio
                         val_aud_lot = qty_res * price_aud if price_aud else cost_aud_lot
                         pl_lot = val_aud_lot - cost_aud_lot
                         days = (date.today() - row['Date'].date()).days
+                        curr = row.get('Currency', 'AUD')
                         lots.append({
                             'Date': row['Date'].strftime('%Y-%m-%d'),
-                            'Qty (troy oz)': qty_res,
-                            'Purchase Price (AUD/oz)': row['Purchase Price'],
+                            'Currency': curr,
+                            'Qty': qty_res,
+                            'Purchase Price (orig)': row['Purchase Price'],
                             'Cost (AUD)': cost_aud_lot,
-                            'Live Price (AUD/oz)': price_aud,
+                            'Live Price (AUD)': price_aud,
                             'Value (AUD)': val_aud_lot,
                             'P&L (AUD)': pl_lot,
                             'Days Held': days,
@@ -1683,10 +1739,10 @@ with tab6:
                                      .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
                                           else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
                                           subset=['P&L (AUD)'])
-                                     .format({'Qty (troy oz)': '{:.6f}',
-                                              'Purchase Price (AUD/oz)': '${:.2f}',
+                                     .format({'Qty': '{:.6f}',
+                                              'Purchase Price (orig)': '{:.4f}',
                                               'Cost (AUD)': '${:,.2f}',
-                                              'Live Price (AUD/oz)': lambda x: f'${x:,.2f}' if x else 'N/A',
+                                              'Live Price (AUD)': lambda x: f'${x:,.2f}' if x else 'N/A',
                                               'Value (AUD)': '${:,.2f}',
                                               'P&L (AUD)': '${:,.2f}'}),
                                      use_container_width=True, hide_index=True)
