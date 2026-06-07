@@ -521,42 +521,78 @@ def load_metal_data():
 
 @st.cache_data(ttl=300)
 def get_metal_prices():
+    # Strategy: fetch USD spot price via GC=F/SI=F/PL=F then convert to AUD
+    # using AUDUSD=X rate. More reliable than direct AUD cross tickers.
+    USD_TICKERS = {
+        'Gold':     'GC=F',
+        'Silver':   'SI=F',
+        'Platinum': 'PL=F',
+    }
+    # Get AUD/USD rate
+    aud_usd = None
+    for fx_ticker in ['AUDUSD=X', 'USDAUD=X']:
+        try:
+            h = yf.download(fx_ticker, period='5d', progress=False)['Close']
+            if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+            h = h.dropna()
+            if not h.empty:
+                rate = float(h.iloc[-1])
+                if fx_ticker == 'AUDUSD=X':
+                    aud_usd = rate          # AUD per 1 USD = 1/rate
+                    usd_to_aud_live = 1 / rate
+                else:
+                    usd_to_aud_live = rate
+                break
+        except:
+            continue
+    if aud_usd is None:
+        usd_to_aud_live = 1.58  # fallback
+
     prices = {}
     for metal, cfg in METAL_CONFIG.items():
-        try:
-            t = yf.Ticker(cfg['ticker'])
-            p = float(t.fast_info['last_price'])
-            prices[metal] = {'usd': None, 'aud': p}
-        except:
+        usd_ticker = USD_TICKERS.get(metal)
+        price_aud = None
+        # Try USD futures first
+        if usd_ticker:
+            try:
+                h = yf.download(usd_ticker, period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    price_usd = float(h.iloc[-1])
+                    price_aud = price_usd * usd_to_aud_live
+            except:
+                pass
+        # Try direct AUD cross as fallback
+        if price_aud is None:
             try:
                 h = yf.download(cfg['ticker'], period='5d', progress=False)['Close']
                 if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
                 h = h.dropna()
                 if not h.empty:
-                    prices[metal] = {'usd': None, 'aud': float(h.iloc[-1])}
-                    continue
+                    price_aud = float(h.iloc[-1])
             except:
                 pass
-            prices[metal] = {'usd': None, 'aud': None}
+        prices[metal] = {'usd': None, 'aud': price_aud}
     return prices
 
 @st.cache_data(ttl=3600)
 def get_hist_fx_rate(from_currency, to_currency, dt_str):
     if from_currency == to_currency:
         return 1.0
-    ticker = f"{from_currency}{to_currency}=X"
-    try:
-        hist = yf.download(ticker, start=dt_str, period="5d", progress=False)['Close']
-        if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
-        hist = hist.dropna()
-        if not hist.empty:
-            return float(hist.iloc[0])
-    except:
-        pass
-    try:
-        return float(yf.Ticker(ticker).fast_info['last_price'])
-    except:
-        return 1.0
+    # Try the direct cross first, then the inverse
+    for ticker, invert in [(f"{from_currency}{to_currency}=X", False),
+                           (f"{to_currency}{from_currency}=X", True)]:
+        try:
+            hist = yf.download(ticker, start=dt_str, period="5d", progress=False)['Close']
+            if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
+            hist = hist.dropna()
+            if not hist.empty:
+                rate = float(hist.iloc[0])
+                return (1 / rate) if invert else rate
+        except:
+            continue
+    return 1.0
 
 def convert_purchase_to_aud(total_cost, currency, date_str):
     currency = str(currency).strip().upper()
@@ -566,12 +602,13 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
         return total_cost * get_hist_fx_rate('BTC', 'AUD', date_str)
     elif currency in ('CAD', 'CA$'):
         return total_cost * get_hist_fx_rate('CAD', 'AUD', date_str)
-    elif currency in ('NOK', 'SEK', 'DKK', 'KR'):
+    elif currency in ('NOK', 'SEK', 'DKK', 'KR', 'KR.'):
+        # Try NOK first (most common Revolut Kr), then SEK, DKK
         for kr in ['NOK', 'SEK', 'DKK']:
             rate = get_hist_fx_rate(kr, 'AUD', date_str)
-            if 0.10 < rate < 0.25:
+            if rate and rate > 0:
                 return total_cost * rate
-        return total_cost * get_hist_fx_rate('SEK', 'AUD', date_str)
+        return total_cost * 0.14  # fallback: ~0.14 AUD per Kr
     elif currency == 'EUR':
         return total_cost * get_hist_fx_rate('EUR', 'AUD', date_str)
     elif currency == 'USD':
@@ -2014,3 +2051,4 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
+    
