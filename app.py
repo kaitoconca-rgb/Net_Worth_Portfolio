@@ -1310,16 +1310,6 @@ with tab5:
     # ── VANGUARD SECTION ──────────────────────────────────────────────────────
     st.subheader("📈 Vanguard VDAL — ASX ETF")
 
-    @st.cache_data(ttl=300)
-    def load_vanguard_data():
-        try:
-            conn_v = st.connection("gsheets_vanguard", type=GSheetsConnection)
-            df_v = conn_v.read(ttl=0)
-            df_v.columns = [c.strip() for c in df_v.columns]
-            return df_v, None
-        except Exception as e:
-            return None, str(e)
-
     df_vdal, vdal_error = load_vanguard_data()
 
     if vdal_error:
@@ -1466,14 +1456,32 @@ with tab6:
         return prices
 
     @st.cache_data(ttl=300)
-    def load_metal_data():
-        try:
-            conn_m = st.connection("gsheets_metal", type=GSheetsConnection)
-            df_m = conn_m.read(ttl=0)
-            df_m.columns = [c.strip() for c in df_m.columns]
-            return df_m, None
-        except Exception as e:
-            return None, str(e)
+def load_metal_data():
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        gs = st.secrets["gdrive"]
+        creds = service_account.Credentials.from_service_account_info({
+            "type": "service_account",
+            "project_id": gs["project_id"],
+            "private_key_id": gs["private_key_id"],
+            "private_key": gs["private_key"],
+            "client_email": gs["client_email"],
+            "client_id": gs.get("client_id", ""),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        result = service.spreadsheets().values().get(
+            spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
+            range="Metal!A:E"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return pd.DataFrame(), None
+        df = pd.DataFrame(rows[1:], columns=rows[0])
+        return df, None
+    except Exception as e:
+        return None, str(e)
 
     df_metal, metal_error = load_metal_data()
     metal_prices = get_metal_prices()
