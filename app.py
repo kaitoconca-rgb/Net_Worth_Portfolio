@@ -268,12 +268,40 @@ def get_raiz_total_for_dashboard():
 
 raiz_total_aud = get_raiz_total_for_dashboard()
 
+# ── SHARED SHEETS API HELPER ──────────────────────────────────────────────────
+def _sheets_read(spreadsheet_id, range_name):
+    """Read a range from Google Sheets using the gdrive service account."""
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    gs = st.secrets["gdrive"]
+    creds = service_account.Credentials.from_service_account_info({
+        "type": "service_account",
+        "project_id": gs["project_id"],
+        "private_key_id": gs["private_key_id"],
+        "private_key": gs["private_key"],
+        "client_email": gs["client_email"],
+        "client_id": gs.get("client_id", ""),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=range_name
+    ).execute()
+    rows = result.get("values", [])
+    if len(rows) < 2:
+        return pd.DataFrame()
+    return pd.DataFrame(rows[1:], columns=rows[0])
+
+PORTFOLIO_SHEET_ID = "1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8"
+
 # ── VANGUARD TOTAL (hoisted for dashboard) ────────────────────────────────────
 @st.cache_data(ttl=300)
 def get_vanguard_total_for_dashboard():
     try:
-        conn_v = st.connection("gsheets_vanguard", type=GSheetsConnection)
-        df_v = conn_v.read(ttl=0)
+        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
+        if df_v.empty:
+            return 0.0
         df_v.columns = [c.strip() for c in df_v.columns]
         df_v['Quantity'] = pd.to_numeric(df_v['Quantity'], errors='coerce').fillna(0)
         df_v.loc[df_v['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_v['Quantity'].abs()
@@ -296,8 +324,9 @@ vanguard_total_aud = get_vanguard_total_for_dashboard()
 @st.cache_data(ttl=300)
 def get_commodities_total_for_dashboard():
     try:
-        conn_m = st.connection("gsheets_metal", type=GSheetsConnection)
-        df_m = conn_m.read(ttl=0)
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:E")
+        if df_m.empty:
+            return 0.0
         df_m.columns = [c.strip() for c in df_m.columns]
         df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
         df_m.loc[df_m['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_m['Quantity'].abs()
@@ -324,10 +353,6 @@ def get_commodities_total_for_dashboard():
                     pass
             if price_usd:
                 price_aud = price_usd * usd_aud
-                # Gold/Silver futures are per troy oz, Platinum too
-                # Revolut prices are in EUR per unit (gram for silver, troy oz for gold)
-                # We'll use the purchase price currency logic in the full tab
-                # For dashboard just use market price × qty
                 total += row['Quantity'] * price_aud
             else:
                 recent = df_m[df_m['Type'] == metal].sort_values('Date', ascending=False)
@@ -1310,6 +1335,17 @@ with tab5:
     # ── VANGUARD SECTION ──────────────────────────────────────────────────────
     st.subheader("📈 Vanguard VDAL — ASX ETF")
 
+    @st.cache_data(ttl=300)
+    def load_vanguard_data():
+        try:
+            df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
+            if df_v.empty:
+                return pd.DataFrame(), None
+            df_v.columns = [c.strip() for c in df_v.columns]
+            return df_v, None
+        except Exception as e:
+            return None, str(e)
+
     df_vdal, vdal_error = load_vanguard_data()
 
     if vdal_error:
@@ -1458,28 +1494,11 @@ with tab6:
     @st.cache_data(ttl=300)
     def load_metal_data():
         try:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            gs = st.secrets["gdrive"]
-            creds = service_account.Credentials.from_service_account_info({
-                "type": "service_account",
-                "project_id": gs["project_id"],
-                "private_key_id": gs["private_key_id"],
-                "private_key": gs["private_key"],
-                "client_email": gs["client_email"],
-                "client_id": gs.get("client_id", ""),
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
-            service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-            result = service.spreadsheets().values().get(
-                spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-                range="Metal!A:E"
-            ).execute()
-            rows = result.get("values", [])
-            if len(rows) < 2:
+            df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:E")
+            if df_m.empty:
                 return pd.DataFrame(), None
-            df = pd.DataFrame(rows[1:], columns=rows[0])
-            return df, None
+            df_m.columns = [c.strip() for c in df_m.columns]
+            return df_m, None
         except Exception as e:
             return None, str(e)
 
