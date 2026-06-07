@@ -1456,7 +1456,7 @@ with tab6:
         return prices
 
     @st.cache_data(ttl=300)
-def load_metal_data():
+    def load_metal_data():
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
