@@ -501,6 +501,84 @@ def load_net_worth_history():
     except:
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
 
+# ── METAL / COMMODITY FUNCTIONS (top-level so cache clears work) ─────────────
+METAL_CONFIG = {
+    'Gold':     {'ticker': 'XAUAUD=X', 'symbol': 'XAU', 'unit': 'unit', 'colour': '#f39c12'},
+    'Silver':   {'ticker': 'XAGAUD=X', 'symbol': 'XAG', 'unit': 'unit', 'colour': '#95a5a6'},
+    'Platinum': {'ticker': 'XPTAUD=X', 'symbol': 'XPT', 'unit': 'unit', 'colour': '#8e44ad'},
+}
+
+@st.cache_data(ttl=0)
+def load_metal_data():
+    try:
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
+        if df_m.empty:
+            return pd.DataFrame(), None
+        df_m.columns = [c.strip() for c in df_m.columns]
+        return df_m, None
+    except Exception as e:
+        return None, str(e)
+
+@st.cache_data(ttl=300)
+def get_metal_prices():
+    prices = {}
+    for metal, cfg in METAL_CONFIG.items():
+        try:
+            t = yf.Ticker(cfg['ticker'])
+            p = float(t.fast_info['last_price'])
+            prices[metal] = {'usd': None, 'aud': p}
+        except:
+            try:
+                h = yf.download(cfg['ticker'], period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    prices[metal] = {'usd': None, 'aud': float(h.iloc[-1])}
+                    continue
+            except:
+                pass
+            prices[metal] = {'usd': None, 'aud': None}
+    return prices
+
+@st.cache_data(ttl=3600)
+def get_hist_fx_rate(from_currency, to_currency, dt_str):
+    if from_currency == to_currency:
+        return 1.0
+    ticker = f"{from_currency}{to_currency}=X"
+    try:
+        hist = yf.download(ticker, start=dt_str, period="5d", progress=False)['Close']
+        if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
+        hist = hist.dropna()
+        if not hist.empty:
+            return float(hist.iloc[0])
+    except:
+        pass
+    try:
+        return float(yf.Ticker(ticker).fast_info['last_price'])
+    except:
+        return 1.0
+
+def convert_purchase_to_aud(total_cost, currency, date_str):
+    currency = str(currency).strip().upper()
+    if currency in ('AUD', 'A$'):
+        return total_cost
+    elif currency == 'BTC':
+        return total_cost * get_hist_fx_rate('BTC', 'AUD', date_str)
+    elif currency in ('CAD', 'CA$'):
+        return total_cost * get_hist_fx_rate('CAD', 'AUD', date_str)
+    elif currency in ('NOK', 'SEK', 'DKK', 'KR'):
+        for kr in ['NOK', 'SEK', 'DKK']:
+            rate = get_hist_fx_rate(kr, 'AUD', date_str)
+            if 0.10 < rate < 0.25:
+                return total_cost * rate
+        return total_cost * get_hist_fx_rate('SEK', 'AUD', date_str)
+    elif currency == 'EUR':
+        return total_cost * get_hist_fx_rate('EUR', 'AUD', date_str)
+    elif currency == 'USD':
+        return total_cost * get_hist_fx_rate('USD', 'AUD', date_str)
+    else:
+        return total_cost * get_hist_fx_rate(currency, 'AUD', date_str)
+
 # --- 4. INTERFACCIA ---
 (tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9) = st.tabs([
     "🌐 Dashboard",
@@ -1474,76 +1552,6 @@ with tab6:
 
     usd_to_aud = get_usd_aud()
 
-    # Metal ticker map — Yahoo futures prices are per troy oz in USD
-    # Revolut quantities: Gold in troy oz, Silver in troy oz, Platinum in troy oz
-    METAL_CONFIG = {
-        'Gold':     {'ticker': 'GC=F',  'symbol': 'XAU', 'unit': 'troy oz', 'colour': '#f39c12'},
-        'Silver':   {'ticker': 'SI=F',  'symbol': 'XAG', 'unit': 'troy oz', 'colour': '#95a5a6'},
-        'Platinum': {'ticker': 'PL=F',  'symbol': 'XPT', 'unit': 'troy oz', 'colour': '#8e44ad'},
-    }
-
-    @st.cache_data(ttl=300)
-    def get_metal_prices():
-        prices = {}
-        for metal, cfg in METAL_CONFIG.items():
-            try:
-                t = yf.Ticker(cfg['ticker'])
-                p = float(t.fast_info['last_price'])
-                prices[metal] = {'usd': p, 'aud': p * usd_to_aud}
-            except:
-                prices[metal] = {'usd': None, 'aud': None}
-        return prices
-
-    @st.cache_data(ttl=300)
-    def load_metal_data():
-        try:
-            df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
-            if df_m.empty:
-                return pd.DataFrame(), None
-            df_m.columns = [c.strip() for c in df_m.columns]
-            return df_m, None
-        except Exception as e:
-            return None, str(e)
-
-    @st.cache_data(ttl=3600)
-    def get_hist_fx_rate(from_currency, to_currency, dt_str):
-        if from_currency == to_currency:
-            return 1.0
-        ticker = f"{from_currency}{to_currency}=X"
-        try:
-            hist = yf.download(ticker, start=dt_str, period="5d", progress=False)['Close']
-            if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
-            hist = hist.dropna()
-            if not hist.empty:
-                return float(hist.iloc[0])
-        except:
-            pass
-        try:
-            return float(yf.Ticker(ticker).fast_info['last_price'])
-        except:
-            return 1.0
-
-    def convert_purchase_to_aud(total_cost, currency, date_str):
-        currency = str(currency).strip().upper()
-        if currency in ('AUD', 'A$'):
-            return total_cost
-        elif currency == 'BTC':
-            return total_cost * get_hist_fx_rate('BTC', 'AUD', date_str)
-        elif currency in ('CAD', 'CA$'):
-            return total_cost * get_hist_fx_rate('CAD', 'AUD', date_str)
-        elif currency in ('NOK', 'SEK', 'DKK', 'KR'):
-            for kr in ['NOK', 'SEK', 'DKK']:
-                rate = get_hist_fx_rate(kr, 'AUD', date_str)
-                if 0.10 < rate < 0.25:
-                    return total_cost * rate
-            return total_cost * get_hist_fx_rate('SEK', 'AUD', date_str)
-        elif currency == 'EUR':
-            return total_cost * get_hist_fx_rate('EUR', 'AUD', date_str)
-        elif currency == 'USD':
-            return total_cost * get_hist_fx_rate('USD', 'AUD', date_str)
-        else:
-            return total_cost * get_hist_fx_rate(currency, 'AUD', date_str)
-
     df_metal, metal_error = load_metal_data()
     metal_prices = get_metal_prices()
 
@@ -1574,7 +1582,7 @@ with tab6:
             st.cache_data.clear()
             st.rerun()
 
-        st.info(f"USD/AUD: {usd_to_aud:.4f} | EUR/AUD: {fx_now:.4f} — Purchase prices converted to AUD at historical rates")
+        st.info(f"EUR/AUD: {fx_now:.4f} — Live prices: AUD spot (XAUAUD, XAGAUD, XPTAUD) — Purchase prices converted to AUD at historical rates")
 
         # Per-metal cards
         metals_summary = []
@@ -1664,7 +1672,7 @@ with tab6:
                                 {pl_sign}${m['P&L (AUD)']:,.2f} AUD ({pl_sign}{m['ROI %']:.2f}%)
                             </div>
                             <div style="font-size:0.8rem; color:#888; margin-top:4px;">
-                                Live: {m['Live Price (USD)']} USD/oz
+                                Live: ${m['Live Price (AUD)']:,.2f} AUD/unit
                             </div>
                         </div>""", unsafe_allow_html=True)
 
@@ -1994,7 +2002,6 @@ with tab9:
         p = metal_prices.get(metal, {})
         metal_diag.append({
             "Metal": metal, "Ticker": cfg['ticker'],
-            "Price (USD)": f"${p['usd']:,.2f}" if p.get('usd') else "N/A",
             "Price (AUD)": f"${p['aud']:,.2f}" if p.get('aud') else "N/A",
             "Status": "🟢 LIVE" if p.get('usd') else "🔴 FALLBACK"
         })
@@ -2007,3 +2014,4 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
+        
