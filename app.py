@@ -2335,20 +2335,26 @@ with tab10:
     with col_exp:
         st.markdown("**💸 Monthly Expenses (AUD)**")
         expense_cats = {
-            'housing': 'Housing & Rent',
-            'food': 'Food & Groceries',
-            'transport': 'Transport',
-            'travel': 'Travel',
-            'health': 'Health & Medical',
-            'other': 'Other'
+            'housing': ('Housing & Rent', 'monthly'),
+            'food': ('Food & Groceries', 'monthly'),
+            'transport': ('Transport', 'monthly'),
+            'travel': ('Travel (annual budget)', 'annual'),
+            'health': ('Health & Medical', 'monthly'),
+            'other': ('Other', 'monthly'),
         }
-        for key, label in expense_cats.items():
+        for key, (label, freq) in expense_cats.items():
             new_inputs[f'Expense_{key}'] = st.number_input(
-                label, min_value=0.0,
+                f"{label} (AUD/{freq[:2]})", min_value=0.0,
                 value=float(forecast_inputs.get(f'Expense_{key}', 0.0)),
-                step=50.0, format="%.2f")
-        total_expenses = sum(new_inputs[f'Expense_{k}'] for k in expense_cats)
-        st.metric("Total Monthly Expenses", f"${total_expenses:,.2f} AUD")
+                step=100.0 if freq == 'annual' else 50.0, format="%.2f")
+            if freq == 'annual':
+                st.caption(f"≈ ${new_inputs[f'Expense_{key}']/12:,.2f} AUD/month")
+        # Convert travel to monthly for total
+        monthly_travel = new_inputs.get('Expense_travel', 0.0) / 12
+        total_expenses = (sum(new_inputs[f'Expense_{k}'] for k, (_, f) in expense_cats.items() if f == 'monthly')
+                          + monthly_travel)
+        st.metric("Total Monthly Expenses", f"${total_expenses:,.2f} AUD",
+                  f"${total_expenses*12:,.2f} AUD/year")
 
     with col_int:
         st.markdown("**🏦 Cash Interest Rates (% p.a.)**")
@@ -2418,7 +2424,10 @@ with tab10:
 
     monthly_interest = monthly_cash_interest()
     monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
-    monthly_expenses = sum(new_inputs.get(f'Expense_{k}', 0.0) for k in expense_cats)
+    monthly_expenses = (
+        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
+        + new_inputs.get('Expense_travel', 0.0) / 12
+    )
     monthly_net_income = monthly_rent_aud + monthly_interest - monthly_expenses
 
     # Simulate month by month
@@ -2627,3 +2636,4 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
+        
