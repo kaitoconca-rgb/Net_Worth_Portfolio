@@ -2408,6 +2408,10 @@ with tab10:
 
     today = date.today()
 
+    MARGINAL_RATE_PROJ  = 0.19
+    DIVIDEND_YIELD_PROJ = 0.02
+    CGT_TRANSITION_PROJ = pd.Timestamp('2027-07-01')
+
     for m in range(1, months + 1):
         proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
 
@@ -2419,8 +2423,14 @@ with tab10:
         metals_v *= (1 + monthly_r['metals'])
         super_v  *= (1 + monthly_r['super'])
 
-        # Cash grows by interest, shrinks by net expenses
+        # Cash grows by interest + rent, shrinks by expenses
         cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+
+        # Annual tax deducted from cash each December (month 12, 24, 36...)
+        if m % 12 == 0:
+            tax_interest_yr  = monthly_interest * 12 * MARGINAL_RATE_PROJ
+            tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
+            cash_v -= (tax_interest_yr + tax_dividends_yr)
 
         nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
 
@@ -2542,9 +2552,10 @@ with tab10:
     # ── TAX IMPACT ────────────────────────────────────────────────────────────
     st.markdown("### 🧾 Annual Tax Impact & After-Tax Projection")
     st.caption(
-        "Based on 19% marginal rate (AUD $18,201-$45,000 bracket). "
-        "CGT deferred - only triggered on sale. "
-        "Post-1 Jul 2027: 50% discount replaced by indexation + 30% minimum tax."
+        "Tax is already baked into the projection above and the simulator below. "
+        "This section breaks down the annual tax components year by year. "
+        "19% marginal rate | CGT deferred until sale | "
+        "Post-1 Jul 2027: 50% discount → indexation + 30% minimum tax."
     )
 
     MARGINAL_RATE  = 0.19
@@ -2791,19 +2802,46 @@ with tab10:
     sim_cash_r   = annual_to_monthly(sim_cash_rate)
 
     sim_rows = []
-    invest_val = sim_amount   # scenario A: moved to investment
-    cash_val   = sim_amount   # scenario B: stays in cash
+    invest_val    = sim_amount   # scenario A: in ETF — tax deferred until sale
+    cash_val      = sim_amount   # scenario B: in cash — tax paid annually on interest
+    invest_cb     = sim_amount   # cost base for CGT calculation
+    CGT_TRANS_SIM = pd.Timestamp('2027-07-01')
+    gain_pre2027_sim = 0.0
 
     for m in range(1, 61):
+        proj_date_sim = pd.Timestamp(today) + pd.DateOffset(months=m)
+        is_post_sim   = proj_date_sim >= CGT_TRANS_SIM
+
+        # Scenario A: ETF — full compounding, no annual tax
         invest_val *= (1 + sim_invest_r)
-        cash_val   *= (1 + sim_cash_r)
-        proj_date   = pd.Timestamp(today) + pd.DateOffset(months=m)
+        if not is_post_sim:
+            gain_pre2027_sim = max(0, invest_val - invest_cb)
+
+        # Scenario B: Cash — interest taxed annually (end of year)
+        cash_val *= (1 + sim_cash_r)
+        if m % 12 == 0:
+            annual_interest_sim = cash_val * sim_cash_rate / 100
+            cash_val -= annual_interest_sim * 0.19
+
+        # At end of period, show ETF after CGT if sold now
+        gain_total = max(0, invest_val - invest_cb)
+        if not is_post_sim:
+            cgt_sim = gain_total * 0.50 * 0.19  # 50% discount
+        else:
+            post_gain = max(0, gain_total - gain_pre2027_sim)
+            cgt_sim   = (gain_pre2027_sim * 0.50 * 0.19 +
+                         post_gain * max(0.19, 0.30))
+
+        invest_after_cgt = invest_val - cgt_sim
+
         sim_rows.append({
-            'Date': proj_date,
+            'Date': proj_date_sim,
             'Month': m,
-            f'In {sim_target}': invest_val,
-            'Stays in Cash': cash_val,
-            'Difference': invest_val - cash_val,
+            f'In {sim_target} (gross)': invest_val,
+            f'In {sim_target} (after CGT if sold)': invest_after_cgt,
+            'Stays in Cash (after tax)': cash_val,
+            'Difference (gross)': invest_val - cash_val,
+            'Difference (after CGT)': invest_after_cgt - cash_val,
         })
 
     df_sim = pd.DataFrame(sim_rows)
@@ -2811,26 +2849,36 @@ with tab10:
     # Chart
     fig_sim = go.Figure()
     fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim[f'In {sim_target}'],
-        mode='lines', name=f'Redeployed → {sim_target}',
+        x=df_sim['Date'], y=df_sim[f'In {sim_target} (gross)'],
+        mode='lines', name=f'{sim_target} — Gross (CGT deferred)',
         line=dict(color='#27ae60', width=2.5),
         fill='tozeroy', fillcolor='rgba(39,174,96,0.08)',
-        hovertemplate=f'{sim_target}: $%{{y:,.0f}}<extra></extra>'
+        hovertemplate=f'Gross: $%{{y:,.0f}}<extra></extra>'
     ))
     fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim['Stays in Cash'],
-        mode='lines', name='Stays in Cash',
+        x=df_sim['Date'], y=df_sim[f'In {sim_target} (after CGT if sold)'],
+        mode='lines', name=f'{sim_target} — After CGT (if sold)',
+        line=dict(color='#1abc9c', width=2, dash='dash'),
+        hovertemplate='After CGT: $%{y:,.0f}<extra></extra>'
+    ))
+    fig_sim.add_trace(go.Scatter(
+        x=df_sim['Date'], y=df_sim['Stays in Cash (after tax)'],
+        mode='lines', name='Cash — After Annual Interest Tax',
         line=dict(color='#e67e22', width=2.5, dash='dot'),
         fill='tozeroy', fillcolor='rgba(230,126,34,0.05)',
-        hovertemplate='Cash: $%{y:,.0f}<extra></extra>'
+        hovertemplate='Cash (after tax): $%{y:,.0f}<extra></extra>'
     ))
     fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim['Difference'],
-        mode='lines', name='Extra Gain (vs Cash)',
+        x=df_sim['Date'], y=df_sim['Difference (after CGT)'],
+        mode='lines', name='Extra Gain after all tax',
         line=dict(color='#2980b9', width=1.5, dash='dashdot'),
-        hovertemplate='Gain: $%{y:,.0f}<extra></extra>',
+        hovertemplate='Net advantage: $%{y:,.0f}<extra></extra>',
         yaxis='y2'
     ))
+    fig_sim.add_vline(x='2027-07-01', line_dash='dash', line_color='#e74c3c',
+                      opacity=0.6, annotation_text='CGT change 1 Jul 2027',
+                      annotation_position='top left',
+                      annotation_font=dict(color='#e74c3c', size=10))
     fig_sim.add_hline(y=sim_amount, line_dash="dash", line_color="grey",
                       opacity=0.4, annotation_text=f"Starting: ${sim_amount:,.0f}",
                       annotation_position="left")
@@ -2845,38 +2893,56 @@ with tab10:
     st.plotly_chart(fig_sim, use_container_width=True)
 
     # Summary metrics
-    final = df_sim.iloc[-1]
     yr1 = df_sim[df_sim['Month'] == 12].iloc[0]
     yr3 = df_sim[df_sim['Month'] == 36].iloc[0]
     yr5 = df_sim.iloc[-1]
 
-    st.markdown("#### Projected Outcome of Redeployment")
+    st.markdown("#### Projected Outcome — After All Tax")
+    st.caption(
+        "ETF: tax deferred (compounding on full amount), CGT paid only on sale. "
+        "Cash: interest tax paid annually at 19% — reducing compounding base. "
+        "Post-Jul 2027: CGT minimum 30% on real gain applies."
+    )
     sm1, sm2, sm3, sm4 = st.columns(4)
     sm1.metric("Starting Amount", f"${sim_amount:,.2f}")
-    sm2.metric("After 1 Year",
-               f"${yr1[f'In {sim_target}']:,.2f}",
-               delta=f"${yr1['Difference']:+,.2f} vs cash")
-    sm3.metric("After 3 Years",
-               f"${yr3[f'In {sim_target}']:,.2f}",
-               delta=f"${yr3['Difference']:+,.2f} vs cash")
-    sm4.metric("After 5 Years",
-               f"${yr5[f'In {sim_target}']:,.2f}",
-               delta=f"${yr5['Difference']:+,.2f} vs cash",
-               delta_color="normal" if yr5['Difference'] >= 0 else "inverse")
+    sm2.metric("After 1 Year (after CGT)",
+               f"${yr1[f'In {sim_target} (after CGT if sold)']:,.2f}",
+               delta=f"${yr1['Difference (after CGT)']:+,.2f} vs cash")
+    sm3.metric("After 3 Years (after CGT)",
+               f"${yr3[f'In {sim_target} (after CGT if sold)']:,.2f}",
+               delta=f"${yr3['Difference (after CGT)']:+,.2f} vs cash")
+    sm4.metric("After 5 Years (after CGT)",
+               f"${yr5[f'In {sim_target} (after CGT if sold)']:,.2f}",
+               delta=f"${yr5['Difference (after CGT)']:+,.2f} vs cash",
+               delta_color="normal" if yr5['Difference (after CGT)'] >= 0 else "inverse")
+
+    # Compounding advantage explainer
+    gross_5yr  = yr5[f'In {sim_target} (gross)']
+    cash_5yr   = yr5['Stays in Cash (after tax)']
+    cgt_5yr    = gross_5yr - yr5[f'In {sim_target} (after CGT if sold)']
+    ca1, ca2, ca3, ca4 = st.columns(4)
+    ca1.metric("ETF Gross (CGT deferred)", f"${gross_5yr:,.2f}",
+               help="Full compounding — no tax drag until you sell")
+    ca2.metric("CGT on sale (Year 5)", f"-${cgt_5yr:,.2f}",
+               help="Tax bill if you sell at year 5")
+    ca3.metric("Cash after annual tax", f"${cash_5yr:,.2f}",
+               help="Interest taxed at 19% every year — shrinks compounding base")
+    ca4.metric("Net ETF advantage", f"${yr5['Difference (after CGT)']:+,.2f}",
+               delta_color="normal" if yr5['Difference (after CGT)'] >= 0 else "inverse")
 
     # Impact on total net worth projection
-    st.markdown("#### Impact on Total Net Worth Projection")
-    st.caption(f"If you move ${sim_amount:,.0f} from cash → {sim_target} today, your projected net worth in 5 years changes by:")
-    nw_base = df_proj.iloc[-1]['Projected NW']
-    nw_new   = nw_base + yr5['Difference']
-    nw_delta = yr5['Difference']
+    st.markdown("#### Impact on Total 5-Year Net Worth")
+    nw_base  = df_proj.iloc[-1]['Projected NW']
+    nw_delta = yr5['Difference (after CGT)']
+    nw_new   = nw_base + nw_delta
     ni1, ni2, ni3 = st.columns(3)
-    ni1.metric("Base 5yr Net Worth", f"${nw_base:,.2f}")
-    ni2.metric("With Redeployment", f"${nw_new:,.2f}",
+    ni1.metric("Base 5yr NW (after-tax projection)", f"${nw_base:,.2f}")
+    ni2.metric("With Redeployment (after CGT)", f"${nw_new:,.2f}",
                delta=f"${nw_delta:+,.2f}",
                delta_color="normal" if nw_delta >= 0 else "inverse")
-    ni3.metric("Return on Decision", f"{(yr5[f'In {sim_target}']/sim_amount - 1)*100:.1f}%",
-               f"vs {(yr5['Stays in Cash']/sim_amount - 1)*100:.1f}% in cash")
+    ni3.metric("ETF total return (after CGT)",
+               f"{(yr5[f'In {sim_target} (after CGT if sold)']/sim_amount - 1)*100:.1f}%",
+               f"vs {(cash_5yr/sim_amount - 1)*100:.1f}% cash (after tax)")
 
     with st.expander("📋 Full 5-Year Monthly Projection Table"):
         df_proj_display = df_proj.copy()
