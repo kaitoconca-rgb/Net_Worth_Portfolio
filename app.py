@@ -1746,6 +1746,19 @@ with tab6:
                                               'Value (AUD)': '${:,.2f}',
                                               'P&L (AUD)': '${:,.2f}'}),
                                      use_container_width=True, hide_index=True)
+                        # Totals row
+                        tot_qty = df_lots['Qty'].sum()
+                        tot_cost = df_lots['Cost (AUD)'].sum()
+                        tot_val = df_lots['Value (AUD)'].sum()
+                        tot_pl = df_lots['P&L (AUD)'].sum()
+                        tot_roi = (tot_pl / tot_cost * 100) if tot_cost > 0 else 0
+                        t1, t2, t3, t4, t5 = st.columns(5)
+                        t1.metric("Net Qty", f"{tot_qty:.6f}")
+                        t2.metric("Total Cost (AUD)", f"${tot_cost:,.2f}")
+                        t3.metric("Live Price (AUD)", f"${price_aud:,.2f}" if price_aud else "N/A")
+                        t4.metric("Total Value (AUD)", f"${tot_val:,.2f}")
+                        t5.metric("P&L", f"${tot_pl:,.2f}", delta=f"{tot_roi:.2f}%",
+                                  delta_color="normal" if tot_pl >= 0 else "inverse")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7 — SUPER
