@@ -355,11 +355,12 @@ def get_commodities_total_for_dashboard():
                 price_aud = price_usd * usd_aud
                 total += row['Quantity'] * price_aud
             else:
+                # Purchase Price is already in AUD — no conversion needed
                 recent = df_m[df_m['Type'] == metal].sort_values('Date', ascending=False)
                 if not recent.empty:
                     pp = pd.to_numeric(recent.iloc[0]['Purchase Price'], errors='coerce')
                     if pd.notnull(pp):
-                        total += row['Quantity'] * float(pp) * fx_now
+                        total += row['Quantity'] * float(pp)
         return total
     except:
         return 0.0
@@ -1408,6 +1409,7 @@ with tab5:
                 'Date': row['Date'].strftime('%Y-%m-%d'),
                 'Qty': qty_res,
                 'Purchase Price': row['Purchase Price'],
+                'Current Price': vdal_live_price,
                 'Cost (AUD)': cost,
                 'Value (AUD)': val,
                 'P&L (AUD)': pl,
@@ -1422,6 +1424,7 @@ with tab5:
                               else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
                               subset=['P&L (AUD)', 'ROI %'])
                          .format({'Qty': '{:.2f}', 'Purchase Price': '${:.4f}',
+                                  'Current Price': '${:.4f}',
                                   'Cost (AUD)': '${:,.2f}', 'Value (AUD)': '${:,.2f}',
                                   'P&L (AUD)': '${:,.2f}', 'ROI %': '{:.2f}%'}),
                          use_container_width=True, hide_index=True)
@@ -1537,18 +1540,17 @@ with tab6:
 
             # Purchase price is in EUR (Revolut charges in EUR)
             buys = df_m_metal[df_m_metal['Transaction'].str.upper() == 'BUY']
-            cost_eur = (buys['Quantity'] * buys['Purchase Price']).sum()
-            cost_aud = cost_eur * fx_now
+            cost_aud = (buys['Quantity'] * buys['Purchase Price']).sum()
 
             if price_aud:
                 value_aud = net_qty * price_aud
-                value_eur = value_aud / fx_now
             else:
-                # fallback to last purchase price in EUR
+                # fallback to last purchase price in AUD
                 last_pp = df_m_metal['Purchase Price'].dropna().iloc[-1]
-                value_eur = net_qty * last_pp
-                value_aud = value_eur * fx_now
+                value_aud = net_qty * float(last_pp)
 
+            value_eur = value_aud / fx_now
+            cost_eur = cost_aud / fx_now
             pl_aud = value_aud - cost_aud
             pl_eur = value_eur - cost_eur
             roi = (pl_aud / cost_aud * 100) if cost_aud > 0 else 0
@@ -1559,12 +1561,12 @@ with tab6:
                 'Net Qty (troy oz)': net_qty,
                 'Live Price (USD)': f"${price_usd:,.2f}" if price_usd else "N/A",
                 'Live Price (AUD)': price_aud,
-                'Cost (EUR)': cost_eur,
                 'Cost (AUD)': cost_aud,
-                'Value (EUR)': value_eur,
+                'Cost (EUR)': cost_eur,
                 'Value (AUD)': value_aud,
-                'P&L (EUR)': pl_eur,
+                'Value (EUR)': value_eur,
                 'P&L (AUD)': pl_aud,
+                'P&L (EUR)': pl_eur,
                 'ROI %': roi,
                 'colour': cfg['colour'],
             })
@@ -1660,16 +1662,14 @@ with tab6:
                         else:
                             qty_res = qty_ini
                         if qty_res < 0.00001: continue
-                        cost_eur_lot = qty_res * row['Purchase Price']
-                        cost_aud_lot = cost_eur_lot * fx_now
+                        cost_aud_lot = qty_res * row['Purchase Price']
                         val_aud_lot = qty_res * price_aud if price_aud else cost_aud_lot
                         pl_lot = val_aud_lot - cost_aud_lot
                         days = (date.today() - row['Date'].date()).days
                         lots.append({
                             'Date': row['Date'].strftime('%Y-%m-%d'),
                             'Qty (troy oz)': qty_res,
-                            'Purchase Price (EUR/oz)': row['Purchase Price'],
-                            'Cost (EUR)': cost_eur_lot,
+                            'Purchase Price (AUD/oz)': row['Purchase Price'],
                             'Cost (AUD)': cost_aud_lot,
                             'Live Price (AUD/oz)': price_aud,
                             'Value (AUD)': val_aud_lot,
@@ -1684,8 +1684,7 @@ with tab6:
                                           else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
                                           subset=['P&L (AUD)'])
                                      .format({'Qty (troy oz)': '{:.6f}',
-                                              'Purchase Price (EUR/oz)': '€{:.2f}',
-                                              'Cost (EUR)': '€{:,.2f}',
+                                              'Purchase Price (AUD/oz)': '${:.2f}',
                                               'Cost (AUD)': '${:,.2f}',
                                               'Live Price (AUD/oz)': lambda x: f'${x:,.2f}' if x else 'N/A',
                                               'Value (AUD)': '${:,.2f}',
