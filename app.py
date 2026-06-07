@@ -1660,7 +1660,7 @@ with tab6:
                                 {m['Metal']} ({m['Symbol']})
                             </div>
                             <div style="font-size:0.85rem; color:#555; margin: 4px 0;">
-                                {m['Net Qty (troy oz)']:.4f} troy oz
+                                {m['Net Qty (troy oz)']:.4f} units
                             </div>
                             <div style="font-size:1.2rem; font-weight:600;">
                                 ${m['Value (AUD)']:,.2f} AUD
@@ -1672,7 +1672,7 @@ with tab6:
                                 {pl_sign}${m['P&L (AUD)']:,.2f} AUD ({pl_sign}{m['ROI %']:.2f}%)
                             </div>
                             <div style="font-size:0.8rem; color:#888; margin-top:4px;">
-                                Live: ${m['Live Price (AUD)']:,.2f} AUD/unit
+                                Live: {('$' + f"{m['Live Price (AUD)']:,.2f}") if m['Live Price (AUD)'] else 'N/A'} AUD/unit
                             </div>
                         </div>""", unsafe_allow_html=True)
 
@@ -2014,4 +2014,3 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
-        
