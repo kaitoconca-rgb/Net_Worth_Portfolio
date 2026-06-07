@@ -2226,66 +2226,25 @@ with tab10:
             return False, traceback.format_exc()
 
     # ── COMPUTE HISTORICAL RETURNS ─────────────────────────────────────────────
-    @st.cache_data(ttl=3600)
-    def compute_historical_returns():
-        """Compute annualised return % for each portfolio from actual data."""
-        returns = {}
+    def compute_benchmark_returns():
+        """
+        Benchmark-based return assumptions derived from long-term index performance.
+        These reflect the underlying ETF/index history, not your personal purchase timing.
+        Sources: PortfoliosLab, Morningstar, Raiz FY2024-25 report (Oct 2025).
+        All figures are % p.a., nominal, pre-tax.
+        """
+        return {
+            # VWRL ~12.4% p.a. over 10yr, VUSA ~14.2% p.a. — blended N26 mix ~11%
+            'n26':      11.0,
+            # Raiz Moderately Aggressive FY25: 14%, long-run average ~10%
+            'raiz':     10.0,
+            # ASX broad market long-run average ~9-10% p.a.
+            'vanguard': 9.5,
+            # Individual ASX stocks — use broad market benchmark
+            'shares':   10.0,
+        }
 
-        # N26 — use df_perf profit vs invested
-        try:
-            total_inv = df_raw[df_raw['Tipo'] == 'BUY']['Inv_EUR'].sum()
-            total_profit = df_perf['Profit_EUR'].sum()
-            # Annualise over portfolio age
-            first_date = df_raw['Data'].min()
-            years = max((datetime.now() - first_date).days / 365.25, 0.5)
-            n26_ret = ((current_market_value_eur + df_perf[df_perf['Current_Value'] < 0.01]['Profit_EUR'].sum()) /
-                       total_inv) ** (1/years) - 1
-            returns['n26'] = round(n26_ret * 100, 2)
-        except:
-            returns['n26'] = 7.0
-
-        # Raiz — use holdings cost vs value
-        try:
-            raiz_cost = 0
-            raiz_val = raiz_total_aud
-            if df_csv is not None:
-                buys_r = df_csv[df_csv['Transaction Type'] == 'BUY']
-                raiz_cost = buys_r['Amount'].sum()
-                first_r = df_csv['Trade Date'].min()
-                years_r = max((datetime.now() - first_r).days / 365.25, 0.5)
-                if raiz_cost > 0:
-                    raiz_ret = (raiz_val / raiz_cost) ** (1/years_r) - 1
-                    returns['raiz'] = round(raiz_ret * 100, 2)
-                else:
-                    returns['raiz'] = 8.0
-            else:
-                returns['raiz'] = 8.0
-        except:
-            returns['raiz'] = 8.0
-
-        # Vanguard VDAL — use lot cost vs current value
-        try:
-            if not df_vdal.empty and vanguard_total_aud > 0:
-                buys_v = df_vdal[df_vdal['Transaction'].str.upper() == 'BUY']
-                cost_v = (buys_v['Quantity'].abs() * buys_v['Purchase Price']).sum()
-                first_v = df_vdal['Date'].min()
-                years_v = max((datetime.now() - first_v).days / 365.25, 0.5)
-                if cost_v > 0:
-                    vdal_ret = (vanguard_total_aud / cost_v) ** (1/years_v) - 1
-                    returns['vanguard'] = round(vdal_ret * 100, 2)
-                else:
-                    returns['vanguard'] = 9.0
-            else:
-                returns['vanguard'] = 9.0
-        except:
-            returns['vanguard'] = 9.0
-
-        # Shares — use ASX benchmark ~10% p.a. (insufficient history for individual stocks)
-        returns['shares'] = 10.0
-
-        return returns
-
-    hist_returns = compute_historical_returns()
+    hist_returns = compute_benchmark_returns()
     forecast_inputs = load_forecast_inputs()
 
     # ── INPUT PANELS ──────────────────────────────────────────────────────────
@@ -2306,7 +2265,12 @@ with tab10:
         st.caption(f"≈ ${rent_aud:,.2f} AUD/month at current rate")
 
         st.markdown("**📈 Expected Investment Returns (% p.a.)**")
-        st.caption("Pre-filled from historical performance — edit to adjust.")
+        st.caption(
+            "Pre-filled from long-term benchmark returns (not your purchase timing): "
+            "N26 based on VWRL/VUSA 10yr avg ~11–14%; "
+            "Raiz based on Moderately Aggressive portfolio long-run avg ~10%; "
+            "Vanguard/ASX based on broad market ~9–10% p.a. Edit to adjust."
+        )
         new_inputs['Returns_n26_pct'] = st.number_input(
             "N26 European ETFs", min_value=-20.0, max_value=50.0,
             value=float(forecast_inputs.get('Returns_n26_pct', hist_returns['n26'])),
@@ -2601,6 +2565,140 @@ with tab10:
     st.divider()
 
     # ── PROJECTION TABLE ───────────────────────────────────────────────────────
+    st.divider()
+
+    # ── CASH REDEPLOYMENT SIMULATOR ───────────────────────────────────────────
+    st.markdown("### 💡 Cash Redeployment Simulator")
+    st.caption("Simulate moving a lump sum from cash into investments and see the 5-year impact vs keeping it in cash.")
+
+    sim_col1, sim_col2, sim_col3 = st.columns(3)
+    with sim_col1:
+        sim_amount = st.number_input(
+            "Amount to redeploy (AUD)",
+            min_value=0.0, max_value=float(cash_total_aud),
+            value=min(50000.0, float(cash_total_aud)),
+            step=5000.0, format="%.0f",
+            help=f"Your current cash total is ${cash_total_aud:,.2f} AUD")
+        st.caption(f"That's {sim_amount/cash_total_aud*100:.1f}% of your cash" if cash_total_aud > 0 else "")
+
+    with sim_col2:
+        sim_target = st.selectbox(
+            "Redeploy into",
+            options=["N26 European ETFs", "Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
+            index=0)
+        target_return_map = {
+            "N26 European ETFs": new_inputs.get('Returns_n26_pct', hist_returns['n26']),
+            "Raiz ETFs":         new_inputs.get('Returns_raiz_pct', hist_returns['raiz']),
+            "Vanguard VDAL":     new_inputs.get('Returns_vanguard_pct', hist_returns['vanguard']),
+            "ASX Shares":        new_inputs.get('Returns_shares_pct', hist_returns['shares']),
+        }
+        target_return_pct = target_return_map[sim_target]
+        st.caption(f"Using {target_return_pct:.2f}% p.a. expected return")
+
+    with sim_col3:
+        # Find the interest rate of the account the cash is coming from
+        best_cash_rate = max(
+            [new_inputs.get(f'Interest_{acc}', 0.0) for acc in interest_accounts],
+            default=0.0)
+        sim_cash_rate = st.number_input(
+            "Cash interest rate being forgone (% p.a.)",
+            min_value=0.0, max_value=20.0,
+            value=float(best_cash_rate),
+            step=0.1, format="%.2f",
+            help="The interest rate you'd lose by moving this cash out")
+
+    # Run both scenarios month by month
+    sim_invest_r = annual_to_monthly(target_return_pct)
+    sim_cash_r   = annual_to_monthly(sim_cash_rate)
+
+    sim_rows = []
+    invest_val = sim_amount   # scenario A: moved to investment
+    cash_val   = sim_amount   # scenario B: stays in cash
+
+    for m in range(1, 61):
+        invest_val *= (1 + sim_invest_r)
+        cash_val   *= (1 + sim_cash_r)
+        proj_date   = pd.Timestamp(today) + pd.DateOffset(months=m)
+        sim_rows.append({
+            'Date': proj_date,
+            'Month': m,
+            f'In {sim_target}': invest_val,
+            'Stays in Cash': cash_val,
+            'Difference': invest_val - cash_val,
+        })
+
+    df_sim = pd.DataFrame(sim_rows)
+
+    # Chart
+    fig_sim = go.Figure()
+    fig_sim.add_trace(go.Scatter(
+        x=df_sim['Date'], y=df_sim[f'In {sim_target}'],
+        mode='lines', name=f'Redeployed → {sim_target}',
+        line=dict(color='#27ae60', width=2.5),
+        fill='tozeroy', fillcolor='rgba(39,174,96,0.08)',
+        hovertemplate=f'{sim_target}: $%{{y:,.0f}}<extra></extra>'
+    ))
+    fig_sim.add_trace(go.Scatter(
+        x=df_sim['Date'], y=df_sim['Stays in Cash'],
+        mode='lines', name='Stays in Cash',
+        line=dict(color='#e67e22', width=2.5, dash='dot'),
+        fill='tozeroy', fillcolor='rgba(230,126,34,0.05)',
+        hovertemplate='Cash: $%{y:,.0f}<extra></extra>'
+    ))
+    fig_sim.add_trace(go.Scatter(
+        x=df_sim['Date'], y=df_sim['Difference'],
+        mode='lines', name='Extra Gain (vs Cash)',
+        line=dict(color='#2980b9', width=1.5, dash='dashdot'),
+        hovertemplate='Gain: $%{y:,.0f}<extra></extra>',
+        yaxis='y2'
+    ))
+    fig_sim.add_hline(y=sim_amount, line_dash="dash", line_color="grey",
+                      opacity=0.4, annotation_text=f"Starting: ${sim_amount:,.0f}",
+                      annotation_position="left")
+    fig_sim.update_layout(
+        height=420, hovermode="x unified",
+        yaxis=dict(title="Value (AUD $)", tickprefix="$"),
+        yaxis2=dict(title="Extra gain vs cash ($)", tickprefix="$",
+                    overlaying='y', side='right', showgrid=False),
+        legend=dict(orientation="h", y=1.08),
+        margin=dict(t=50, b=30)
+    )
+    st.plotly_chart(fig_sim, use_container_width=True)
+
+    # Summary metrics
+    final = df_sim.iloc[-1]
+    yr1 = df_sim[df_sim['Month'] == 12].iloc[0]
+    yr3 = df_sim[df_sim['Month'] == 36].iloc[0]
+    yr5 = df_sim.iloc[-1]
+
+    st.markdown("#### Projected Outcome of Redeployment")
+    sm1, sm2, sm3, sm4 = st.columns(4)
+    sm1.metric("Starting Amount", f"${sim_amount:,.2f}")
+    sm2.metric("After 1 Year",
+               f"${yr1[f'In {sim_target}']:,.2f}",
+               delta=f"${yr1['Difference']:+,.2f} vs cash")
+    sm3.metric("After 3 Years",
+               f"${yr3[f'In {sim_target}']:,.2f}",
+               delta=f"${yr3['Difference']:+,.2f} vs cash")
+    sm4.metric("After 5 Years",
+               f"${yr5[f'In {sim_target}']:,.2f}",
+               delta=f"${yr5['Difference']:+,.2f} vs cash",
+               delta_color="normal" if yr5['Difference'] >= 0 else "inverse")
+
+    # Impact on total net worth projection
+    st.markdown("#### Impact on Total Net Worth Projection")
+    st.caption(f"If you move ${sim_amount:,.0f} from cash → {sim_target} today, your projected net worth in 5 years changes by:")
+    nw_base = df_proj.iloc[-1]['Projected NW']
+    nw_new   = nw_base + yr5['Difference']
+    nw_delta = yr5['Difference']
+    ni1, ni2, ni3 = st.columns(3)
+    ni1.metric("Base 5yr Net Worth", f"${nw_base:,.2f}")
+    ni2.metric("With Redeployment", f"${nw_new:,.2f}",
+               delta=f"${nw_delta:+,.2f}",
+               delta_color="normal" if nw_delta >= 0 else "inverse")
+    ni3.metric("Return on Decision", f"{(yr5[f'In {sim_target}']/sim_amount - 1)*100:.1f}%",
+               f"vs {(yr5['Stays in Cash']/sim_amount - 1)*100:.1f}% in cash")
+
     with st.expander("📋 Full 5-Year Monthly Projection Table"):
         df_proj_display = df_proj.copy()
         df_proj_display['Date'] = df_proj_display['Date'].dt.strftime('%Y-%m-%d')
@@ -2636,4 +2734,3 @@ with tab9:
         st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
     except:
         st.error("🔴 VDAL.AX price unavailable")
-        
