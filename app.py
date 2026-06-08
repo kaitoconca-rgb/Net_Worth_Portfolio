@@ -690,6 +690,7 @@ def load_net_worth_history():
 def analyze_net_worth_change(df_history, start_date, end_date):
     """
     Analyze net worth change between two dates using ONLY real saved portfolio data
+    Cash is EXCLUDED from market gains - it appears in Contributions or FX Impact
     """
     # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
@@ -717,7 +718,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'Shares_AUD': 'ASX Shares',
         'Commodities_AUD': 'Commodities',
         'Super_AUD': 'Super',
-        # 'Cash_AUD' is EXCLUDED from market gains - it goes to FX Impact or Contributions
+        # 'Cash_AUD' is EXCLUDED - goes to Contributions or FX Impact
     }
     
     total_saved_gains = 0
@@ -736,14 +737,15 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         else:
             portfolio_gains[name] = 0
     
-    # Get contributions and FX impact
+    # Get contributions and FX impact from saved data
     total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
     fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
     
-    # Calculate market gains (excluding Cash)
+    # If we have real portfolio data, use it for market gains
     if has_real_data and len(df_period) >= 2:
         market_gains = total_saved_gains
     else:
+        # Calculate market gains as residual
         market_gains = total_change - total_contributions - fx_impact
         portfolio_gains = {}
         has_real_data = False
