@@ -690,10 +690,8 @@ def analyze_net_worth_change(df_history, start_date, end_date):
             end_val = end_row[col] if pd.notna(end_row[col]) else 0
             gain = end_val - start_val
             
-            # Only include if BOTH snapshots have data (not zero from missing data)
-            # AND the gain is reasonable (not the full portfolio value)
-            if start_val != 0 or end_val != 0:
-                # This snapshot has real portfolio data
+            # Only include if BOTH snapshots have non-zero data (real portfolio values)
+            if start_val > 0 or end_val > 0:
                 has_real_data = True
                 portfolio_gains[name] = gain
                 total_saved_gains += gain
@@ -708,10 +706,10 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     
     # Calculate market gains
     if has_real_data and len(df_period) >= 2:
-        # Use the sum of saved portfolio gains (changes, not absolute values)
+        # Use the sum of saved portfolio gains (changes)
         market_gains = total_saved_gains
     else:
-        # Use residual calculation (total_change - contributions - fx_impact)
+        # Use residual calculation
         market_gains = total_change - total_contributions - fx_impact
         # Clear portfolio gains since we can't break it down accurately
         portfolio_gains = {}
