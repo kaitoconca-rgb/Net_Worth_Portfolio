@@ -652,7 +652,6 @@ def load_net_worth_history():
 def analyze_net_worth_change(df_history, start_date, end_date):
     """
     Analyze net worth change between two dates using ONLY real saved portfolio data
-    No fake proportional allocation!
     """
     # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
@@ -670,7 +669,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_change = end_value - start_value
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
     
-    # Calculate REAL portfolio gains using saved data (NO FALLBACK)
+    # Calculate REAL portfolio gains using saved data
     portfolio_gains = {}
     portfolio_mapping = {
         'N26_AUD': 'N26 European ETFs',
@@ -690,10 +689,16 @@ def analyze_net_worth_change(df_history, start_date, end_date):
             start_val = start_row[col] if pd.notna(start_row[col]) else 0
             end_val = end_row[col] if pd.notna(end_row[col]) else 0
             gain = end_val - start_val
-            portfolio_gains[name] = gain
-            total_saved_gains += gain
-            if gain != 0 or start_val != 0 or end_val != 0:
+            
+            # Only include if BOTH snapshots have data (not zero from missing data)
+            # AND the gain is reasonable (not the full portfolio value)
+            if start_val != 0 or end_val != 0:
+                # This snapshot has real portfolio data
                 has_real_data = True
+                portfolio_gains[name] = gain
+                total_saved_gains += gain
+            else:
+                portfolio_gains[name] = 0
         else:
             portfolio_gains[name] = 0
     
@@ -701,16 +706,16 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
     fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
     
-    # Calculate market gains: either from saved portfolio data OR residual
-    if has_real_data and abs(total_saved_gains) > 0.01:
-        # Use the sum of saved portfolio gains
+    # Calculate market gains
+    if has_real_data and len(df_period) >= 2:
+        # Use the sum of saved portfolio gains (changes, not absolute values)
         market_gains = total_saved_gains
     else:
         # Use residual calculation (total_change - contributions - fx_impact)
-        # This is accurate for the total, just can't break down by portfolio
         market_gains = total_change - total_contributions - fx_impact
-        # Show that we don't have portfolio breakdown
-        portfolio_gains = {}  # Clear portfolio gains since we can't break it down
+        # Clear portfolio gains since we can't break it down accurately
+        portfolio_gains = {}
+        has_real_data = False
     
     # Calculate percentages
     contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
