@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
 import time
+import numpy as np  
 from streamlit_gsheets import GSheetsConnection
 
 # --- FETCH CURRENT FX RATE ---
@@ -3267,7 +3268,265 @@ with tab10:
         'metals':   annual_to_monthly(new_inputs.get('Returns_metals_pct', 5.0)),
         'super':    annual_to_monthly(new_inputs.get('Returns_super_pct', 8.6)),
     }
+    st.divider()
+    
+    # ==================== UNCERTAINTY & MONTE CARLO ====================
+    st.markdown("### 📊 Risk & Uncertainty Analysis")
+    st.caption("Understand the range of possible outcomes based on historical market volatility.")
+    
+    uncertainty_mode = st.radio(
+        "Select analysis mode:",
+        options=["📈 Single Projection (Current)", "📊 Uncertainty Range (10th-90th Percentile)", "🎲 Monte Carlo Simulation (1000 scenarios)"],
+        horizontal=True,
+        key="uncertainty_mode"
+    )
+    
+    # Historical annual volatilities (standard deviations) for each asset class
+    # Source: Long-term market data
+    volatility = {
+        'n26': 0.16,      # 16% annual volatility for European equities
+        'raiz': 0.12,     # 12% for diversified ETF portfolio
+        'vanguard': 0.14, # 14% for growth diversified fund
+        'shares': 0.18,   # 18% for Australian shares
+        'metals': 0.22,   # 22% for precious metals (very volatile)
+        'super': 0.11,    # 11% for super (diversified with defensive assets)
+    }
+    
+    # Correlation assumptions (simplified)
+    # For Monte Carlo, we'll assume moderate positive correlation between assets
+    correlation = 0.6  # Assets tend to move together in market stress
+    
+    # Monthly volatility
+    monthly_vol = {k: v / (12 ** 0.5) for k, v in volatility.items()}
+    
+    if uncertainty_mode == "📊 Uncertainty Range (10th-90th Percentile)":
+        st.info("The shaded area represents the 10th to 90th percentile range of possible outcomes based on historical volatility. There is an 80% chance your actual net worth will fall within this range.")
+        
+        # Number of scenarios for percentile calculation
+        n_scenarios = 500
+        np.random.seed(42)  # For reproducibility
+        
+        # Store all scenario paths
+        all_scenarios = []
+        
+        for scenario in range(n_scenarios):
+            scenario_nw = []
+            nw = start_nw
+            n26_v = current_market_value_eur * fx_now
+            raiz_v = raiz_total_aud
+            vdal_v = vanguard_total_aud
+            shares_v = shares_total_aud
+            metals_v = commodities_total_aud
+            super_v = super_total_aud
+            cash_v = cash_total_aud
+            
+            for m in range(1, months + 1):
+                # Generate random shocks for each asset class
+                # Using correlated shocks (simplified - all move together)
+                shock = np.random.normal(0, 1)
+                
+                # Apply shocks with asset-specific volatility
+                n26_shock = 1 + (monthly_vol['n26'] * shock * 0.7 + np.random.normal(0, monthly_vol['n26'] * 0.7, 1)[0])
+                raiz_shock = 1 + (monthly_vol['raiz'] * shock * 0.7 + np.random.normal(0, monthly_vol['raiz'] * 0.7, 1)[0])
+                vdal_shock = 1 + (monthly_vol['vanguard'] * shock * 0.7 + np.random.normal(0, monthly_vol['vanguard'] * 0.7, 1)[0])
+                shares_shock = 1 + (monthly_vol['shares'] * shock * 0.7 + np.random.normal(0, monthly_vol['shares'] * 0.7, 1)[0])
+                metals_shock = 1 + (monthly_vol['metals'] * shock * 0.7 + np.random.normal(0, monthly_vol['metals'] * 0.7, 1)[0])
+                super_shock = 1 + (monthly_vol['super'] * shock * 0.7 + np.random.normal(0, monthly_vol['super'] * 0.7, 1)[0])
+                
+                # Grow each portfolio with randomness
+                n26_v *= (1 + monthly_r['n26']) * n26_shock
+                raiz_v *= (1 + monthly_r['raiz']) * raiz_shock
+                vdal_v *= (1 + monthly_r['vanguard']) * vdal_shock
+                shares_v *= (1 + monthly_r['shares']) * shares_shock
+                metals_v *= (1 + monthly_r['metals']) * metals_shock
+                super_v *= (1 + monthly_r['super']) * super_shock
+                
+                # Cash grows deterministically (no volatility)
+                cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+                if m % 12 == 0:
+                    tax_interest_yr = monthly_interest * 12 * MARGINAL_RATE_PROJ
+                    tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
+                    cash_v -= (tax_interest_yr + tax_dividends_yr)
+                
+                nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
+                scenario_nw.append(nw)
+            
+            all_scenarios.append(scenario_nw)
+        
+        # Convert to DataFrame for percentile calculation
+        df_scenarios = pd.DataFrame(all_scenarios).T
+        
+        # Calculate percentiles
+        p10 = df_scenarios.quantile(0.1, axis=1)
+        p50 = df_scenarios.quantile(0.5, axis=1)
+        p90 = df_scenarios.quantile(0.9, axis=1)
+        
+        # Store for later use
+        uncertainty_p10 = p10
+        uncertainty_p50 = p50
+        uncertainty_p90 = p90
+        
+        # Also store for the projection (use median as main line)
+        projection_rows = []
+        for m in range(1, months + 1):
+            proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
+            projection_rows.append({
+                'Date': proj_date,
+                'Month': m,
+                'Projected NW': p50.iloc[m-1],
+                'P10': p10.iloc[m-1],
+                'P90': p90.iloc[m-1],
+            })
+        df_proj = pd.DataFrame(projection_rows)
+        
+        # Display probability metrics
+        final_p10 = p10.iloc[-1]
+        final_p50 = p50.iloc[-1]
+        final_p90 = p90.iloc[-1]
+        
+        col_prob1, col_prob2, col_prob3 = st.columns(3)
+        with col_prob1:
+            st.metric("10th Percentile (Pessimistic)", f"${final_p10:,.0f}",
+                     delta=f"${final_p10 - start_nw:+,.0f}",
+                     delta_color="inverse" if final_p10 - start_nw < 0 else "normal")
+        with col_prob2:
+            st.metric("50th Percentile (Median)", f"${final_p50:,.0f}",
+                     delta=f"${final_p50 - start_nw:+,.0f}")
+        with col_prob3:
+            st.metric("90th Percentile (Optimistic)", f"${final_p90:,.0f}",
+                     delta=f"${final_p90 - start_nw:+,.0f}",
+                     delta_color="normal")
+        
+        st.caption("📊 **Interpretation**: There is an 80% chance your net worth will fall between the 10th and 90th percentiles. The median (50th percentile) is the most likely outcome.")
 
+    elif uncertainty_mode == "🎲 Monte Carlo Simulation (1000 scenarios)":
+        st.info("🎲 Running 1,000 random market scenarios based on historical volatility. The chart shows the distribution of possible outcomes at each point in time.")
+        
+        # Number of Monte Carlo scenarios
+        n_simulations = 1000
+        np.random.seed(42)
+        
+        # Store all scenario endings
+        all_endings = []
+        all_scenarios = []
+        
+        for sim in range(n_simulations):
+            scenario_nw = []
+            nw = start_nw
+            n26_v = current_market_value_eur * fx_now
+            raiz_v = raiz_total_aud
+            vdal_v = vanguard_total_aud
+            shares_v = shares_total_aud
+            metals_v = commodities_total_aud
+            super_v = super_total_aud
+            cash_v = cash_total_aud
+            
+            for m in range(1, months + 1):
+                # Generate random returns with volatility
+                n26_return = np.random.normal(monthly_r['n26'], monthly_vol['n26'])
+                raiz_return = np.random.normal(monthly_r['raiz'], monthly_vol['raiz'])
+                vdal_return = np.random.normal(monthly_r['vanguard'], monthly_vol['vanguard'])
+                shares_return = np.random.normal(monthly_r['shares'], monthly_vol['shares'])
+                metals_return = np.random.normal(monthly_r['metals'], monthly_vol['metals'])
+                super_return = np.random.normal(monthly_r['super'], monthly_vol['super'])
+                
+                # Grow each portfolio with random returns
+                n26_v *= (1 + n26_return)
+                raiz_v *= (1 + raiz_return)
+                vdal_v *= (1 + vdal_return)
+                shares_v *= (1 + shares_return)
+                metals_v *= (1 + metals_return)
+                super_v *= (1 + super_return)
+                
+                # Cash grows deterministically
+                cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+                if m % 12 == 0:
+                    tax_interest_yr = monthly_interest * 12 * MARGINAL_RATE_PROJ
+                    tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
+                    cash_v -= (tax_interest_yr + tax_dividends_yr)
+                
+                nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
+                scenario_nw.append(nw)
+            
+            all_endings.append(scenario_nw[-1])
+            all_scenarios.append(scenario_nw)
+        
+        # Calculate statistics
+        df_monte_carlo = pd.DataFrame(all_scenarios).T
+        
+        # Calculate percentiles
+        p5 = df_monte_carlo.quantile(0.05, axis=1)
+        p25 = df_monte_carlo.quantile(0.25, axis=1)
+        p50 = df_monte_carlo.quantile(0.5, axis=1)
+        p75 = df_monte_carlo.quantile(0.75, axis=1)
+        p95 = df_monte_carlo.quantile(0.95, axis=1)
+        
+        # Create projection with confidence bands
+        projection_rows = []
+        for m in range(1, months + 1):
+            proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
+            projection_rows.append({
+                'Date': proj_date,
+                'Month': m,
+                'Projected NW': p50.iloc[m-1],
+                'P5': p5.iloc[m-1],
+                'P25': p25.iloc[m-1],
+                'P75': p75.iloc[m-1],
+                'P95': p95.iloc[m-1],
+            })
+        df_proj = pd.DataFrame(projection_rows)
+        
+        # Display Monte Carlo statistics
+        endings_series = pd.Series(all_endings)
+        
+        col_mc1, col_mc2, col_mc3, col_mc4 = st.columns(4)
+        with col_mc1:
+            st.metric("5th Percentile (Worst 5%)", f"${endings_series.quantile(0.05):,.0f}",
+                     delta=f"${endings_series.quantile(0.05) - start_nw:+,.0f}",
+                     delta_color="inverse")
+        with col_mc2:
+            st.metric("Median (50th Percentile)", f"${endings_series.quantile(0.5):,.0f}",
+                     delta=f"${endings_series.quantile(0.5) - start_nw:+,.0f}")
+        with col_mc3:
+            st.metric("95th Percentile (Best 5%)", f"${endings_series.quantile(0.95):,.0f}",
+                     delta=f"${endings_series.quantile(0.95) - start_nw:+,.0f}",
+                     delta_color="normal")
+        with col_mc4:
+            success_prob = (endings_series > start_nw).mean() * 100
+            st.metric("Probability of Growth", f"{success_prob:.1f}%",
+                     help="Chance that net worth increases over 5 years")
+        
+        # Show histogram of outcomes
+        st.markdown("#### 📊 Distribution of 5-Year Outcomes")
+        
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Histogram(
+            x=endings_series,
+            nbinsx=50,
+            marker_color='#2980b9',
+            opacity=0.7,
+            name='Outcomes'
+        ))
+        fig_hist.add_vline(x=start_nw, line_dash="dash", line_color="red",
+                          annotation_text="Starting NW", annotation_position="top left")
+        fig_hist.add_vline(x=endings_series.quantile(0.5), line_dash="dash", line_color="green",
+                          annotation_text="Median", annotation_position="top right")
+        fig_hist.update_layout(
+            title="Monte Carlo Simulation Results - 1,000 Scenarios",
+            xaxis_title="Net Worth (AUD)",
+            yaxis_title="Number of Scenarios",
+            xaxis_tickprefix="$",
+            height=400,
+            bargap=0.05
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+        
+        st.caption("📊 **Interpretation**: The histogram shows the range of possible net worth outcomes after 5 years. The wider the distribution, the more uncertainty in your projections.")
+    
+    else:
+        # Original deterministic projection (what you already have)
+        # Your existing projection code goes here
+        pass
     # Load cash balances for interest calculation
     cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
     df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
