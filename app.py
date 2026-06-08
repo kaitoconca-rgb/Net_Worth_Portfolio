@@ -219,16 +219,14 @@ def _sheets_read(spreadsheet_id, range_name):
 
 PORTFOLIO_SHEET_ID = "1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8"
 
-# ── RAIZ TOTAL & TRANSACTIONS ────────────────────────────────────────────────
+# ── RAIZ TOTAL (hoisted for dashboard) ───────────────────────────────────────
 @st.cache_data(ttl=300)
-def get_raiz_data():
-    """Get both current value and transaction history for Raiz"""
+def get_raiz_total_for_dashboard():
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaIoBaseDownload
         import io
-        
         gs = st.secrets["gdrive"]
         creds_dict = {
             "type": gs.get("type", "service_account"),
@@ -249,8 +247,7 @@ def get_raiz_data():
         ).execute()
         files = results.get("files", [])
         if not files:
-            return 0.0, pd.DataFrame()
-        
+            return 0.0
         request = service.files().get_media(fileId=files[0]["id"])
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, request)
@@ -264,24 +261,19 @@ def get_raiz_data():
         df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
         df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
         df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
-        
-        # Adjust for IVV split
         IVV_SPLIT_DATE = pd.Timestamp('2022-12-09')
         IVV_SPLIT_FACTOR = 15.317277
         ivv_pre = (df['Instrument Code'] == 'IVV') & (df['Trade Date'] < IVV_SPLIT_DATE)
         df.loc[ivv_pre, 'Quantity'] = df.loc[ivv_pre, 'Quantity'] * IVV_SPLIT_FACTOR
         df.loc[ivv_pre, 'Price'] = df.loc[ivv_pre, 'Price'] / IVV_SPLIT_FACTOR
-        
-        # Calculate current value
+        df.loc[df['Transaction Type'] == 'SELL', 'Quantity'] = -df['Quantity'].abs()
         RAIZ_TICKERS = {
             'AAA': 'AAA.AX', 'STW': 'STW.AX', 'IAA': 'IAA.AX',
             'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
         }
-        
         holdings = df.groupby('Instrument Code')['Quantity'].sum().reset_index()
         holdings = holdings[holdings['Quantity'].abs() > 0.0001]
         total = 0.0
-        
         for _, row in holdings.iterrows():
             code = row['Instrument Code']
             ticker = RAIZ_TICKERS.get(code)
@@ -298,59 +290,38 @@ def get_raiz_data():
                 recent = df[df['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
                 price = float(recent.iloc[0]['Price']) if not recent.empty else 0.0
             total += row['Quantity'] * price
-        
-        # Track contributions (deposits)
-        df['Transaction Type Clean'] = df['Transaction Type'].str.upper().str.strip()
-        contributions = df[df['Transaction Type Clean'] == 'DEPOSIT']['Amount'].sum()
-        
-        return total, df, contributions
-        
-    except Exception as e:
-        return 0.0, pd.DataFrame(), 0.0
+        return total
+    except:
+        return 0.0
 
-raiz_total_aud, raiz_df, raiz_contributions_total = get_raiz_data()
+raiz_total_aud = get_raiz_total_for_dashboard()
 
-# ── VANGUARD TOTAL & TRANSACTIONS ────────────────────────────────────────────
+# ── VANGUARD TOTAL (hoisted for dashboard) ────────────────────────────────────
 @st.cache_data(ttl=300)
-def get_vanguard_data():
-    """Get both current value and transaction history for Vanguard"""
+def get_vanguard_total_for_dashboard():
     try:
-        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:F")
+        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
         if df_v.empty:
-            return 0.0, pd.DataFrame(), 0.0
-        
+            return 0.0
         df_v.columns = [c.strip() for c in df_v.columns]
-        df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
         df_v['Quantity'] = pd.to_numeric(df_v['Quantity'], errors='coerce').fillna(0)
-        df_v['Amount'] = pd.to_numeric(df_v['Amount'], errors='coerce').fillna(0)
-        
-        # Calculate current value
         df_v.loc[df_v['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_v['Quantity'].abs()
         net_qty = df_v['Quantity'].sum()
-        
         if abs(net_qty) < 0.001:
-            current_value = 0.0
-        else:
-            try:
-                t = yf.Ticker("VDAL.AX")
-                price = float(t.fast_info['last_price'])
-                current_value = max(0.0, net_qty * price)
-            except:
-                df_v['Purchase Price'] = pd.to_numeric(df_v['Purchase Price'], errors='coerce')
-                price = float(df_v['Purchase Price'].dropna().iloc[-1])
-                current_value = max(0.0, net_qty * price)
-        
-        # Track contributions (BUY transactions)
-        contributions = df_v[df_v['Transaction'].str.upper() == 'BUY']['Amount'].sum()
-        
-        return current_value, df_v, contributions
-        
-    except Exception as e:
-        return 0.0, pd.DataFrame(), 0.0
+            return 0.0
+        try:
+            t = yf.Ticker("VDAL.AX")
+            price = float(t.fast_info['last_price'])
+        except:
+            df_v['Purchase Price'] = pd.to_numeric(df_v['Purchase Price'], errors='coerce')
+            price = float(df_v['Purchase Price'].dropna().iloc[-1])
+        return max(0.0, net_qty * price)
+    except:
+        return 0.0
 
-vanguard_total_aud, vanguard_df, vanguard_contributions_total = get_vanguard_data()
+vanguard_total_aud = get_vanguard_total_for_dashboard()
 
-# ── SHARES TOTAL & TRANSACTIONS ──────────────────────────────────────────────
+# ── SHARES TOTAL (hoisted for dashboard) ─────────────────────────────────────
 SHARES_TICKERS = {
     'NHF': 'NHF.AX',
     'TPG': 'TPG.AX',
@@ -360,26 +331,18 @@ SHARES_TICKERS = {
 
 @st.cache_data(ttl=300)
 def get_shares_data():
-    """Get shares current value and track contributions"""
     try:
-        df_s = _sheets_read(PORTFOLIO_SHEET_ID, "Shares!A:C")
+        df_s = _sheets_read(PORTFOLIO_SHEET_ID, "Shares!A:B")
         if df_s.empty:
-            return pd.DataFrame(), 0.0, 0.0
-        
+            return pd.DataFrame(), 0.0
         df_s.columns = [c.strip() for c in df_s.columns]
         df_s['Quantity'] = pd.to_numeric(df_s['Quantity'], errors='coerce').fillna(0)
         df_s = df_s[df_s['Quantity'] > 0].copy()
-        
         rows = []
         total = 0.0
-        total_contributions = 0.0
-        
         for _, row in df_s.iterrows():
             code = str(row['Share']).strip()
             qty = row['Quantity']
-            purchase_price = row.get('Purchase Price', 0)
-            total_contributions += qty * purchase_price
-            
             ticker = SHARES_TICKERS.get(code, f"{code}.AX")
             price = None
             try:
@@ -398,45 +361,37 @@ def get_shares_data():
                          'TUA': 'Tuas Limited', 'WBC': 'Westpac'}.get(code, code),
                 'Ticker': ticker,
                 'Quantity': qty,
-                'Purchase Price': purchase_price,
                 'Live Price (AUD)': price,
                 'Value (AUD)': value,
                 'Source': '🟢 Live' if price else '🔴 N/A'
             })
-        return pd.DataFrame(rows), total, total_contributions
-        
+        return pd.DataFrame(rows), total
     except Exception as e:
-        return pd.DataFrame(), 0.0, 0.0
+        return pd.DataFrame(), 0.0
 
-df_shares, shares_total_aud, shares_contributions_total = get_shares_data()
+df_shares, shares_total_aud = get_shares_data()
 
-# ── COMMODITIES TOTAL & TRANSACTIONS ─────────────────────────────────────────
+# ── COMMODITIES TOTAL (hoisted for dashboard) ─────────────────────────────────
 @st.cache_data(ttl=300)
-def get_commodities_data():
-    """Get commodities current value and track contributions"""
+def get_commodities_total_for_dashboard():
     try:
-        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:E")
         if df_m.empty:
-            return 0.0, pd.DataFrame(), 0.0
-        
+            return 0.0
         df_m.columns = [c.strip() for c in df_m.columns]
-        df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
         df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
-        df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
         df_m.loc[df_m['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_m['Quantity'].abs()
-        
+
         METAL_TICKERS = {'Gold': 'GC=F', 'Silver': 'SI=F', 'Platinum': 'PL=F'}
         try:
             usd_aud = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
             usd_aud = 1 / usd_aud if usd_aud > 0 else 1.58
         except:
             usd_aud = 1.58
-        
+
         holdings = df_m.groupby('Type')['Quantity'].sum().reset_index()
         holdings = holdings[holdings['Quantity'].abs() > 0.00001]
         total = 0.0
-        total_contributions = 0.0
-        
         for _, row in holdings.iterrows():
             metal = row['Type']
             ticker = METAL_TICKERS.get(metal)
@@ -447,13 +402,6 @@ def get_commodities_data():
                     price_usd = float(t.fast_info['last_price'])
                 except:
                     pass
-            
-            # Track contributions (purchase cost)
-            metal_transactions = df_m[df_m['Type'] == metal]
-            metal_contributions = (metal_transactions[metal_transactions['Transaction'].str.upper() == 'BUY']['Quantity'] * 
-                                  metal_transactions[metal_transactions['Transaction'].str.upper() == 'BUY']['Purchase Price']).sum()
-            total_contributions += metal_contributions
-            
             if price_usd:
                 price_aud = price_usd * usd_aud
                 total += row['Quantity'] * price_aud
@@ -463,18 +411,15 @@ def get_commodities_data():
                     pp = pd.to_numeric(recent.iloc[0]['Purchase Price'], errors='coerce')
                     if pd.notnull(pp):
                         total += row['Quantity'] * float(pp)
-        
-        return total, df_m, total_contributions
-        
-    except Exception as e:
-        return 0.0, pd.DataFrame(), 0.0
+        return total
+    except:
+        return 0.0
 
-commodities_total_aud, commodities_df, commodities_contributions_total = get_commodities_data()
+commodities_total_aud = get_commodities_total_for_dashboard()
 
-# ── CASH TOTAL & CONTRIBUTIONS ───────────────────────────────────────────────
+# ── CASH TOTAL (hoisted for dashboard) ───────────────────────────────────────
 @st.cache_data(ttl=0)
-def get_cash_data():
-    """Get cash balances and track contributions (net change)"""
+def get_cash_total_for_dashboard():
     try:
         ACCOUNTS_CURR = {
             "CBA": "AUD", "Me Bank": "AUD", "Rabobank": "AUD",
@@ -483,104 +428,148 @@ def get_cash_data():
             "BPM Cash": "EUR", "BPM Bonds": "EUR",
             "C6 Cash": "BRL", "C6 Investments": "BRL",
         }
-        
         conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=0, usecols=[0, 1, 2])
+        df_c = conn_c.read(ttl=0, usecols=[0, 1])
         df_c.columns = [c.strip() for c in df_c.columns]
         df_c = df_c.dropna(subset=['Account'])
         df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-        
-        # If we have previous balance, track contributions
-        df_c['Previous Balance'] = pd.to_numeric(df_c.get('Previous Balance', 0), errors='coerce').fillna(0)
-        
         bal = df_c.set_index('Account')['Balance'].to_dict()
-        prev_bal = df_c.set_index('Account')['Previous Balance'].to_dict() if 'Previous Balance' in df_c.columns else {}
-        
         brl_rate = 0.27
         try:
             brl_rate = float(yf.Ticker("BRLAUD=X").fast_info['last_price'])
         except:
             pass
-        
         total = 0.0
-        total_contributions = 0.0
-        
         for name, currency in ACCOUNTS_CURR.items():
             b = bal.get(name, 0.0)
-            prev = prev_bal.get(name, b)  # If no previous, assume no change
-            
             if currency == "AUD":
                 total += b
-                total_contributions += (b - prev)
             elif currency == "EUR":
                 total += b * fx_now
-                total_contributions += (b - prev) * fx_now
             else:
                 total += b * brl_rate
-                total_contributions += (b - prev) * brl_rate
-        
-        return total, total_contributions
-        
-    except Exception as e:
-        return 0.0, 0.0
+        return total
+    except:
+        return 0.0
 
-cash_total_aud, cash_contributions = get_cash_data()
+cash_total_aud = get_cash_total_for_dashboard()
 
-# ── SUPER TOTAL & CONTRIBUTIONS ──────────────────────────────────────────────
+# ── SUPER TOTAL (hoisted for dashboard) ──────────────────────────────────────
 @st.cache_data(ttl=0)
-def get_super_data():
-    """Get super balance and track contributions (employer + personal)"""
+def get_super_total_for_dashboard():
     try:
         conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=0, usecols=[0, 1, 2])
+        df_c = conn_c.read(ttl=0, usecols=[0, 1])
         df_c.columns = [c.strip() for c in df_c.columns]
         df_c = df_c.dropna(subset=['Account'])
         df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-        df_c['Monthly Contribution'] = pd.to_numeric(df_c.get('Monthly Contribution', 0), errors='coerce').fillna(0)
-        
         bal = df_c.set_index('Account')['Balance'].to_dict()
-        monthly_contrib = df_c.set_index('Account')['Monthly Contribution'].to_dict()
-        
-        super_balance = float(bal.get("Super", 0.0))
-        super_contributions = float(monthly_contrib.get("Super", 0.0))
-        
-        return super_balance, super_contributions
-        
-    except Exception as e:
-        return 0.0, 0.0
+        return float(bal.get("Super", 0.0))
+    except:
+        return 0.0
 
-super_total_aud, super_contributions = get_super_data()
+super_total_aud = get_super_total_for_dashboard()
 
-# ── ENHANCED CONTRIBUTION TRACKING ───────────────────────────────────────────
-def calculate_total_contributions_period(start_date, end_date):
-    """
-    Calculate total contributions across ALL asset classes between two dates
-    Returns: total_contributions_aud, breakdown_dict
-    """
+# ==================== NEW CONTRIBUTION TRACKING FUNCTIONS ====================
+
+@st.cache_data(ttl=300)
+def get_raiz_transactions():
+    """Get Raiz transaction history for contribution tracking"""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+        gs = st.secrets["gdrive"]
+        creds_dict = {
+            "type": gs.get("type", "service_account"),
+            "project_id": gs["project_id"],
+            "private_key_id": gs["private_key_id"],
+            "private_key": gs["private_key"],
+            "client_email": gs["client_email"],
+            "client_id": gs.get("client_id", ""),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
+            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
+        ).execute()
+        files = results.get("files", [])
+        if not files:
+            return pd.DataFrame()
+        request = service.files().get_media(fileId=files[0]["id"])
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buffer.seek(0)
+        df = pd.read_csv(buffer)
+        df.columns = [c.strip() for c in df.columns]
+        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+        return df
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_vanguard_transactions():
+    """Get Vanguard transaction history"""
+    try:
+        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:F")
+        if df_v.empty:
+            return pd.DataFrame()
+        df_v.columns = [c.strip() for c in df_v.columns]
+        df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
+        df_v['Amount'] = pd.to_numeric(df_v['Amount'], errors='coerce').fillna(0)
+        return df_v
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_commodities_transactions():
+    """Get commodities transaction history"""
+    try:
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
+        if df_m.empty:
+            return pd.DataFrame()
+        df_m.columns = [c.strip() for c in df_m.columns]
+        df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
+        df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
+        df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
+        return df_m
+    except:
+        return pd.DataFrame()
+
+def calculate_contributions_period(start_date, end_date):
+    """Calculate contributions across all asset classes between two dates"""
     breakdown = {}
     total = 0.0
     
-    # 1. N26 Contributions (BUY transactions in period)
+    # 1. N26 Contributions
     try:
         n26_contrib = df_raw[
             (df_raw['Tipo'] == 'BUY') & 
             (df_raw['Data'].dt.date >= start_date) & 
             (df_raw['Data'].dt.date <= end_date)
         ].copy()
-        
         n26_total = 0.0
         for _, row in n26_contrib.iterrows():
             fx_rate = get_fx_at(row['Data'])
             n26_total += row['Inv_EUR'] * fx_rate
-        
         breakdown['N26 European'] = n26_total
         total += n26_total
-    except Exception as e:
+    except:
         breakdown['N26 European'] = 0.0
     
-    # 2. Raiz Contributions (DEPOSIT transactions in period)
+    # 2. Raiz Contributions
     try:
-        if not raiz_df.empty:
+        raiz_df = get_raiz_transactions()
+        if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
             raiz_period = raiz_df[
                 (raiz_df['Trade Date'].dt.date >= start_date) & 
                 (raiz_df['Trade Date'].dt.date <= end_date) &
@@ -589,11 +578,12 @@ def calculate_total_contributions_period(start_date, end_date):
             raiz_total = raiz_period['Amount'].sum()
             breakdown['Raiz'] = raiz_total
             total += raiz_total
-    except Exception as e:
+    except:
         breakdown['Raiz'] = 0.0
     
-    # 3. Vanguard Contributions (BUY transactions in period)
+    # 3. Vanguard Contributions
     try:
+        vanguard_df = get_vanguard_transactions()
         if not vanguard_df.empty:
             vanguard_period = vanguard_df[
                 (vanguard_df['Date'].dt.date >= start_date) & 
@@ -603,16 +593,12 @@ def calculate_total_contributions_period(start_date, end_date):
             vanguard_total = vanguard_period['Amount'].sum()
             breakdown['Vanguard'] = vanguard_total
             total += vanguard_total
-    except Exception as e:
+    except:
         breakdown['Vanguard'] = 0.0
     
-    # 4. Shares Contributions (initial purchases - simplified)
-    # For accurate tracking, you'd need transaction dates. Using total contributions as proxy
-    # This is a limitation - consider adding date tracking to Shares sheet
-    breakdown['Shares'] = 0.0  # Would need more granular data
-    
-    # 5. Commodities Contributions (BUY transactions in period)
+    # 4. Commodities Contributions
     try:
+        commodities_df = get_commodities_transactions()
         if not commodities_df.empty:
             commodities_period = commodities_df[
                 (commodities_df['Date'].dt.date >= start_date) & 
@@ -622,54 +608,32 @@ def calculate_total_contributions_period(start_date, end_date):
             commodities_total = (commodities_period['Quantity'] * commodities_period['Purchase Price']).sum()
             breakdown['Commodities'] = commodities_total
             total += commodities_total
-    except Exception as e:
+    except:
         breakdown['Commodities'] = 0.0
     
-    # 6. Cash Contributions (net change in cash balances)
-    # This is already tracked in get_cash_data() but we need period-specific
-    # Simplified: using the monthly contribution estimate
-    breakdown['Cash'] = cash_contributions
-    total += cash_contributions
-    
-    # 7. Super Contributions (employer + personal)
-    breakdown['Super'] = super_contributions
-    total += super_contributions
+    # 5. Cash Contributions (estimate based on balance changes)
+    try:
+        # Simplified - you can enhance this with actual cash transaction tracking
+        breakdown['Cash & Super'] = 0.0  # Placeholder
+    except:
+        breakdown['Cash & Super'] = 0.0
     
     return total, breakdown
 
 def calculate_fx_impact_period(start_date, end_date):
     """Calculate FX impact on net worth from currency movements"""
     try:
-        # Get EUR/AUD change over period
         start_fx = get_fx_at(pd.Timestamp(start_date))
         end_fx = get_fx_at(pd.Timestamp(end_date))
         
-        # Get European portfolio value at start and end
-        european_start = get_european_portfolio_value_at_date(start_date)
-        european_end = current_market_value_eur
-        
-        # Average EUR exposure during period
-        avg_european_exposure = (european_start + european_end) / 2
-        
-        # FX impact = exposure * change in rate
-        fx_impact = avg_european_exposure * (end_fx - start_fx)
-        
-        return fx_impact
-    except:
-        return 0.0
-
-def get_european_portfolio_value_at_date(target_date):
-    """Calculate European portfolio value on a specific date"""
-    try:
-        date_obj = pd.Timestamp(target_date)
+        # Get European portfolio value at start
+        date_obj = pd.Timestamp(start_date)
         snapshot = df_raw[df_raw['Data'] <= date_obj].groupby('ISIN')['Qty'].sum()
-        
-        total_value = 0.0
+        european_start = 0.0
         for isin in df_raw['ISIN'].unique():
             qty = snapshot.get(isin, 0)
             if abs(qty) < 0.001:
                 continue
-            
             h = hist_map.get(isin)
             p = None
             if h is not None and not h.empty:
@@ -677,23 +641,48 @@ def get_european_portfolio_value_at_date(target_date):
                     p = h.asof(date_obj)
                 except:
                     p = None
-            
             if p is None or pd.isna(p) or p == 0:
                 ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
                 p = ledger_price.iloc[0] if not ledger_price.empty else 0
-            
-            total_value += float(qty * p)
+            european_start += float(qty * p)
         
-        return total_value
+        european_end = current_market_value_eur
+        avg_european_exposure = (european_start + european_end) / 2
+        fx_impact = avg_european_exposure * (end_fx - start_fx)
+        return fx_impact
     except:
-        return current_market_value_eur  # fallback
+        return 0.0
 
-# ── ENHANCED NET WORTH SNAPSHOT WITH ATTRIBUTION ────────────────────────────
+# ── ENHANCED SAVE FUNCTIONS ─────────────────────────────────────────────────────
+def save_cash_balances(balances_dict):
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        gs = st.secrets["gdrive"]
+        creds = service_account.Credentials.from_service_account_info({
+            "type": "service_account",
+            "project_id": gs["project_id"],
+            "private_key_id": gs["private_key_id"],
+            "private_key": gs["private_key"],
+            "client_email": gs["client_email"],
+            "client_id": gs.get("client_id", ""),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        rows = [["Account", "Balance"]] + [[k, v] for k, v in balances_dict.items()]
+        service.spreadsheets().values().update(
+            spreadsheetId=PORTFOLIO_SHEET_ID,
+            range="Cash!A1",
+            valueInputOption="RAW",
+            body={"values": rows}
+        ).execute()
+        return True, None
+    except Exception as e:
+        import traceback
+        return False, traceback.format_exc()
+
 def save_net_worth_snapshot(total_aud, force=False):
-    """
-    Saves net worth snapshot with full performance attribution.
-    Calculates: Market Gains = ΔNetWorth - Contributions - FX Impact
-    """
+    """Saves net worth snapshot with performance attribution"""
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
@@ -707,7 +696,4 @@ def save_net_worth_snapshot(total_aud, force=False):
             "client_email": gs["client_email"],
             "client_id": gs.get("client_id", ""),
             "token_uri": "https://oauth2.googleapis.com/token",
-        }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        
-        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        
+        }, scopes=["https://www.googleapis.com
