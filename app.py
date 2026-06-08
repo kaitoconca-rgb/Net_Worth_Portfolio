@@ -3508,7 +3508,7 @@ with tab10:
             avg_tax_rate = (df_yearly['Tax on Interest'].sum() / df_yearly['Gross Cash Flow'].sum() * 100) if df_yearly['Gross Cash Flow'].sum() != 0 else 0
             st.metric("Effective Tax Rate (on cash flow)", f"{abs(avg_tax_rate):.1f}%")
 
-    st.divider()
+       st.divider()
     
     # ==================== TOTAL WEALTH INCREASE (Using Same Projection Data) ====================
     st.markdown("### 📈 Total Wealth Increase (Cash + Unrealized Gains)")
@@ -3520,12 +3520,15 @@ with tab10:
         projection_end_nw = df_proj.iloc[-1]['Projected NW']
         total_projected_growth = projection_end_nw - projection_start_nw
         
-        # Calculate year-by-year from projection
+        # First, calculate Total Wealth Increase for each year
+        for item in yearly_data:
+            item['Total Wealth Increase'] = item['Net Cash Flow'] + item['Portfolio Gains (Unrealized)']
+        
+        # Then calculate cumulative Year End NW
+        cumulative_nw = projection_start_nw
         for i, item in enumerate(yearly_data):
-            if i == 0:
-                item['Year End NW'] = projection_start_nw + item['Total Wealth Increase']
-            else:
-                item['Year End NW'] = yearly_data[i-1]['Year End NW'] + item['Total Wealth Increase']
+            cumulative_nw += item['Total Wealth Increase']
+            item['Year End NW'] = cumulative_nw
         
         df_wealth = pd.DataFrame(yearly_data)
         
@@ -3680,186 +3683,6 @@ with tab10:
             
             Looking only at cash flow gives an incomplete picture. Your **Total Wealth Increase** shows your real financial progress.
             """)
-    
-    
-    # ── TAX IMPACT ────────────────────────────────────────────────────────────
-    st.markdown("### 🧾 Annual Tax Impact & After-Tax Projection")
-    st.caption(
-        "Tax is already baked into the projection above and the simulator below. "
-        "This section breaks down the annual tax components year by year. "
-        "19% marginal rate | CGT deferred until sale | "
-        "Post-1 Jul 2027: 50% discount → indexation + 30% minimum tax."
-    )
-
-    MARGINAL_RATE  = 0.19
-    DIVIDEND_YIELD = 0.02
-    CGT_DISC_PRE   = 0.50
-    CGT_MIN_POST   = 0.30
-    CPI_ANNUAL     = 0.025
-    CGT_TRANSITION = pd.Timestamp("2027-07-01")
-
-    tax_rows = []
-    at_n26    = current_market_value_eur * fx_now
-    at_raiz   = raiz_total_aud
-    at_vdal   = vanguard_total_aud
-    at_shares = shares_total_aud
-    at_metals = commodities_total_aud
-    at_super  = super_total_aud
-    at_cash   = cash_total_aud
-    cb_n26    = at_n26
-    cb_raiz   = at_raiz
-    cb_vdal   = at_vdal
-    cb_shares = at_shares
-    cb_metals = at_metals
-    gain_pre2027 = {k: 0.0 for k in ["n26","raiz","vdal","shares","metals"]}
-
-    for m in range(1, 61):
-        proj_date  = pd.Timestamp(today) + pd.DateOffset(months=m)
-        is_post    = proj_date >= CGT_TRANSITION
-        at_n26    *= (1 + monthly_r["n26"])
-        at_raiz   *= (1 + monthly_r["raiz"])
-        at_vdal   *= (1 + monthly_r["vanguard"])
-        at_shares *= (1 + monthly_r["shares"])
-        at_metals *= (1 + monthly_r["metals"])
-        at_super  *= (1 + monthly_r["super"])
-        at_cash   += monthly_interest - monthly_expenses + monthly_rent_aud
-        if not is_post:
-            gain_pre2027["n26"]    = max(0, at_n26    - cb_n26)
-            gain_pre2027["raiz"]   = max(0, at_raiz   - cb_raiz)
-            gain_pre2027["vdal"]   = max(0, at_vdal   - cb_vdal)
-            gain_pre2027["shares"] = max(0, at_shares - cb_shares)
-            gain_pre2027["metals"] = max(0, at_metals - cb_metals)
-
-        if m % 12 == 0:
-            year_num         = m // 12
-            annual_interest  = monthly_interest * 12
-            tax_interest     = annual_interest * MARGINAL_RATE
-            annual_dividends = at_n26 * DIVIDEND_YIELD
-            tax_dividends    = annual_dividends * MARGINAL_RATE
-
-            def latent_cgt(total_gain, pre_gain, cost_base, is_post_regime, pdate):
-                if total_gain <= 0:
-                    return 0.0
-                if not is_post_regime:
-                    return total_gain * (1 - CGT_DISC_PRE) * MARGINAL_RATE
-                post_gain = max(0, total_gain - pre_gain)
-                yrs_post  = max(0, (pdate - CGT_TRANSITION).days / 365.25)
-                idx_cb    = cost_base * (CPI_ANNUAL * yrs_post)
-                real_post = max(0, post_gain - idx_cb)
-                return (pre_gain * (1 - CGT_DISC_PRE) * MARGINAL_RATE +
-                        real_post * max(MARGINAL_RATE, CGT_MIN_POST))
-
-            lcgt = (
-                latent_cgt(max(0,at_n26-cb_n26),    gain_pre2027["n26"],    cb_n26,    is_post, proj_date) +
-                latent_cgt(max(0,at_raiz-cb_raiz),   gain_pre2027["raiz"],   cb_raiz,   is_post, proj_date) +
-                latent_cgt(max(0,at_vdal-cb_vdal),   gain_pre2027["vdal"],   cb_vdal,   is_post, proj_date) +
-                latent_cgt(max(0,at_shares-cb_shares),gain_pre2027["shares"],cb_shares, is_post, proj_date) +
-                latent_cgt(max(0,at_metals-cb_metals),gain_pre2027["metals"],cb_metals, is_post, proj_date)
-            )
-            annual_realised_tax = tax_interest + tax_dividends
-            at_cash -= annual_realised_tax
-            nw_after = at_n26 + at_raiz + at_vdal + at_shares + at_metals + at_super + at_cash
-            nw_gross_yr = df_proj[df_proj["Month"] == m]["Projected NW"].iloc[0]
-
-            tax_rows.append({
-                "Year":                      f"Year {year_num} ({proj_date.strftime('%b %Y')})",
-                "CGT Regime":                "Post-2027 (30% min)" if is_post else "Pre-2027 (50% disc)",
-                "Cash Interest (AUD)":       annual_interest,
-                "Tax on Interest":           tax_interest,
-                "ETF Dividends (AUD)":       annual_dividends,
-                "Tax on Dividends":          tax_dividends,
-                "Total Realised Tax":        annual_realised_tax,
-                "Latent CGT (if sold now)":  lcgt,
-                "Gross NW":                  nw_gross_yr,
-                "After-Tax NW":              nw_after,
-                "Tax Drag":                  nw_gross_yr - nw_after,
-            })
-
-    df_tax = pd.DataFrame(tax_rows)
-
-    tx1, tx2, tx3, tx4 = st.columns(4)
-    tx1.metric("Annual Tax (Yr 1)",     f"${df_tax.iloc[0]['Total Realised Tax']:,.0f}", "Interest + Dividends")
-    tx2.metric("Annual Tax (Yr 5)",     f"${df_tax.iloc[-1]['Total Realised Tax']:,.0f}", "As portfolio grows")
-    tx3.metric("Latent CGT (now)",      f"${df_tax.iloc[0]['Latent CGT (if sold now)']:,.0f}", "Deferred - not yet due")
-    tx4.metric("Latent CGT (Year 5)",   f"${df_tax.iloc[-1]['Latent CGT (if sold now)']:,.0f}", "Post-2027 regime")
-    st.divider()
-
-    fig_tax = go.Figure()
-    fig_tax.add_trace(go.Scatter(
-        x=df_proj["Date"], y=df_proj["Projected NW"],
-        mode="lines", name="Gross NW (pre-tax)",
-        line=dict(color="#2980b9", width=2, dash="dot"),
-        hovertemplate="Gross: $%{y:,.0f}<extra></extra>"
-    ))
-    fig_tax.add_trace(go.Scatter(
-        x=[pd.Timestamp(today) + pd.DateOffset(years=i) for i in range(1,6)],
-        y=df_tax["After-Tax NW"],
-        mode="lines+markers", name="After-Tax NW",
-        line=dict(color="#27ae60", width=2.5),
-        marker=dict(size=10),
-        hovertemplate="After-Tax: $%{y:,.0f}<extra></extra>"
-    ))
-    fig_tax.add_trace(go.Bar(
-        x=[pd.Timestamp(today) + pd.DateOffset(years=i) for i in range(1,6)],
-        y=df_tax["Total Realised Tax"],
-        name="Annual Realised Tax",
-        marker_color="rgba(231,76,60,0.6)",
-        yaxis="y2",
-        hovertemplate="Tax: $%{y:,.0f}<extra></extra>"
-    ))
-    fig_tax.add_trace(go.Bar(
-        x=[pd.Timestamp(today) + pd.DateOffset(years=i) for i in range(1,6)],
-        y=df_tax["Latent CGT (if sold now)"],
-        name="Latent CGT (if sold)",
-        marker_color="rgba(243,156,18,0.5)",
-        yaxis="y2",
-        hovertemplate="Latent CGT: $%{y:,.0f}<extra></extra>"
-    ))
-    fig_tax.add_vline(x="2027-07-01", line_dash="dash", line_color="#e74c3c",
-                      opacity=0.7, annotation_text="CGT change 1 Jul 2027",
-                      annotation_position="top left",
-                      annotation_font=dict(color="#e74c3c", size=11))
-    fig_tax.update_layout(
-        height=450, hovermode="x unified", barmode="group",
-        yaxis=dict(title="Net Worth (AUD $)", tickprefix="$"),
-        yaxis2=dict(title="Annual Tax (AUD $)", tickprefix="$",
-                    overlaying="y", side="right", showgrid=False),
-        legend=dict(orientation="h", y=1.1),
-        margin=dict(t=60, b=30)
-    )
-    st.plotly_chart(fig_tax, use_container_width=True)
-
-    cgt_html = (
-        "<div style='background:#fef9e7; border-left:4px solid #f39c12;"
-        "padding:12px 16px; border-radius:4px; font-size:0.88rem; line-height:1.7;'>"
-        "<b>Australian CGT Regime change 1 July 2027</b><br>"
-        "<b>Before:</b> 50% discount on gains held >12 months. Effective rate = 19% x 50% = <b>9.5%</b><br>"
-        "<b>After:</b> Discount abolished. Cost base indexed for inflation; <b>30% minimum tax</b> on real gain.<br>"
-        "<b>Transitional:</b> Gains accrued before 1 Jul 2027 still get 50% discount even if sold later.<br>"
-        "<b>Strategy:</b> Consider crystallising gains before 1 Jul 2027 to lock in the 50% discount. "
-        "Use your N26 Simulatore ATO tab for lot-level analysis."
-        "</div>"
-    )
-    st.markdown(cgt_html, unsafe_allow_html=True)
-    st.divider()
-
-    with st.expander("📋 Annual Tax Detail Table"):
-        st.dataframe(df_tax.style
-            .map(lambda v: "color: #e74c3c" if isinstance(v,(int,float)) and v > 0 else "",
-                 subset=["Total Realised Tax","Latent CGT (if sold now)","Tax Drag"])
-            .format({
-                "Cash Interest (AUD)":       "${:,.0f}",
-                "Tax on Interest":            "${:,.0f}",
-                "ETF Dividends (AUD)":       "${:,.0f}",
-                "Tax on Dividends":           "${:,.0f}",
-                "Total Realised Tax":         "${:,.0f}",
-                "Latent CGT (if sold now)":  "${:,.0f}",
-                "Gross NW":                   "${:,.0f}",
-                "After-Tax NW":               "${:,.0f}",
-                "Tax Drag":                   "${:,.0f}",
-            }),
-            use_container_width=True, hide_index=True)
-
     st.divider()
 
     # ── FORECAST vs ACTUALS TABLE ──────────────────────────────────────────────
