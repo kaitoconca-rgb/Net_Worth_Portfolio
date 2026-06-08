@@ -515,13 +515,27 @@ def save_net_worth_snapshot(total, force=False):
         }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         
-        # Read existing history (now with 7 columns for attribution)
+        # Calculate current portfolio values in AUD
+        n26_aud = current_market_value_eur * fx_now
+        raiz_aud = raiz_total_aud
+        vanguard_aud = vanguard_total_aud
+        shares_aud = shares_total_aud
+        commodities_aud = commodities_total_aud
+        super_aud = super_total_aud
+        cash_aud = cash_total_aud
+        
+        # Read existing history (columns A through N)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:G"
+            range="Net_Worth!A:N"
         ).execute()
         
-        existing = result.get('values', [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown']])
+        existing = result.get('values', [])
+        
+        # If empty, create header row
+        if not existing:
+            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']]
+        
         today = date.today()
         
         if not force and len(existing) > 1:
@@ -541,7 +555,7 @@ def save_net_worth_snapshot(total, force=False):
         
         if len(existing) > 1:
             prev_date = pd.to_datetime(existing[-1][0]).date()
-            prev_total = float(existing[-1][1])
+            prev_total = float(existing[-1][1]) if existing[-1][1] else 0
             starting_balance = prev_total
             
             # Calculate contributions in period
@@ -556,15 +570,22 @@ def save_net_worth_snapshot(total, force=False):
             # Create breakdown string
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
         
-        # Append new row with attribution
+        # Append new row with all portfolio values
         new_row = [
-            today.strftime('%Y-%m-%d'),
-            str(round(total, 2)),
-            str(round(contributions, 2)),
-            str(round(market_gains, 2)),
-            str(round(fx_impact, 2)),
-            str(round(starting_balance, 2)),
-            contribution_breakdown
+            today.strftime('%Y-%m-%d'),  # A: Date
+            str(round(total, 2)),  # B: Total_AUD
+            str(round(contributions, 2)),  # C: Contributions_AUD
+            str(round(market_gains, 2)),  # D: Market_Gains_AUD
+            str(round(fx_impact, 2)),  # E: FX_Impact_AUD
+            str(round(starting_balance, 2)),  # F: Starting_Balance_AUD
+            contribution_breakdown,  # G: Contribution_Breakdown
+            str(round(n26_aud, 2)),  # H: N26_AUD
+            str(round(raiz_aud, 2)),  # I: Raiz_AUD
+            str(round(vanguard_aud, 2)),  # J: Vanguard_AUD
+            str(round(shares_aud, 2)),  # K: Shares_AUD
+            str(round(commodities_aud, 2)),  # L: Commodities_AUD
+            str(round(super_aud, 2)),  # M: Super_AUD
+            str(round(cash_aud, 2)),  # N: Cash_AUD
         ]
         existing.append(new_row)
         
@@ -579,32 +600,20 @@ def save_net_worth_snapshot(total, force=False):
     except Exception as e:
         import traceback
         return False, traceback.format_exc()
-@st.cache_data(ttl=60)
-@st.cache_data(ttl=60)
+
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        # Try to read with 7 columns first
-        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:G")
+        # Read columns A through N
+        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:N")
         if df_nw.empty:
-            # Fall back to 2 columns if the extended sheet doesn't exist yet
-            df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:B")
-            if df_nw.empty:
-                return pd.DataFrame(columns=['Date', 'Total_AUD'])
-            df_nw.columns = [c.strip() for c in df_nw.columns]
-            # Ensure we have at least Date and Total_AUD
-            if 'Date' not in df_nw.columns or 'Total_AUD' not in df_nw.columns:
-                return pd.DataFrame(columns=['Date', 'Total_AUD'])
-            df_nw['Date'] = pd.to_datetime(df_nw['Date'])
-            df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
-            return df_nw.dropna(subset=['Total_AUD'])
+            return pd.DataFrame(columns=['Date', 'Total_AUD'])
         
-        # If we have 7 columns, process them
         df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
         df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
         
-        # Load attribution columns if they exist (with fallbacks)
+        # Load attribution columns if they exist
         if 'Contributions_AUD' in df_nw.columns:
             df_nw['Contributions_AUD'] = pd.to_numeric(df_nw['Contributions_AUD'], errors='coerce').fillna(0)
         else:
@@ -627,10 +636,17 @@ def load_net_worth_history():
             
         if 'Contribution_Breakdown' not in df_nw.columns:
             df_nw['Contribution_Breakdown'] = ""
+        
+        # Load portfolio columns (H through N)
+        portfolio_columns = ['N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']
+        for col in portfolio_columns:
+            if col in df_nw.columns:
+                df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
+            else:
+                df_nw[col] = 0.0
             
         return df_nw.dropna(subset=['Total_AUD'])
     except Exception as e:
-        # If anything fails, return empty dataframe with just the essential columns
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
         # ==================== NET WORTH CHANGE ANALYSIS ====================
 def analyze_net_worth_change(df_history, start_date, end_date):
