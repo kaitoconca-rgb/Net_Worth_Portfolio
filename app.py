@@ -3240,367 +3240,119 @@ with tab10:
                delta=f"${monthly_net_income*12:,.2f} p.a.")
 
     st.divider()
-    st.divider()
     
-    # ==================== YEARLY CASH FLOW AFTER TAX ====================
-    st.markdown("### 💰 Yearly Cash Flow After Tax")
-    st.caption("Projected annual cash flow including investment returns, rental income, expenses, and estimated tax.")
+    # ==================== YEARLY CASH FLOW & WEALTH GROWTH (Consistent with Projection) ====================
+    st.markdown("### 📈 5-Year Wealth Growth & Cash Flow Analysis")
+    st.caption("All numbers below are derived from the same monthly projection shown in the chart above.")
     
-    # Calculate yearly projections
-    years = list(range(1, 6))
-    yearly_data = []
-    
-    # Get starting values
-    current_n26 = current_market_value_eur * fx_now
-    current_raiz = raiz_total_aud
-    current_vdal = vanguard_total_aud
-    current_shares = shares_total_aud
-    current_metals = commodities_total_aud
-    current_cash = cash_total_aud
-    
-    # Use the monthly returns already calculated
-    for year in years:
-        year_end_month = year * 12
-        year_start_month = (year - 1) * 12
-        
-        # Get projection data for this year
-        year_end_data = df_proj[df_proj['Month'] == year_end_month]
-        year_start_data = df_proj[df_proj['Month'] == year_start_month] if year > 1 else None
-        
-        if not year_end_data.empty:
-            # Portfolio gains for the year
-            n26_start = current_n26 if year == 1 else yearly_data[-1].get('N26_End', current_n26)
-            raiz_start = current_raiz if year == 1 else yearly_data[-1].get('Raiz_End', current_raiz)
-            vdal_start = current_vdal if year == 1 else yearly_data[-1].get('Vanguard_End', current_vdal)
-            shares_start = current_shares if year == 1 else yearly_data[-1].get('Shares_End', current_shares)
-            metals_start = current_metals if year == 1 else yearly_data[-1].get('Metals_End', current_metals)
-            
-            n26_end = year_end_data['N26'].iloc[0]
-            raiz_end = year_end_data['Raiz'].iloc[0]
-            vdal_end = year_end_data['Vanguard'].iloc[0]
-            shares_end = year_end_data['Shares'].iloc[0]
-            metals_end = year_end_data['Metals'].iloc[0]
-            
-            portfolio_gains = (n26_end - n26_start) + (raiz_end - raiz_start) + (vdal_end - vdal_start) + (shares_end - shares_start) + (metals_end - metals_start)
-            
-            # Income sources
-            rental_income_aud = new_inputs.get('Income_rent_eur', 500) * fx_now * 12
-            cash_interest_annual = monthly_interest * 12
-            
-            # Expenses
-            annual_expenses = total_expenses * 12
-            
-            # Gross cash flow before tax
-            gross_cash_flow = rental_income_aud + cash_interest_annual - annual_expenses
-            
-            # Estimated tax (simplified - 19% on investment gains when realized)
-            # For cash flow, only tax on interest is paid annually
-            tax_on_interest = cash_interest_annual * 0.19
-            
-            # For portfolio gains, tax is deferred until sale, so not subtracted from cash flow
-            # But we show it as "unrealized gain" separate from cash
-            
-            net_cash_flow = gross_cash_flow - tax_on_interest
-            
-            yearly_data.append({
-                'Year': year,
-                'Year Ending': year_end_data['Date'].iloc[0].strftime('%b %Y'),
-                'Rental Income': rental_income_aud,
-                'Cash Interest': cash_interest_annual,
-                'Portfolio Gains (Unrealized)': portfolio_gains,
-                'Total Expenses': -annual_expenses,
-                'Gross Cash Flow': gross_cash_flow,
-                'Tax on Interest': -tax_on_interest,
-                'Net Cash Flow': net_cash_flow,
-                'N26_End': n26_end,
-                'Raiz_End': raiz_end,
-                'Vanguard_End': vdal_end,
-                'Shares_End': shares_end,
-                'Metals_End': metals_end,
-            })
-    
-    if yearly_data:
-        df_yearly = pd.DataFrame(yearly_data)
-        
-        # Display summary metrics
-        col_y1, col_y2, col_y3, col_y4 = st.columns(4)
-        with col_y1:
-            total_net_cash_5yr = df_yearly['Net Cash Flow'].sum()
-            st.metric("Total Net Cash Flow (5 Years)", f"${total_net_cash_5yr:,.2f}", 
-                     help="Rental income + interest - expenses - tax on interest")
-        with col_y2:
-            avg_annual_cash = total_net_cash_5yr / 5
-            st.metric("Average Annual Cash Flow", f"${avg_annual_cash:,.2f}")
-        with col_y3:
-            total_portfolio_gains = df_yearly['Portfolio Gains (Unrealized)'].sum()
-            st.metric("Total Portfolio Gains (Unrealized)", f"${total_portfolio_gains:,.2f}",
-                     help="Investment returns not yet taxed (deferred CGT)")
-        with col_y4:
-            total_tax_paid = df_yearly['Tax on Interest'].sum()
-            st.metric("Total Estimated Tax", f"-${abs(total_tax_paid):,.2f}",
-                     delta=f"${total_tax_paid:+,.2f}", delta_color="inverse")
-        
-        st.divider()
-        
-        # Detailed yearly table
-        st.markdown("#### 📅 Year-by-Year Breakdown")
-        
-        # Format for display
-        df_display = df_yearly[[
-            'Year', 'Year Ending', 'Rental Income', 'Cash Interest', 
-            'Portfolio Gains (Unrealized)', 'Total Expenses', 
-            'Gross Cash Flow', 'Tax on Interest', 'Net Cash Flow'
-        ]].copy()
-        
-        st.dataframe(
-            df_display.style
-            .format({
-                'Rental Income': '${:,.2f}',
-                'Cash Interest': '${:,.2f}',
-                'Portfolio Gains (Unrealized)': '${:,.2f}',
-                'Total Expenses': '${:,.2f}',
-                'Gross Cash Flow': '${:,.2f}',
-                'Tax on Interest': '${:,.2f}',
-                'Net Cash Flow': '${:,.2f}',
-            })
-            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Tax' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
-                 subset=['Gross Cash Flow', 'Net Cash Flow', 'Portfolio Gains (Unrealized)']),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        st.divider()
-        
-        # Cash Flow Chart
-        st.markdown("#### 📊 Cash Flow Visualization")
-        
-        fig_cf = go.Figure()
-        
-        # Add bars for income components
-        fig_cf.add_trace(go.Bar(
-            name='Rental Income',
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Rental Income'],
-            marker_color='#2980b9',
-            hovertemplate='Rental Income: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_cf.add_trace(go.Bar(
-            name='Cash Interest',
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Cash Interest'],
-            marker_color='#27ae60',
-            hovertemplate='Cash Interest: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_cf.add_trace(go.Bar(
-            name='Expenses',
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Total Expenses'],
-            marker_color='#e74c3c',
-            hovertemplate='Expenses: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        # Line for Net Cash Flow
-        fig_cf.add_trace(go.Scatter(
-            name='Net Cash Flow',
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Net Cash Flow'],
-            mode='lines+markers',
-            line=dict(color='#f39c12', width=3),
-            marker=dict(size=10, symbol='circle'),
-            hovertemplate='Net Cash Flow: $%{y:,.0f}<extra></extra>',
-            yaxis='y1'
-        ))
-        
-        fig_cf.update_layout(
-            title="Annual Cash Flow Breakdown",
-            xaxis_title="Year",
-            yaxis_title="Amount (AUD)",
-            yaxis_tickprefix="$",
-            barmode='group',
-            height=450,
-            hovermode='x unified',
-            legend=dict(orientation="h", y=1.08)
-        )
-        
-        st.plotly_chart(fig_cf, use_container_width=True)
-        
-        st.divider()
-        
-        # Cumulative Cash Flow
-        st.markdown("#### 📈 Cumulative Cash Flow Over 5 Years")
-        
-        df_yearly['Cumulative Net Cash'] = df_yearly['Net Cash Flow'].cumsum()
-        df_yearly['Cumulative Portfolio Gains'] = df_yearly['Portfolio Gains (Unrealized)'].cumsum()
-        
-        fig_cum_cf = go.Figure()
-        
-        fig_cum_cf.add_trace(go.Scatter(
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Cumulative Net Cash'],
-            mode='lines+markers',
-            name='Cumulative Net Cash Flow',
-            line=dict(color='#27ae60', width=3),
-            marker=dict(size=10),
-            fill='tozeroy',
-            fillcolor='rgba(39,174,96,0.1)',
-            hovertemplate='Net Cash: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_cum_cf.add_trace(go.Scatter(
-            x=df_yearly['Year'].astype(str),
-            y=df_yearly['Cumulative Portfolio Gains'],
-            mode='lines+markers',
-            name='Cumulative Unrealized Gains',
-            line=dict(color='#2980b9', width=3, dash='dot'),
-            marker=dict(size=10, symbol='diamond'),
-            hovertemplate='Unrealized Gains: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_cum_cf.update_layout(
-            title="5-Year Cumulative Wealth Build",
-            xaxis_title="Year",
-            yaxis_title="Cumulative Amount (AUD)",
-            yaxis_tickprefix="$",
-            height=400,
-            hovermode='x unified',
-            legend=dict(orientation="h", y=1.08)
-        )
-        
-        st.plotly_chart(fig_cum_cf, use_container_width=True)
-        
-        # Explanation of tax treatment
-        with st.expander("📖 Understanding the Cash Flow & Tax Calculation"):
-            st.markdown("""
-            ### How Cash Flow is Calculated
-            
-            **Annual Cash Flow = Rental Income + Cash Interest - Expenses - Tax on Interest**
-            
-            | Component | Tax Treatment |
-            |-----------|---------------|
-            | **Rental Income (Spanish Rent)** | Taxable in Australia at marginal rate (19% assumed) |
-            | **Cash Interest** | Taxed annually at 19% (added back to cash after tax) |
-            | **Portfolio Gains (N26, Raiz, Vanguard, Shares, Metals)** | **Unrealized** - not included in cash flow until sold. CGT deferred. |
-            | **Expenses** | Deductible against income |
-            
-            ### Important Notes
-            
-            - **Portfolio gains are shown separately** as "Unrealized Gains" because you don't pay tax until you sell
-            - **CGT changes from July 2027**: 50% discount replaced by indexation + 30% minimum tax
-            - **This is a projection** based on your assumptions - actual results will vary
-            - **Tax rate assumption**: 19% marginal rate (adjust in the Tax Impact section above)
-            """)
-        
-        # Add a summary card
-        st.divider()
-        st.markdown("#### 📋 5-Year Summary")
-        
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            ending_nw = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
-            st.metric("Projected Net Worth (Year 5)", f"${ending_nw:,.2f}",
-                     delta=f"${ending_nw - total_net_worth_aud:+,.2f}")
-        with col_s2:
-            total_cash_generated = df_yearly['Net Cash Flow'].sum()
-            st.metric("Total Cash Generated (5 Years)", f"${total_cash_generated:,.2f}")
-        with col_s3:
-            avg_tax_rate = (df_yearly['Tax on Interest'].sum() / df_yearly['Gross Cash Flow'].sum() * 100) if df_yearly['Gross Cash Flow'].sum() != 0 else 0
-            st.metric("Effective Tax Rate (on cash flow)", f"{abs(avg_tax_rate):.1f}%")
-
-    st.divider()
-    
-    # ==================== TOTAL WEALTH INCREASE (Using Same Projection Data) ====================
-    st.markdown("### 📈 Total Wealth Increase (Cash + Unrealized Gains)")
-    st.caption("This combines actual cash flow WITH unrealized portfolio gains to show your true wealth growth each year. Based on the same projection as above.")
-    
-    if yearly_data and not df_proj.empty:
-        # Use the projection data directly for consistency
+    if not df_proj.empty:
+        # Extract year-end values directly from the monthly projection
         projection_start_nw = total_net_worth_aud
         projection_end_nw = df_proj.iloc[-1]['Projected NW']
         total_projected_growth = projection_end_nw - projection_start_nw
         
-        # First, calculate Total Wealth Increase for each year
-        for item in yearly_data:
-            item['Total Wealth Increase'] = item['Net Cash Flow'] + item['Portfolio Gains (Unrealized)']
+        # Calculate year-end data from projection
+        year_end_data = []
+        for year in range(1, 6):
+            year_end_month = year * 12
+            year_start_month = (year - 1) * 12
+            
+            year_end_row = df_proj[df_proj['Month'] == year_end_month]
+            year_start_row = df_proj[df_proj['Month'] == year_start_month] if year > 1 else None
+            
+            if not year_end_row.empty:
+                end_nw = year_end_row['Projected NW'].iloc[0]
+                start_nw = projection_start_nw if year == 1 else year_end_data[-1]['End NW']
+                
+                # Calculate components for this year
+                year_growth = end_nw - start_nw
+                
+                # Estimate cash flow contribution (from your earlier calculation)
+                rental_income_aud = new_inputs.get('Income_rent_eur', 500) * fx_now * 12
+                cash_interest_annual = monthly_interest * 12
+                annual_expenses = total_expenses * 12
+                tax_on_interest = cash_interest_annual * 0.19
+                net_cash_flow = rental_income_aud + cash_interest_annual - annual_expenses - tax_on_interest
+                
+                # Unrealized gains = total growth - net cash flow
+                unrealized_gains = year_growth - net_cash_flow
+                
+                year_end_data.append({
+                    'Year': year,
+                    'Year Ending': year_end_row['Date'].iloc[0].strftime('%b %Y'),
+                    'Start NW': start_nw,
+                    'End NW': end_nw,
+                    'Year Growth': year_growth,
+                    'Net Cash Flow': net_cash_flow,
+                    'Unrealized Gains': unrealized_gains,
+                })
         
-        # Then calculate cumulative Year End NW
-        cumulative_nw = projection_start_nw
-        for i, item in enumerate(yearly_data):
-            cumulative_nw += item['Total Wealth Increase']
-            item['Year End NW'] = cumulative_nw
+        df_yearly_consistent = pd.DataFrame(year_end_data)
         
-        df_wealth = pd.DataFrame(yearly_data)
-        
-        # Summary metrics - using projection data
-        col_w1, col_w2, col_w3, col_w4 = st.columns(4)
-        with col_w1:
-            st.metric("Total Wealth Increase (5 Years)", f"${total_projected_growth:,.2f}",
-                     help="Net Cash Flow + Unrealized Portfolio Gains (from projection)",
-                     delta_color="normal")
-        with col_w2:
-            avg_annual_wealth = total_projected_growth / 5
-            st.metric("Average Annual Wealth Increase", f"${avg_annual_wealth:,.2f}",
-                     help=f"{avg_annual_wealth/total_net_worth_aud*100:.1f}% of current net worth")
-        with col_w3:
+        # Summary metrics
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        with col_s1:
             st.metric("Starting Net Worth", f"${projection_start_nw:,.2f}")
-        with col_w4:
+        with col_s2:
             st.metric("Projected Net Worth (Year 5)", f"${projection_end_nw:,.2f}",
                      delta=f"${total_projected_growth:+,.2f}")
+        with col_s3:
+            total_cash_flow_5yr = df_yearly_consistent['Net Cash Flow'].sum()
+            st.metric("Total Net Cash Flow (5 Years)", f"${total_cash_flow_5yr:,.2f}",
+                     delta_color="inverse" if total_cash_flow_5yr < 0 else "normal")
+        with col_s4:
+            total_unrealized_5yr = df_yearly_consistent['Unrealized Gains'].sum()
+            st.metric("Total Unrealized Gains (5 Years)", f"${total_unrealized_5yr:,.2f}",
+                     help="Tax-deferred market appreciation")
         
         st.divider()
         
-        # Detailed table showing year-by-year wealth build
-        st.markdown("#### 📅 Year-by-Year Wealth Breakdown")
-        
-        df_wealth_display = df_wealth[[
-            'Year', 'Year Ending', 
-            'Net Cash Flow', 
-            'Portfolio Gains (Unrealized)',
-            'Total Wealth Increase',
-            'Year End NW'
-        ]].copy()
+        # Year-by-year table
+        st.markdown("#### 📅 Year-by-Year Breakdown")
         
         st.dataframe(
-            df_wealth_display.style
+            df_yearly_consistent[[
+                'Year', 'Year Ending', 'Start NW', 'End NW', 'Year Growth', 
+                'Net Cash Flow', 'Unrealized Gains'
+            ]].style
             .format({
-                'Net Cash Flow': '${:,.2f}',
-                'Portfolio Gains (Unrealized)': '${:,.2f}',
-                'Total Wealth Increase': '${:,.2f}',
-                'Year End NW': '${:,.2f}',
+                'Start NW': '${:,.0f}',
+                'End NW': '${:,.0f}',
+                'Year Growth': '${:,.0f}',
+                'Net Cash Flow': '${:,.0f}',
+                'Unrealized Gains': '${:,.0f}',
             })
-            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Net Cash' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
-                 subset=['Total Wealth Increase', 'Year End NW']),
+            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Cash' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
+                 subset=['Year Growth', 'Net Cash Flow', 'Unrealized Gains']),
             use_container_width=True,
             hide_index=True
         )
         
         st.divider()
         
-        # Stacked bar chart showing Cash Flow vs Unrealized Gains
+        # Stacked bar chart
         st.markdown("#### 📊 What's Driving Your Wealth Growth?")
         
-        fig_wealth = go.Figure()
+        fig_consistent = go.Figure()
         
-        # Stacked bars: Cash Flow (bottom) + Unrealized Gains (top)
-        fig_wealth.add_trace(go.Bar(
+        fig_consistent.add_trace(go.Bar(
             name='Net Cash Flow (after tax)',
-            x=df_wealth['Year'].astype(str),
-            y=df_wealth['Net Cash Flow'],
+            x=df_yearly_consistent['Year'].astype(str),
+            y=df_yearly_consistent['Net Cash Flow'],
             marker_color='#e74c3c',
             hovertemplate='Cash Flow: $%{y:,.0f}<extra></extra>'
         ))
         
-        fig_wealth.add_trace(go.Bar(
+        fig_consistent.add_trace(go.Bar(
             name='Unrealized Portfolio Gains',
-            x=df_wealth['Year'].astype(str),
-            y=df_wealth['Portfolio Gains (Unrealized)'],
+            x=df_yearly_consistent['Year'].astype(str),
+            y=df_yearly_consistent['Unrealized Gains'],
             marker_color='#27ae60',
             hovertemplate='Portfolio Gains: $%{y:,.0f}<extra></extra>'
         ))
         
-        fig_wealth.update_layout(
-            title="Wealth Increase Breakdown: Cash Flow vs Market Appreciation",
+        fig_consistent.update_layout(
+            title="Wealth Increase Breakdown (from monthly projection)",
             xaxis_title="Year",
             yaxis_title="Amount (AUD)",
             yaxis_tickprefix="$",
@@ -3610,45 +3362,46 @@ with tab10:
             legend=dict(orientation="h", y=1.08)
         )
         
-        st.plotly_chart(fig_wealth, use_container_width=True)
+        st.plotly_chart(fig_consistent, use_container_width=True)
         
-        # Line chart showing cumulative wealth growth from projection
-        st.markdown("#### 📈 5-Year Net Worth Projection")
+        # Line chart showing net worth progression
+        st.markdown("#### 📈 Net Worth Progression")
         
-        # Get monthly projection data for smooth line
-        fig_cum_wealth = go.Figure()
+        fig_nw = go.Figure()
         
-        # Add the full monthly projection line
-        fig_cum_wealth.add_trace(go.Scatter(
+        fig_nw.add_trace(go.Scatter(
             x=df_proj['Date'],
             y=df_proj['Projected NW'],
             mode='lines',
             name='Monthly Projection',
-            line=dict(color='#2980b9', width=2),
-            hovertemplate='Projected: $%{y:,.0f}<extra></extra>'
+            line=dict(color='#2980b9', width=2.5),
+            fill='tozeroy',
+            fillcolor='rgba(41,128,185,0.1)',
+            hovertemplate='Net Worth: $%{y:,.0f}<extra></extra>'
         ))
         
         # Add year-end markers
-        fig_cum_wealth.add_trace(go.Scatter(
-            x=df_wealth['Year Ending'].apply(lambda d: pd.Timestamp(d)),
-            y=df_wealth['Year End NW'],
-            mode='markers',
-            name='Year End Values',
+        fig_nw.add_trace(go.Scatter(
+            x=df_yearly_consistent['Year Ending'].apply(lambda d: pd.Timestamp(d)),
+            y=df_yearly_consistent['End NW'],
+            mode='markers+text',
+            name='Year End',
             marker=dict(size=12, color='#f39c12', symbol='circle', line=dict(color='white', width=2)),
-            hovertemplate='Year End: $%{y:,.0f}<extra></extra>'
+            text=df_yearly_consistent['Year Growth'].apply(lambda x: f'+${x/1000:.0f}k'),
+            textposition='top center',
+            hovertemplate='Year {year}: ${value:,.0f}<extra></extra>'.format,
         ))
         
-        # Add starting point
-        fig_cum_wealth.add_trace(go.Scatter(
+        fig_nw.add_trace(go.Scatter(
             x=[pd.Timestamp(today)],
             y=[projection_start_nw],
             mode='markers',
-            name=f'Current (${projection_start_nw/1e6:.1f}M)',
+            name=f'Current (${projection_start_nw/1e6:.2f}M)',
             marker=dict(size=15, color='#e74c3c', symbol='star'),
             hovertemplate=f'Current: ${projection_start_nw:,.0f}<extra></extra>'
         ))
         
-        fig_cum_wealth.update_layout(
+        fig_nw.update_layout(
             title="5-Year Net Worth Projection",
             xaxis_title="Date",
             yaxis_title="Net Worth (AUD)",
@@ -3658,31 +3411,21 @@ with tab10:
             legend=dict(orientation="h", y=1.08)
         )
         
-        st.plotly_chart(fig_cum_wealth, use_container_width=True)
+        st.plotly_chart(fig_nw, use_container_width=True)
         
-        # Interpretation help
-        with st.expander("📖 How to Read This Section"):
-            st.markdown("""
-            ### Understanding Your Wealth Growth
-            
-            Even though your **Net Cash Flow** might be negative (shown in red), your **Total Wealth Increase** is positive because:
-            
-            | Component | What it means |
-            |-----------|---------------|
-            | **Net Cash Flow** | Actual cash in/out after rent, expenses, and tax on interest |
-            | **Unrealized Portfolio Gains** | Market appreciation of your investments (N26, Raiz, Vanguard, etc.) |
-            | **Total Wealth Increase** | Your TRUE wealth growth = Cash Flow + Portfolio Gains |
-            
-            ### Why Cash Flow Can Be Negative While Wealth Grows
-            
-            - Your investments are appreciating faster than your cash outflow
-            - You're building wealth through capital gains, not just saving cash
-            - This is common when you have a large investment portfolio
-            
-            ### The Bottom Line
-            
-            Looking only at cash flow gives an incomplete picture. Your **Total Wealth Increase** shows your real financial progress.
-            """)
+        # Summary interpretation
+        st.markdown("#### 💡 Summary")
+        
+        total_cash = df_yearly_consistent['Net Cash Flow'].sum()
+        total_gains = df_yearly_consistent['Unrealized Gains'].sum()
+        
+        col_i1, col_i2, col_i3 = st.columns(3)
+        with col_i1:
+            st.info(f"**Cash Flow:** ${total_cash:,.0f} over 5 years\n\nDespite negative cash flow, your wealth is growing through investments.")
+        with col_i2:
+            st.success(f"**Market Gains:** ${total_gains:,.0f} over 5 years\n\nYour investments are appreciating faster than your cash outflow.")
+        with col_i3:
+            st.info(f"**Total Wealth Increase:** ${total_projected_growth:,.0f}\n\nYour net worth is projected to grow by {total_projected_growth/projection_start_nw*100:.1f}% over 5 years.")
     st.divider()
 
     # ── FORECAST vs ACTUALS TABLE ──────────────────────────────────────────────
