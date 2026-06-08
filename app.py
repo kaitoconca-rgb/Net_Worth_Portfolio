@@ -582,15 +582,27 @@ def save_net_worth_snapshot(total, force=False):
             # Calculate contributions in period
             contributions, breakdown_dict = calculate_period_contributions(prev_date, today)
             
-            # Calculate FX impact including EUR cash
-            prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
-            fx_impact_n26 = calculate_fx_impact_period(prev_date, today)
-            fx_impact_cash = eur_cash_aud - prev_eur_cash
-            fx_impact = fx_impact_n26 + fx_impact_cash
+            # Calculate market gains first (from investment portfolios only)
+            # Get previous and current portfolio values (excluding Cash)
+            prev_investments = 0
+            curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
             
-            # Market gains = residual after contributions and FX (excluding Cash from market gains)
-            # Only investment portfolios contribute to market gains
-            market_gains = total - prev_total - contributions - fx_impact
+            if len(existing[-1]) > 7:
+                prev_n26 = float(existing[-1][7]) if existing[-1][7] else 0
+                prev_raiz = float(existing[-1][8]) if existing[-1][8] else 0
+                prev_vanguard = float(existing[-1][9]) if existing[-1][9] else 0
+                prev_shares = float(existing[-1][10]) if existing[-1][10] else 0
+                prev_commodities = float(existing[-1][11]) if existing[-1][11] else 0
+                prev_super = float(existing[-1][12]) if existing[-1][12] else 0
+                prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
+            
+            market_gains = curr_investments - prev_investments
+            
+            # Calculate FX impact (from N26 and EUR Cash)
+            fx_impact = calculate_fx_impact_period(prev_date, today)
+            
+            # Contributions is the remainder
+            contributions = total - prev_total - market_gains - fx_impact
             
             # Create breakdown string
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
@@ -926,66 +938,38 @@ def calculate_period_contributions(start_date, end_date):
     return total, breakdown
 
 def calculate_fx_impact_period(start_date, end_date):
-    """Calculate FX impact on net worth from currency movements for BOTH N26 and EUR Cash"""
+    """Calculate FX impact from N26 portfolio and EUR Cash accounts"""
     try:
+        # Get exchange rates
         start_fx = get_fx_at(pd.Timestamp(start_date))
         end_fx = get_fx_at(pd.Timestamp(end_date))
         
-        # 1. FX Impact on N26 European Portfolio
-        date_obj = pd.Timestamp(start_date)
-        snapshot = df_raw[df_raw['Data'] <= date_obj].groupby('ISIN')['Qty'].sum()
-        european_start = 0.0
-        for isin in df_raw['ISIN'].unique():
-            qty = snapshot.get(isin, 0)
-            if abs(qty) < 0.001:
-                continue
-            h = hist_map.get(isin)
-            p = None
-            if h is not None and not h.empty:
-                try:
-                    p = h.asof(date_obj)
-                except:
-                    p = None
-            if p is None or pd.isna(p) or p == 0:
-                ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
-                p = ledger_price.iloc[0] if not ledger_price.empty else 0
-            european_start += float(qty * p)
+        # Get N26 EUR values at start and end
+        start_n26_eur = get_european_portfolio_value_at_date(start_date)
+        end_n26_eur = current_market_value_eur
         
-        european_end = current_market_value_eur
-        avg_european_exposure = (european_start + european_end) / 2
-        fx_impact_n26 = avg_european_exposure * (end_fx - start_fx)
+        # FX Impact on N26 = (end value at end rate) - (end value at start rate)
+        # Or more simply: average exposure * rate change
+        avg_n26_eur = (start_n26_eur + end_n26_eur) / 2
+        fx_impact_n26 = avg_n26_eur * (end_fx - start_fx)
         
-        # 2. FX Impact on EUR Cash Accounts
-        # Get EUR Cash balances at start and end dates from your history
-        try:
-            # Find the start and end rows in history
-            df_history = load_net_worth_history()
-            start_row = df_history[df_history['Date'].dt.date == start_date]
-            end_row = df_history[df_history['Date'].dt.date == end_date]
+        # Get EUR Cash at start and end
+        df_history = load_net_worth_history()
+        start_row = df_history[df_history['Date'].dt.date == start_date]
+        end_row = df_history[df_history['Date'].dt.date == end_date]
+        
+        fx_impact_cash = 0
+        if not start_row.empty and not end_row.empty and 'EUR_Cash_AUD' in start_row.columns:
+            start_eur_cash_aud = start_row['EUR_Cash_AUD'].iloc[0]
+            end_eur_cash_aud = end_row['EUR_Cash_AUD'].iloc[0]
             
-            if not start_row.empty and not end_row.empty:
-                # Get Cash_AUD values (these include converted EUR cash)
-                start_cash_aud = start_row['Cash_AUD'].iloc[0] if 'Cash_AUD' in start_row.columns else 0
-                end_cash_aud = end_row['Cash_AUD'].iloc[0] if 'Cash_AUD' in end_row.columns else 0
-                
-                # Estimate EUR cash component (simplified - assuming cash is a mix)
-                # The actual FX impact on cash is baked into the Cash_AUD difference
-                # We need to isolate just the FX portion
-                
-                # Alternative: Get EUR cash balances from your Cash sheet
-                # For now, we'll use a reasonable estimate based on typical EUR cash holdings
-                # You have accounts: Trade Republic, N26, BUNQ, BPM Cash, BPM Bonds
-                # Let's estimate average EUR cash balance
-                avg_eur_cash = 5000  # Replace with your actual average EUR cash balance
-                fx_impact_cash = avg_eur_cash * (end_fx - start_fx)
-            else:
-                fx_impact_cash = 0
-        except:
-            fx_impact_cash = 0
+            # Convert to EUR, then back to AUD at new rate to isolate FX impact
+            start_eur_cash_eur = start_eur_cash_aud / start_fx if start_fx != 0 else 0
+            fx_impact_cash = start_eur_cash_eur * (end_fx - start_fx)
         
-        total_fx_impact = fx_impact_n26 + fx_impact_cash
-        return total_fx_impact
-    except:
+        return fx_impact_n26 + fx_impact_cash
+        
+    except Exception as e:
         return 0.0
 # ==================== CONTRIBUTION TRACKING FUNCTIONS ====================
 
