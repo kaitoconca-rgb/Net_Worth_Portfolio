@@ -2840,7 +2840,133 @@ with tab8:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 9 — DIAGNOSTICS
 # ══════════════════════════════════════════════════════════════════════════════
-
+with tab9:
+    st.header("🛠️ Diagnostics")
+    st.markdown("System status, data sources, and debug information.")
+    
+    # FX Rates
+    st.subheader("💱 Current Exchange Rates")
+    col_fx1, col_fx2, col_fx3 = st.columns(3)
+    with col_fx1:
+        st.metric("EUR/AUD", f"{fx_now:.4f}", help="Euro to Australian Dollar")
+    with col_fx2:
+        try:
+            usd_aud_rate = get_usd_aud()
+            st.metric("USD/AUD", f"{usd_aud_rate:.4f}", help="US Dollar to Australian Dollar")
+        except:
+            st.metric("USD/AUD", "N/A")
+    with col_fx3:
+        try:
+            brl_aud_rate = float(yf.Ticker("BRLAUD=X").fast_info['last_price'])
+            st.metric("BRL/AUD", f"{brl_aud_rate:.4f}", help="Brazilian Real to Australian Dollar")
+        except:
+            st.metric("BRL/AUD", "N/A")
+    
+    st.divider()
+    
+    # N26 Price Feed Status
+    st.subheader("📊 N26 European Portfolio — Price Feed Status")
+    if diag_logs:
+        df_diag = pd.DataFrame.from_dict(diag_logs, orient='index')
+        st.dataframe(df_diag, use_container_width=True)
+    else:
+        st.info("No N26 price data available")
+    
+    st.divider()
+    
+    # Metal Prices
+    st.subheader("🪙 Metal Prices")
+    try:
+        metal_prices = get_metal_prices()
+        metal_diag = []
+        for metal, cfg in METAL_CONFIG.items():
+            p = metal_prices.get(metal, {})
+            metal_diag.append({
+                "Metal": metal,
+                "Ticker": cfg['ticker'],
+                "Price (AUD)": f"${p['aud']:,.2f}" if p.get('aud') else "N/A",
+                "Status": "🟢 LIVE" if p.get('aud') else "🔴 FALLBACK"
+            })
+        st.table(pd.DataFrame(metal_diag))
+    except Exception as e:
+        st.warning(f"Could not fetch metal prices: {e}")
+    
+    st.divider()
+    
+    # Vanguard VDAL Status
+    st.subheader("📈 Vanguard VDAL")
+    try:
+        t = yf.Ticker("VDAL.AX")
+        vdal_p = float(t.fast_info['last_price'])
+        st.success(f"🟢 VDAL.AX: ${vdal_p:.4f} AUD")
+        
+        # Get additional info
+        try:
+            info = t.info
+            st.caption(f"Bid: ${info.get('bid', 'N/A')} | Ask: ${info.get('ask', 'N/A')} | Volume: {info.get('volume', 'N/A')}")
+        except:
+            pass
+    except:
+        st.error("🔴 VDAL.AX price unavailable")
+    
+    st.divider()
+    
+    # Portfolio Values
+    st.subheader("💰 Current Portfolio Values (AUD)")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        st.metric("N26 European", f"${current_market_value_eur * fx_now:,.2f}")
+        st.metric("Raiz ETFs", f"${raiz_total_aud:,.2f}")
+        st.metric("Vanguard VDAL", f"${vanguard_total_aud:,.2f}")
+    with col_p2:
+        st.metric("ASX Shares", f"${shares_total_aud:,.2f}")
+        st.metric("Commodities", f"${commodities_total_aud:,.2f}")
+        st.metric("Super", f"${super_total_aud:,.2f}")
+    with col_p3:
+        st.metric("Cash Total", f"${cash_total_aud:,.2f}")
+        st.metric("Total Net Worth", f"${total_net_worth_aud:,.2f}")
+    
+    st.divider()
+    
+    # Cache Management
+    st.subheader("🔄 Cache Management")
+    if st.button("Clear All Caches", type="secondary"):
+        st.cache_data.clear()
+        st.success("Caches cleared! The app will reload data on next interaction.")
+        st.rerun()
+    
+    st.caption("Use this button if data seems outdated or after making changes to Google Sheets.")
+    
+    st.divider()
+    
+    # Google Sheet Status
+    st.subheader("📋 Google Sheet Status")
+    try:
+        df_check = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A1:A5")
+        if not df_check.empty:
+            st.success(f"✅ Connected to portfolio sheet: {PORTFOLIO_SHEET_ID}")
+            st.caption(f"Last 5 rows available")
+        else:
+            st.warning("⚠️ Connected but no data found")
+    except Exception as e:
+        st.error(f"❌ Could not connect to Google Sheet: {e}")
+    
+    # Last Snapshot Info
+    st.subheader("📸 Last Net Worth Snapshot")
+    try:
+        df_history = load_net_worth_history()
+        if not df_history.empty:
+            last_row = df_history.iloc[-1]
+            st.write(f"**Date:** {last_row['Date'].strftime('%Y-%m-%d')}")
+            st.write(f"**Total Net Worth:** ${last_row['Total_AUD']:,.2f}")
+            if 'Contributions_AUD' in last_row.index:
+                st.write(f"**Contributions:** ${last_row['Contributions_AUD']:,.2f}")
+                st.write(f"**Market Gains:** ${last_row['Market_Gains_AUD']:,.2f}")
+                st.write(f"**FX Impact:** ${last_row['FX_Impact_AUD']:,.2f}")
+        else:
+            st.info("No snapshots saved yet")
+    except Exception as e:
+        st.warning(f"Could not load snapshot history: {e}")
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 10 — FORECAST
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3456,9 +3582,9 @@ with tab10:
     # ── PROJECTION TABLE ───────────────────────────────────────────────────────
     st.divider()
 
-    # ── CASH REDEPLOYMENT SIMULATOR (Enhanced with Currency Selection) ───────────────────────────────────────────
-    st.markdown("### 💡 Cash Redeployment Simulator")
-    st.caption("Simulate moving a lump sum from cash into investments and see the 5-year impact vs keeping it in cash.")
+    # ── COMBINED CASH REDEPLOYMENT SIMULATOR (AUD Cash → AUD Investments + EUR Cash → N26) ──
+    st.markdown("### 💡 Combined Cash Redeployment Simulator")
+    st.caption("Simulate moving BOTH AUD cash to AUD investments AND EUR cash to N26 (EUR investment). See the combined 5-year impact.")
     
     # Get current cash balances by currency
     conn_cash_check = st.connection("gsheets_cash", type=GSheetsConnection)
@@ -3479,251 +3605,328 @@ with tab10:
         eur_cash_total += cash_bal_check.get(acc, 0.0)
     eur_cash_aud_total = eur_cash_total * fx_now
     
-    # Currency selection
-    sim_currency = st.radio(
-        "Select cash currency to redeploy:",
-        options=["🇦🇺 AUD Cash", "🇪🇺 EUR Cash"],
-        horizontal=True,
-        key="sim_currency"
-    )
+    st.markdown("### 💰 Available Cash")
+    col_aud_disp, col_eur_disp = st.columns(2)
+    with col_aud_disp:
+        st.metric("🇦🇺 AUD Cash Available", f"${aud_cash_total:,.2f}")
+    with col_eur_disp:
+        st.metric("🇪🇺 EUR Cash Available", f"€{eur_cash_total:,.2f}", f"≈ ${eur_cash_aud_total:,.2f} AUD")
     
-    # Display available cash
-    if sim_currency == "🇦🇺 AUD Cash":
-        available_cash = aud_cash_total
-        available_cash_aud = aud_cash_total
-        st.info(f"💰 Available AUD Cash: **${available_cash:,.2f}** AUD")
-    else:
-        available_cash = eur_cash_total
-        available_cash_aud = eur_cash_aud_total
-        st.info(f"💰 Available EUR Cash: **€{available_cash:,.2f}** EUR (≈ **${available_cash_aud:,.2f}** AUD at current rate)")
+    st.divider()
     
-    sim_col1, sim_col2, sim_col3 = st.columns(3)
-    with sim_col1:
-        max_amount = available_cash_aud if sim_currency == "🇦🇺 AUD Cash" else available_cash_aud
-        sim_amount = st.number_input(
-            "Amount to redeploy (AUD equivalent)" if sim_currency == "🇪🇺 EUR Cash" else "Amount to redeploy (AUD)",
+    # ========== SCENARIO 1: AUD Cash → AUD Investment ==========
+    st.markdown("### 📊 Scenario 1: AUD Cash → AUD Investment")
+    st.caption("Move AUD cash into Australian dollar investments (Raiz, Vanguard, or ASX Shares)")
+    
+    col_s1_1, col_s1_2, col_s1_3 = st.columns(3)
+    with col_s1_1:
+        aud_amount = st.number_input(
+            "AUD amount to redeploy",
             min_value=0.0,
-            max_value=float(max_amount),
-            value=min(50000.0, float(max_amount)),
-            step=5000.0,
+            max_value=float(aud_cash_total),
+            value=min(50000.0, float(aud_cash_total)),
+            step=10000.0,
             format="%.0f",
-            key="sim_amount_currency",
-            help=f"Maximum available: ${max_amount:,.2f} AUD"
+            key="aud_redeploy_amount",
+            help=f"Maximum available: ${aud_cash_total:,.2f}"
         )
-        
-        # For EUR cash, calculate the EUR amount
-        if sim_currency == "🇪🇺 EUR Cash":
-            sim_amount_eur = sim_amount / fx_now
-            st.caption(f"≈ €{sim_amount_eur:,.2f} EUR at current rate")
-        else:
-            sim_amount_eur = sim_amount / fx_now
-            st.caption(f"≈ €{sim_amount_eur:,.2f} EUR equivalent")
-        
-        st.caption(f"That's {sim_amount/max_amount*100:.1f}% of available cash" if max_amount > 0 else "")
-
-    with sim_col2:
-        sim_target = st.selectbox(
-            "Redeploy into",
-            options=["N26 European ETFs", "Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
-            key="sim_target_currency",
+        st.caption(f"{aud_amount/aud_cash_total*100:.1f}% of available AUD cash" if aud_cash_total > 0 else "")
+    
+    with col_s1_2:
+        aud_target = st.selectbox(
+            "AUD investment target",
+            options=["Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
+            key="aud_target",
             index=0
         )
-        
-        # Show which currency the investment is in
-        target_currency = "EUR" if sim_target == "N26 European ETFs" else "AUD"
-        st.caption(f"Investment currency: **{target_currency}**")
-        
-        target_return_map = {
-            "N26 European ETFs": new_inputs.get('Returns_n26_pct', hist_returns.get('n26', 11.0)),
+        aud_return_map = {
             "Raiz ETFs": new_inputs.get('Returns_raiz_pct', hist_returns.get('raiz', 10.0)),
             "Vanguard VDAL": new_inputs.get('Returns_vanguard_pct', hist_returns.get('vanguard', 9.5)),
             "ASX Shares": new_inputs.get('Returns_shares_pct', hist_returns.get('shares', 10.0)),
         }
-        target_return_pct = target_return_map[sim_target]
-        st.caption(f"Expected return: {target_return_pct:.2f}% p.a.")
-
-    with sim_col3:
-        # Find the interest rate based on currency selected
-        if sim_currency == "🇦🇺 AUD Cash":
-            aud_rates = {
-                'CBA': new_inputs.get('Interest_CBA', 0),
-                'Me Bank': new_inputs.get('Interest_Me Bank', 5.35),
-                'Rabobank': new_inputs.get('Interest_Rabobank', 5.90),
-                'Up': new_inputs.get('Interest_Up', 5.35),
-            }
-            best_aud_rate = max(aud_rates.values())
-            sim_cash_rate = st.number_input(
-                "Cash interest rate being forgone (% p.a.)",
-                min_value=0.0, max_value=20.0,
-                value=float(best_aud_rate),
-                step=0.5,
-                format="%.2f",
-                key="sim_cash_rate_currency",
-                help="The interest rate you'd lose by moving this cash out"
-            )
-        else:
-            eur_rates = {
-                'Trade Republic': new_inputs.get('Interest_Trade Republic', 2.0),
-                'N26': new_inputs.get('Interest_N26', 0),
-                'BUNQ': new_inputs.get('Interest_BUNQ', 2.0),
-                'BPM Cash': new_inputs.get('Interest_BPM Cash', 0),
-                'BPM Bonds': new_inputs.get('Interest_BPM Bonds', 0),
-            }
-            best_eur_rate = max(eur_rates.values())
-            sim_cash_rate = st.number_input(
-                "Cash interest rate being forgone (% p.a.)",
-                min_value=0.0, max_value=20.0,
-                value=float(best_eur_rate),
-                step=0.5,
-                format="%.2f",
-                key="sim_cash_rate_currency",
-                help="The interest rate you'd lose by moving this EUR cash out"
-            )
-            st.caption(f"Best EUR rate: {best_eur_rate:.2f}%")
-
-    # Run simulation
-    sim_invest_r = annual_to_monthly(target_return_pct)
-    sim_cash_r = annual_to_monthly(sim_cash_rate)
+        aud_return_pct = aud_return_map[aud_target]
+        st.caption(f"Expected return: {aud_return_pct:.2f}% p.a.")
     
-    # Determine base currency for the simulation
-    if sim_currency == "🇦🇺 AUD Cash" or sim_target == "N26 European ETFs":
-        # For AUD cash moving to EUR investment, need to handle FX
-        is_cross_currency = (sim_currency == "🇦🇺 AUD Cash" and sim_target == "N26 European ETFs") or \
-                           (sim_currency == "🇪🇺 EUR Cash" and sim_target != "N26 European ETFs")
-    else:
-        is_cross_currency = False
+    with col_s1_3:
+        aud_cash_rate = st.number_input(
+            "AUD cash interest rate being forgone (% p.a.)",
+            min_value=0.0, max_value=20.0,
+            value=5.5,
+            step=0.5,
+            format="%.2f",
+            key="aud_cash_rate",
+            help="The interest rate you'd lose on this AUD cash"
+        )
     
-    sim_rows = []
+    st.divider()
     
-    if sim_target == "N26 European ETFs":
-        # Investment is in EUR - need to convert at current FX rate
-        invest_amount_eur = sim_amount / fx_now if sim_currency == "🇦🇺 AUD Cash" else sim_amount
-        invest_val_eur = invest_amount_eur
-        invest_cb_eur = invest_amount_eur
-        cash_val_aud = sim_amount
-    else:
-        # Investment is in AUD
-        invest_val_aud = sim_amount
-        invest_cb_aud = sim_amount
-        cash_val_aud = sim_amount
+    # ========== SCENARIO 2: EUR Cash → N26 (EUR Investment) ==========
+    st.markdown("### 🌍 Scenario 2: EUR Cash → N26 European ETFs")
+    st.caption("Move EUR cash into Euro-denominated investments (N26 portfolio)")
     
-    CGT_TRANS_SIM = pd.Timestamp('2027-07-01')
-    gain_pre2027_sim = 0.0
+    col_s2_1, col_s2_2, col_s2_3 = st.columns(3)
+    with col_s2_1:
+        eur_amount = st.number_input(
+            "EUR amount to redeploy",
+            min_value=0.0,
+            max_value=float(eur_cash_total),
+            value=min(50000.0, float(eur_cash_total)),
+            step=10000.0,
+            format="%.0f",
+            key="eur_redeploy_amount",
+            help=f"Maximum available: €{eur_cash_total:,.2f}"
+        )
+        eur_amount_aud = eur_amount * fx_now
+        st.caption(f"≈ ${eur_amount_aud:,.2f} AUD | {eur_amount/eur_cash_total*100:.1f}% of available EUR cash" if eur_cash_total > 0 else "")
     
-    for m in range(1, 61):
-        proj_date_sim = pd.Timestamp(today) + pd.DateOffset(months=m)
-        is_post_sim = proj_date_sim >= CGT_TRANS_SIM
+    with col_s2_2:
+        eur_target = "N26 European ETFs"
+        st.info(f"**Target:** {eur_target}")
+        eur_return_pct = new_inputs.get('Returns_n26_pct', hist_returns.get('n26', 11.0))
+        st.caption(f"Expected return: {eur_return_pct:.2f}% p.a.")
+    
+    with col_s2_3:
+        eur_cash_rate = st.number_input(
+            "EUR cash interest rate being forgone (% p.a.)",
+            min_value=0.0, max_value=20.0,
+            value=2.0,
+            step=0.5,
+            format="%.2f",
+            key="eur_cash_rate",
+            help="The interest rate you'd lose on this EUR cash"
+        )
+    
+    st.divider()
+    
+    # ========== RUN COMBINED SIMULATION ==========
+    if st.button("🔄 Run Combined Scenario", type="primary", key="combined_scenario_btn"):
         
-        # Grow investment
-        if sim_target == "N26 European ETFs":
-            invest_val_eur *= (1 + sim_invest_r)
-            invest_val_aud_current = invest_val_eur * fx_now
-            if not is_post_sim:
-                gain_pre2027_sim = max(0, invest_val_eur - invest_cb_eur)
-        else:
-            invest_val_aud_current = invest_val_aud * (1 + sim_invest_r) if m == 1 else invest_val_aud
-            invest_val_aud = invest_val_aud_current
-            if not is_post_sim:
-                gain_pre2027_sim = max(0, invest_val_aud - invest_cb_aud)
+        # Calculate monthly rates
+        aud_monthly_r = annual_to_monthly(aud_return_pct)
+        aud_cash_monthly_r = annual_to_monthly(aud_cash_rate)
+        eur_monthly_r = annual_to_monthly(eur_return_pct)
+        eur_cash_monthly_r = annual_to_monthly(eur_cash_rate)
         
-        # Grow cash (in AUD)
-        cash_val_aud *= (1 + sim_cash_r)
-        if m % 12 == 0:
-            annual_interest_sim = cash_val_aud * sim_cash_rate / 100
-            cash_val_aud -= annual_interest_sim * 0.19
+        # Initialize variables
+        aud_invest_val = aud_amount
+        aud_invest_cb = aud_amount
+        aud_cash_val = aud_amount  # What it would be if left in cash
         
-        # Calculate after-tax investment value
-        if sim_target == "N26 European ETFs":
-            gain_total = max(0, invest_val_eur - invest_cb_eur)
+        eur_invest_val = eur_amount
+        eur_invest_cb = eur_amount
+        eur_cash_val = eur_amount  # What it would be if left in cash
+        
+        aud_gain_pre2027 = 0.0
+        eur_gain_pre2027 = 0.0
+        
+        CGT_TRANS_SIM = pd.Timestamp('2027-07-01')
+        
+        sim_rows = []
+        
+        for m in range(1, 61):
+            proj_date_sim = pd.Timestamp(today) + pd.DateOffset(months=m)
+            is_post_sim = proj_date_sim >= CGT_TRANS_SIM
+            
+            # ===== AUD Investment Growth =====
+            aud_invest_val *= (1 + aud_monthly_r)
             if not is_post_sim:
-                cgt_sim = gain_total * 0.50 * 0.19
+                aud_gain_pre2027 = max(0, aud_invest_val - aud_invest_cb)
+            
+            # ===== AUD Cash Growth (counterfactual) =====
+            aud_cash_val *= (1 + aud_cash_monthly_r)
+            if m % 12 == 0:
+                annual_aud_interest = aud_cash_val * aud_cash_rate / 100
+                aud_cash_val -= annual_aud_interest * 0.19
+            
+            # ===== EUR Investment Growth =====
+            eur_invest_val *= (1 + eur_monthly_r)
+            eur_invest_val_aud = eur_invest_val * fx_now
+            if not is_post_sim:
+                eur_gain_pre2027 = max(0, eur_invest_val - eur_invest_cb)
+            
+            # ===== EUR Cash Growth (counterfactual) =====
+            eur_cash_val *= (1 + eur_cash_monthly_r)
+            if m % 12 == 0:
+                annual_eur_interest = eur_cash_val * eur_cash_rate / 100
+                eur_cash_val -= annual_eur_interest * 0.19
+            eur_cash_val_aud = eur_cash_val * fx_now
+            
+            # ===== Calculate After-Tax Values =====
+            # AUD Investment after CGT
+            aud_gain_total = max(0, aud_invest_val - aud_invest_cb)
+            if not is_post_sim:
+                aud_cgt = aud_gain_total * 0.50 * 0.19
             else:
-                post_gain = max(0, gain_total - gain_pre2027_sim)
-                cgt_sim = (gain_pre2027_sim * 0.50 * 0.19 + post_gain * max(0.19, 0.30))
-            invest_after_cgt_eur = invest_val_eur - cgt_sim
-            invest_after_cgt_aud = invest_after_cgt_eur * fx_now
-        else:
-            gain_total = max(0, invest_val_aud - invest_cb_aud)
+                aud_post_gain = max(0, aud_gain_total - aud_gain_pre2027)
+                aud_cgt = (aud_gain_pre2027 * 0.50 * 0.19 + aud_post_gain * max(0.19, 0.30))
+            aud_invest_after_cgt = aud_invest_val - aud_cgt
+            
+            # EUR Investment after CGT
+            eur_gain_total = max(0, eur_invest_val - eur_invest_cb)
             if not is_post_sim:
-                cgt_sim = gain_total * 0.50 * 0.19
+                eur_cgt = eur_gain_total * 0.50 * 0.19
             else:
-                post_gain = max(0, gain_total - gain_pre2027_sim)
-                cgt_sim = (gain_pre2027_sim * 0.50 * 0.19 + post_gain * max(0.19, 0.30))
-            invest_after_cgt_aud = invest_val_aud - cgt_sim
+                eur_post_gain = max(0, eur_gain_total - eur_gain_pre2027)
+                eur_cgt = (eur_gain_pre2027 * 0.50 * 0.19 + eur_post_gain * max(0.19, 0.30))
+            eur_invest_after_cgt_eur = eur_invest_val - eur_cgt
+            eur_invest_after_cgt_aud = eur_invest_after_cgt_eur * fx_now
+            
+            # Combined values
+            total_redeployed_aud = aud_amount + eur_amount_aud
+            total_invest_after_cgt = aud_invest_after_cgt + eur_invest_after_cgt_aud
+            total_cash_after_tax = aud_cash_val + eur_cash_val_aud
+            total_advantage = total_invest_after_cgt - total_cash_after_tax
+            
+            sim_rows.append({
+                'Date': proj_date_sim,
+                'Month': m,
+                'AUD Investment Value (after CGT)': aud_invest_after_cgt,
+                'EUR Investment Value (after CGT)': eur_invest_after_cgt_aud,
+                'Total Redeployed Value (after CGT)': total_invest_after_cgt,
+                'Total Cash (if kept, after tax)': total_cash_after_tax,
+                'Combined Advantage': total_advantage,
+            })
         
-        sim_rows.append({
-            'Date': proj_date_sim,
-            'Month': m,
-            f'In {sim_target} (after CGT if sold)': invest_after_cgt_aud,
-            'Stays in Cash (after tax)': cash_val_aud,
-            'Difference (after CGT)': invest_after_cgt_aud - cash_val_aud,
-        })
-    
-    df_sim = pd.DataFrame(sim_rows)
-    
-    # Chart
-    fig_sim = go.Figure()
-    fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim[f'In {sim_target} (after CGT if sold)'],
-        mode='lines', name=f'{sim_target} — After CGT (if sold)',
-        line=dict(color='#27ae60', width=2.5),
-        fill='tozeroy', fillcolor='rgba(39,174,96,0.08)',
-        hovertemplate=f'{sim_target}: $%{{y:,.0f}}<extra></extra>'
-    ))
-    fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim['Stays in Cash (after tax)'],
-        mode='lines', name='Cash — After Annual Interest Tax',
-        line=dict(color='#e74c3c', width=2.5, dash='dot'),
-        fill='tozeroy', fillcolor='rgba(231,76,60,0.05)',
-        hovertemplate='Cash (after tax): $%{y:,.0f}<extra></extra>'
-    ))
-    fig_sim.add_trace(go.Scatter(
-        x=df_sim['Date'], y=df_sim['Difference (after CGT)'],
-        mode='lines', name='Extra Gain after all tax',
-        line=dict(color='#2980b9', width=1.5, dash='dashdot'),
-        hovertemplate='Net advantage: $%{y:,.0f}<extra></extra>',
-        yaxis='y2'
-    ))
-    fig_sim.add_vline(x='2027-07-01', line_dash='dash', line_color='#e74c3c',
-                      opacity=0.6, annotation_text='CGT change 1 Jul 2027',
-                      annotation_position='top left',
-                      annotation_font=dict(color='#e74c3c', size=10))
-    fig_sim.add_hline(y=sim_amount, line_dash="dash", line_color="grey",
-                      opacity=0.4, annotation_text=f"Starting: ${sim_amount:,.0f}",
-                      annotation_position="left")
-    fig_sim.update_layout(
-        height=420, hovermode="x unified",
-        yaxis=dict(title="Value (AUD $)", tickprefix="$"),
-        yaxis2=dict(title="Extra gain vs cash ($)", tickprefix="$",
-                    overlaying='y', side='right', showgrid=False),
-        legend=dict(orientation="h", y=1.08),
-        margin=dict(t=50, b=30)
-    )
-    st.plotly_chart(fig_sim, use_container_width=True)
-    
-    # Summary metrics
-    yr1 = df_sim[df_sim['Month'] == 12].iloc[0] if len(df_sim[df_sim['Month'] == 12]) > 0 else None
-    yr3 = df_sim[df_sim['Month'] == 36].iloc[0] if len(df_sim[df_sim['Month'] == 36]) > 0 else None
-    yr5 = df_sim.iloc[-1]
-    
-    st.markdown("#### Projected Outcome — After All Tax")
-    st.caption(
-        f"Moving {sim_currency} to {sim_target}. "
-        "ETF: tax deferred (compounding on full amount), CGT paid only on sale. "
-        "Cash: interest tax paid annually at 19% — reducing compounding base."
-    )
-    
-    sm1, sm2, sm3, sm4 = st.columns(4)
-    sm1.metric("Starting Amount", f"${sim_amount:,.2f}")
-    if yr1 is not None:
-        sm2.metric("After 1 Year (after CGT)",
-                   f"${yr1[f'In {sim_target} (after CGT if sold)']:,.2f}",
-                   delta=f"${yr1['Difference (after CGT)']:+,.2f} vs cash")
-    if yr3 is not None:
-        sm3.metric("After 3 Years (after CGT)",
-                   f"${yr3[f'In {sim_target} (after CGT if sold)']:,.2f}",
-                   delta=f"${yr3['Difference (after CGT)']:+,.2f} vs cash")
-    sm4.metric("After 5 Years (after CGT)",
-               f"${yr5[f'In {sim_target} (after CGT if sold)']:,.2f}",
-               delta=f"${yr5['Difference (after CGT)']:+,.2f} vs cash",
-               delta_color="normal" if yr5['Difference (after CGT)'] >= 0 else "inverse")
+        df_combined_sim = pd.DataFrame(sim_rows)
+        
+        # ========== RESULTS DISPLAY ==========
+        st.markdown("### 📊 Combined Scenario Results")
+        st.caption(f"Redeploying ${aud_amount:,.0f} AUD → {aud_target} + €{eur_amount:,.0f} EUR → N26 European ETFs")
+        
+        # Summary metrics
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        
+        yr5 = df_combined_sim.iloc[-1]
+        
+        with col_r1:
+            st.metric(
+                "Total Redeployed",
+                f"${(aud_amount + eur_amount_aud):,.0f}",
+                help=f"AUD: ${aud_amount:,.0f} + EUR: €{eur_amount:,.0f} (≈${eur_amount_aud:,.0f})"
+            )
+        with col_r2:
+            st.metric(
+                "Value if Kept in Cash",
+                f"${yr5['Total Cash (if kept, after tax)']:,.0f}",
+                delta=f"+${yr5['Total Cash (if kept, after tax)'] - (aud_amount + eur_amount_aud):,.0f}"
+            )
+        with col_r3:
+            st.metric(
+                "Value if Redeployed",
+                f"${yr5['Total Redeployed Value (after CGT)']:,.0f}",
+                delta=f"+${yr5['Total Redeployed Value (after CGT)'] - (aud_amount + eur_amount_aud):,.0f}",
+                delta_color="normal"
+            )
+        with col_r4:
+            advantage = yr5['Combined Advantage']
+            st.metric(
+                "Net Advantage",
+                f"${advantage:+,.0f}",
+                delta=f"{(advantage/(aud_amount + eur_amount_aud)*100):+.1f}%",
+                delta_color="normal" if advantage >= 0 else "inverse"
+            )
+        
+        st.divider()
+        
+        # Chart showing comparison
+        st.markdown("#### 📈 5-Year Projection: Redeployed vs Kept in Cash")
+        
+        fig_combined = go.Figure()
+        
+        fig_combined.add_trace(go.Scatter(
+            x=df_combined_sim['Date'],
+            y=df_combined_sim['Total Redeployed Value (after CGT)'],
+            mode='lines',
+            name='💰 Redeployed (AUD Investments + N26)',
+            line=dict(color='#27ae60', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(39,174,96,0.1)',
+            hovertemplate='Redeployed: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_combined.add_trace(go.Scatter(
+            x=df_combined_sim['Date'],
+            y=df_combined_sim['Total Cash (if kept, after tax)'],
+            mode='lines',
+            name='🏦 Kept in Cash (after tax)',
+            line=dict(color='#e74c3c', width=2.5, dash='dot'),
+            fill='tozeroy',
+            fillcolor='rgba(231,76,60,0.05)',
+            hovertemplate='Cash: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_combined.add_trace(go.Scatter(
+            x=df_combined_sim['Date'],
+            y=df_combined_sim['Combined Advantage'],
+            mode='lines',
+            name='📊 Extra Gain',
+            line=dict(color='#f39c12', width=2, dash='dash'),
+            hovertemplate='Advantage: $%{y:,.0f}<extra></extra>',
+            yaxis='y2'
+        ))
+        
+        fig_combined.add_vline(x='2027-07-01', line_dash='dash', line_color='#e74c3c',
+                               opacity=0.6, annotation_text='CGT change 1 Jul 2027',
+                               annotation_position='top left')
+        
+        fig_combined.update_layout(
+            height=450,
+            hovermode='x unified',
+            yaxis=dict(title="Value (AUD)", tickprefix="$"),
+            yaxis2=dict(title="Extra Gain (AUD)", tickprefix="$", overlaying='y', side='right', showgrid=False),
+            legend=dict(orientation="h", y=1.08),
+            margin=dict(t=50, b=30)
+        )
+        
+        st.plotly_chart(fig_combined, use_container_width=True)
+        
+        # Breakdown by currency
+        st.markdown("#### 📋 Breakdown by Currency")
+        
+        col_break1, col_break2 = st.columns(2)
+        
+        with col_break1:
+            st.markdown("**🇦🇺 AUD Component**")
+            st.metric(f"{aud_target}", f"${aud_invest_after_cgt:,.0f}",
+                     delta=f"${aud_invest_after_cgt - aud_amount:+,.0f}")
+            st.caption(f"vs Cash: ${aud_cash_val:,.0f} (advantage: ${aud_invest_after_cgt - aud_cash_val:+,.0f})")
+        
+        with col_break2:
+            st.markdown("**🇪🇺 EUR Component (N26)**")
+            st.metric("N26 European ETFs", f"${eur_invest_after_cgt_aud:,.0f}",
+                     delta=f"${eur_invest_after_cgt_aud - eur_amount_aud:+,.0f}")
+            st.caption(f"vs Cash: ${eur_cash_val_aud:,.0f} (advantage: ${eur_invest_after_cgt_aud - eur_cash_val_aud:+,.0f})")
+        
+        # Impact on total net worth
+        st.divider()
+        st.markdown("#### 💰 Impact on Total 5-Year Net Worth")
+        
+        current_proj_end = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
+        new_proj_end = current_proj_end + advantage
+        
+        col_imp1, col_imp2, col_imp3 = st.columns(3)
+        col_imp1.metric("Base Projected NW (Year 5)", f"${current_proj_end:,.0f}")
+        col_imp2.metric("With Redeployment", f"${new_proj_end:,.0f}",
+                       delta=f"+${advantage:,.0f}",
+                       delta_color="normal" if advantage >= 0 else "inverse")
+        col_imp3.metric("Extra Annual Return", 
+                       f"{(advantage/5/(aud_amount + eur_amount_aud)*100):+.2f}% p.a.",
+                       help="Average annual extra return from redeployment")
+        
+        # Show year-by-year table
+        with st.expander("📋 View Year-by-Year Projections"):
+            df_display = df_combined_sim[df_combined_sim['Month'] % 12 == 0].copy()
+            df_display['Year'] = (df_display['Month'] / 12).astype(int)
+            st.dataframe(
+                df_display[['Year', 'Date', 'Total Redeployed Value (after CGT)', 'Total Cash (if kept, after tax)', 'Combined Advantage']]
+                .style.format({
+                    'Total Redeployed Value (after CGT)': '${:,.0f}',
+                    'Total Cash (if kept, after tax)': '${:,.0f}',
+                    'Combined Advantage': '${:+,.0f}',
+                })
+                .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Advantage' in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 and 'Advantage' in str(v) else '')),
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.info("👆 Click 'Run Combined Scenario' to see the 5-year impact of redeploying both AUD and EUR cash.")
