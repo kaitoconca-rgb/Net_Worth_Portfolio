@@ -1226,32 +1226,12 @@ with tab0:
                         help=f"Value on {analysis['start_date'].strftime('%d %b %Y')}"
                     )
                 with col2:
-                    market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">📈 Market Gains (Total)</div>
-                            <div style="font-size: 1.5rem; color: {market_color}; font-weight: bold;">
-                                ${analysis['market_gains']:+,.2f}
-                            </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['market_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Total investment returns across all portfolios
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Show REAL portfolio breakdown ONLY if we have data
-                    if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
-                        with st.expander("📋 Real breakdown by portfolio"):
-                            for portfolio, gain in analysis['portfolio_gains'].items():
-                                if gain != 0:
-                                    gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
-                                    pct_of_market = (gain / analysis['market_gains'] * 100) if analysis['market_gains'] != 0 else 0
-                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span> <span style='color:#666; font-size:0.8rem'>({pct_of_market:.1f}% of market gains)</span>", unsafe_allow_html=True)
-                    else:
-                        st.info("📊 *Portfolio breakdown will appear here after you save 2+ snapshots with portfolio data (starting from today).*")
+                    st.metric(
+                        "Ending Net Worth", 
+                        f"${analysis['end_value']:,.2f}",
+                        delta=f"${analysis['total_change']:+,.2f} ({analysis['total_change_pct']:+.2f}%)",
+                        delta_color="normal" if analysis['total_change'] >= 0 else "inverse"
+                    )
                 with col3:
                     st.metric(
                         "Period Length", 
@@ -1261,15 +1241,13 @@ with tab0:
                 
                 st.divider()
                 
-                # Attribution breakdown
-                # Attribution breakdown
-                # Attribution breakdown
+                # Attribution breakdown - Three columns
                 st.markdown("#### 📊 Change Attribution")
                 
                 # Create three columns for the main components
-                col1, col2, col3 = st.columns(3)
+                col_contrib, col_market, col_fx = st.columns(3)
                 
-                with col1:
+                with col_contrib:
                     contrib_color = "#27ae60" if analysis['total_contributions'] >= 0 else "#e74c3c"
                     st.markdown(f"""
                         <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
@@ -1286,7 +1264,7 @@ with tab0:
                         </div>
                     """, unsafe_allow_html=True)
                 
-                with col2:
+                with col_market:
                     market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
                     st.markdown(f"""
                         <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
@@ -1303,14 +1281,18 @@ with tab0:
                         </div>
                     """, unsafe_allow_html=True)
                     
-                    # Add expandable portfolio breakdown
-                    with st.expander("📋 See breakdown by portfolio"):
-                        for portfolio, gain in analysis['portfolio_gains'].items():
-                            if gain != 0:
-                                gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
-                                st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span>", unsafe_allow_html=True)
+                    # Portfolio breakdown expander (only one copy, right here)
+                    if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
+                        with st.expander("📋 See breakdown by portfolio"):
+                            for portfolio, gain in analysis['portfolio_gains'].items():
+                                if gain != 0:
+                                    gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
+                                    pct_of_market = (gain / analysis['market_gains'] * 100) if analysis['market_gains'] != 0 else 0
+                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span> <span style='color:#666; font-size:0.8rem'>({pct_of_market:.1f}% of market gains)</span>", unsafe_allow_html=True)
+                    else:
+                        st.caption("📊 *Portfolio breakdown will appear here after you save 2+ snapshots with portfolio data.*")
                 
-                with col3:
+                with col_fx:
                     fx_color = "#27ae60" if analysis['fx_impact'] >= 0 else "#e74c3c"
                     st.markdown(f"""
                         <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
@@ -1384,12 +1366,12 @@ with tab0:
                         fig_cumulative = go.Figure()
                         
                         # Starting point
-                        start_value = df_period_data.iloc[0]['Total_AUD']
+                        start_value_cum = df_period_data.iloc[0]['Total_AUD']
                         
                         # Add stacked area
                         fig_cumulative.add_trace(go.Scatter(
                             x=df_period_data['Date'],
-                            y=start_value + df_period_data['Cumulative_Contributions'],
+                            y=start_value_cum + df_period_data['Cumulative_Contributions'],
                             mode='lines',
                             name='Starting + Contributions',
                             line=dict(width=0.5, color='#27ae60'),
@@ -1457,8 +1439,7 @@ with tab0:
             else:
                 st.warning("Not enough data points in the selected period. Please select a wider range or save more snapshots.")
     else:
-        st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")
-    
+        st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")    
     # This is your existing Save Snapshot button (put it AFTER the period analysis)
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
