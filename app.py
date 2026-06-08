@@ -514,30 +514,17 @@ def save_net_worth_snapshot(total, force=False):
             "token_uri": "https://oauth2.googleapis.com/token",
         }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        
-        # Calculate current portfolio values in AUD
-        n26_aud = current_market_value_eur * fx_now
-        raiz_aud = raiz_total_aud
-        vanguard_aud = vanguard_total_aud
-        shares_aud = shares_total_aud
-        commodities_aud = commodities_total_aud
-        super_aud = super_total_aud
-        cash_aud = cash_total_aud
-        
-        # Read existing history (columns A through N)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A:N"
         ).execute()
-        
         existing = result.get('values', [])
-        
-        # If empty, create header row
         if not existing:
-            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']]
-        
+            existing = [['Date','Total_AUD','Contributions_AUD','Market_Gains_AUD',
+                         'FX_Impact_AUD','Starting_Balance_AUD','Contribution_Breakdown',
+                         'N26_AUD','Raiz_AUD','Vanguard_AUD','Shares_AUD',
+                         'Commodities_AUD','Super_AUD','Cash_AUD']]
         today = date.today()
-        
         if not force and len(existing) > 1:
             try:
                 last_date = pd.to_datetime(existing[-1][0])
@@ -545,51 +532,42 @@ def save_net_worth_snapshot(total, force=False):
                     return False, "Already saved this month"
             except:
                 pass
-        
-        # Calculate attribution if we have previous snapshot
-        starting_balance = 0.0
+        # Portfolio values for this snapshot
+        n26_aud        = current_market_value_eur * fx_now
+        raiz_aud       = raiz_total_aud
+        vanguard_aud   = vanguard_total_aud
+        shares_aud     = shares_total_aud
+        commodities_aud= commodities_total_aud
+        super_aud      = super_total_aud
+        cash_aud       = cash_total_aud
+        # Attribution vs previous snapshot
         contributions = 0.0
-        market_gains = 0.0
-        fx_impact = 0.0
-        contribution_breakdown = ""
-        
+        market_gains  = 0.0
+        fx_impact     = 0.0
+        starting_bal  = 0.0
+        contrib_breakdown = ""
         if len(existing) > 1:
-            prev_date = pd.to_datetime(existing[-1][0]).date()
-            prev_total = float(existing[-1][1]) if existing[-1][1] else 0
-            starting_balance = prev_total
-            
-            # Calculate contributions in period
-            contributions, breakdown_dict = calculate_period_contributions(prev_date, today)
-            
-            # Calculate FX impact
-            fx_impact = calculate_fx_impact_period(prev_date, today)
-            
-            # Market gains = residual after contributions and FX
-            market_gains = total - prev_total - contributions - fx_impact
-            
-            # Create breakdown string
-            contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
-        
-        # Append new row with all portfolio values
+            try:
+                prev_total = float(existing[-1][1])
+                starting_bal = prev_total
+                prev_date = pd.to_datetime(existing[-1][0]).date()
+                contributions, bd = calculate_period_contributions(prev_date, today)
+                fx_impact = calculate_fx_impact_period(prev_date, today)
+                market_gains = total - prev_total - contributions - fx_impact
+                contrib_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in bd.items() if v > 0])
+            except Exception:
+                pass
         new_row = [
-            today.strftime('%Y-%m-%d'),  # A: Date
-            str(round(total, 2)),  # B: Total_AUD
-            str(round(contributions, 2)),  # C: Contributions_AUD
-            str(round(market_gains, 2)),  # D: Market_Gains_AUD
-            str(round(fx_impact, 2)),  # E: FX_Impact_AUD
-            str(round(starting_balance, 2)),  # F: Starting_Balance_AUD
-            contribution_breakdown,  # G: Contribution_Breakdown
-            str(round(n26_aud, 2)),  # H: N26_AUD
-            str(round(raiz_aud, 2)),  # I: Raiz_AUD
-            str(round(vanguard_aud, 2)),  # J: Vanguard_AUD
-            str(round(shares_aud, 2)),  # K: Shares_AUD
-            str(round(commodities_aud, 2)),  # L: Commodities_AUD
-            str(round(super_aud, 2)),  # M: Super_AUD
-            str(round(cash_aud, 2)),  # N: Cash_AUD
+            today.strftime('%Y-%m-%d'), str(round(total, 2)),
+            str(round(contributions, 2)), str(round(market_gains, 2)),
+            str(round(fx_impact, 2)), str(round(starting_bal, 2)),
+            contrib_breakdown,
+            str(round(n26_aud, 2)), str(round(raiz_aud, 2)),
+            str(round(vanguard_aud, 2)), str(round(shares_aud, 2)),
+            str(round(commodities_aud, 2)), str(round(super_aud, 2)),
+            str(round(cash_aud, 2)),
         ]
         existing.append(new_row)
-        
-        # Update sheet
         service.spreadsheets().values().update(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A1",
@@ -604,175 +582,36 @@ def save_net_worth_snapshot(total, force=False):
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        # Read columns A through N
         df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:N")
         if df_nw.empty:
             return pd.DataFrame(columns=['Date', 'Total_AUD'])
-        
         df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
         df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
-        
-        # Load attribution columns if they exist
-        if 'Contributions_AUD' in df_nw.columns:
-            df_nw['Contributions_AUD'] = pd.to_numeric(df_nw['Contributions_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Contributions_AUD'] = 0.0
-            
-        if 'Market_Gains_AUD' in df_nw.columns:
-            df_nw['Market_Gains_AUD'] = pd.to_numeric(df_nw['Market_Gains_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Market_Gains_AUD'] = 0.0
-            
-        if 'FX_Impact_AUD' in df_nw.columns:
-            df_nw['FX_Impact_AUD'] = pd.to_numeric(df_nw['FX_Impact_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['FX_Impact_AUD'] = 0.0
-            
-        if 'Starting_Balance_AUD' in df_nw.columns:
-            df_nw['Starting_Balance_AUD'] = pd.to_numeric(df_nw['Starting_Balance_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Starting_Balance_AUD'] = 0.0
-            
-        if 'Contribution_Breakdown' not in df_nw.columns:
-            df_nw['Contribution_Breakdown'] = ""
-        
-        # Load portfolio columns (H through N)
-        portfolio_columns = ['N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']
-        for col in portfolio_columns:
+        for col in ['Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD',
+                    'Starting_Balance_AUD', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD',
+                    'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']:
             if col in df_nw.columns:
                 df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
             else:
                 df_nw[col] = 0.0
-            
+        if 'Contribution_Breakdown' not in df_nw.columns:
+            df_nw['Contribution_Breakdown'] = ""
         return df_nw.dropna(subset=['Total_AUD'])
-    except Exception as e:
+    except:
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
-        # ==================== NET WORTH CHANGE ANALYSIS ====================
-def analyze_net_worth_change(df_history, start_date, end_date):
-    """
-    Analyze net worth change between two dates using ONLY real saved portfolio data
-    """
-    # Filter history for the date range
-    mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-    df_period = df_history[mask].copy()
-    
-    if len(df_period) < 2:
-        return None
-    
-    # Get start and end rows
-    start_row = df_period.iloc[0]
-    end_row = df_period.iloc[-1]
-    
-    start_value = start_row['Total_AUD']
-    end_value = end_row['Total_AUD']
-    total_change = end_value - start_value
-    total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
-    
-    # Calculate REAL portfolio gains using saved data
-    portfolio_gains = {}
-    portfolio_mapping = {
-        'N26_AUD': 'N26 European ETFs',
-        'Raiz_AUD': 'Raiz ETFs',
-        'Vanguard_AUD': 'Vanguard VDAL',
-        'Shares_AUD': 'ASX Shares',
-        'Commodities_AUD': 'Commodities',
-        'Super_AUD': 'Super',
-        'Cash_AUD': 'Cash'
-    }
-    
-    total_saved_gains = 0
-    has_real_data = False
-    
-    for col, name in portfolio_mapping.items():
-        if col in start_row.index and col in end_row.index:
-            start_val = start_row[col] if pd.notna(start_row[col]) else 0
-            end_val = end_row[col] if pd.notna(end_row[col]) else 0
-            gain = end_val - start_val
-            
-            # Only include if BOTH snapshots have non-zero data (real portfolio values)
-            if start_val != 0 or end_val != 0:
-                has_real_data = True
-                portfolio_gains[name] = gain
-                total_saved_gains += gain
-            else:
-                portfolio_gains[name] = 0
-        else:
-            portfolio_gains[name] = 0
-    
-    # Get contributions and FX impact
-    total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
-    fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
-    
-    # Calculate market gains
-    if has_real_data and len(df_period) >= 2:
-        # Use the sum of saved portfolio gains (changes)
-        market_gains = total_saved_gains
-    else:
-        # Use residual calculation
-        market_gains = total_change - total_contributions - fx_impact
-        # Clear portfolio gains since we can't break it down accurately
-        portfolio_gains = {}
-        has_real_data = False
-    
-    # Calculate percentages
-    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
-    market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
-    fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
-    
-    return {
-        'start_date': start_row['Date'].date(),
-        'end_date': end_row['Date'].date(),
-        'start_value': start_value,
-        'end_value': end_value,
-        'total_change': total_change,
-        'total_change_pct': total_change_pct,
-        'total_contributions': total_contributions,
-        'market_gains': market_gains,
-        'portfolio_gains': portfolio_gains,
-        'has_portfolio_data': has_real_data,
-        'fx_impact': fx_impact,
-        'contrib_pct': contrib_pct,
-        'market_pct': market_pct,
-        'fx_pct': fx_pct,
-        'days': (end_row['Date'] - start_row['Date']).days
-    }
-    
-    # Calculate percentages
-    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
-    market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
-    fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
-    
-    return {
-        'start_date': df_period.iloc[0]['Date'].date(),
-        'end_date': df_period.iloc[-1]['Date'].date(),
-        'start_value': start_value,
-        'end_value': end_value,
-        'total_change': total_change,
-        'total_change_pct': total_change_pct,
-        'total_contributions': total_contributions,
-        'portfolio_contributions': portfolio_contributions,
-        'market_gains': market_gains,
-        'portfolio_gains': portfolio_gains,
-        'fx_impact': fx_impact,
-        'contrib_pct': contrib_pct,
-        'market_pct': market_pct,
-        'fx_pct': fx_pct,
-        'days': (df_period.iloc[-1]['Date'] - df_period.iloc[0]['Date']).days
-    }
-# ==================== ADDITION: CONTRIBUTION TRACKING ====================
-# Add these functions right after load_net_worth_history() and before the tabs
+
+# ── CONTRIBUTION & ANALYSIS HELPERS (top-level) ──────────────────────────────
 
 @st.cache_data(ttl=300)
-def get_raiz_transactions():
-    """Get Raiz transaction history for contribution tracking"""
+def get_raiz_transactions_for_contrib():
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaIoBaseDownload
         import io
         gs = st.secrets["gdrive"]
-        creds_dict = {
+        creds = service_account.Credentials.from_service_account_info({
             "type": gs.get("type", "service_account"),
             "project_id": gs["project_id"],
             "private_key_id": gs["private_key_id"],
@@ -780,14 +619,12 @@ def get_raiz_transactions():
             "client_email": gs["client_email"],
             "client_id": gs.get("client_id", ""),
             "token_uri": "https://oauth2.googleapis.com/token",
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+        }, scopes=["https://www.googleapis.com/auth/drive.readonly"])
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
         folder_id = st.secrets["gdrive"]["raiz_folder_id"]
         results = service.files().list(
             q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
+            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name)"
         ).execute()
         files = results.get("files", [])
         if not files:
@@ -807,62 +644,27 @@ def get_raiz_transactions():
     except:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300)
-def get_vanguard_transactions():
-    """Get Vanguard transaction history"""
-    try:
-        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:F")
-        if df_v.empty:
-            return pd.DataFrame()
-        df_v.columns = [c.strip() for c in df_v.columns]
-        df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
-        df_v['Amount'] = pd.to_numeric(df_v['Amount'], errors='coerce').fillna(0)
-        return df_v
-    except:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=300)
-def get_commodities_transactions():
-    """Get commodities transaction history"""
-    try:
-        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
-        if df_m.empty:
-            return pd.DataFrame()
-        df_m.columns = [c.strip() for c in df_m.columns]
-        df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
-        df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
-        df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
-        return df_m
-    except:
-        return pd.DataFrame()
-
 def calculate_period_contributions(start_date, end_date):
-    """Calculate contributions across all asset classes between two dates"""
     breakdown = {}
     total = 0.0
-    
-    # N26 Contributions
+    # N26
     try:
-        n26_contrib = df_raw[
-            (df_raw['Tipo'] == 'BUY') & 
-            (df_raw['Data'].dt.date >= start_date) & 
+        n26_buys = df_raw[
+            (df_raw['Tipo'] == 'BUY') &
+            (df_raw['Data'].dt.date >= start_date) &
             (df_raw['Data'].dt.date <= end_date)
-        ].copy()
-        n26_total = 0.0
-        for _, row in n26_contrib.iterrows():
-            fx_rate = get_fx_at(row['Data'])
-            n26_total += row['Inv_EUR'] * fx_rate
+        ]
+        n26_total = sum(row['Inv_EUR'] * get_fx_at(row['Data']) for _, row in n26_buys.iterrows())
         breakdown['N26'] = n26_total
         total += n26_total
     except:
         breakdown['N26'] = 0.0
-    
-    # Raiz Contributions
+    # Raiz
     try:
-        raiz_df = get_raiz_transactions()
+        raiz_df = get_raiz_transactions_for_contrib()
         if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
             raiz_period = raiz_df[
-                (raiz_df['Trade Date'].dt.date >= start_date) & 
+                (raiz_df['Trade Date'].dt.date >= start_date) &
                 (raiz_df['Trade Date'].dt.date <= end_date) &
                 (raiz_df['Transaction Type'].str.upper().str.strip() == 'DEPOSIT')
             ]
@@ -871,45 +673,56 @@ def calculate_period_contributions(start_date, end_date):
             total += raiz_total
     except:
         breakdown['Raiz'] = 0.0
-    
-    # Vanguard Contributions
+    # Vanguard
     try:
-        vanguard_df = get_vanguard_transactions()
-        if not vanguard_df.empty:
-            vanguard_period = vanguard_df[
-                (vanguard_df['Date'].dt.date >= start_date) & 
-                (vanguard_df['Date'].dt.date <= end_date) &
-                (vanguard_df['Transaction'].str.upper() == 'BUY')
+        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
+        if not df_v.empty:
+            df_v.columns = [c.strip() for c in df_v.columns]
+            df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
+            df_v['Quantity'] = pd.to_numeric(df_v['Quantity'], errors='coerce').fillna(0)
+            df_v['Purchase Price'] = pd.to_numeric(df_v['Purchase Price'], errors='coerce').fillna(0)
+            vbuy = df_v[
+                (df_v['Date'].dt.date >= start_date) &
+                (df_v['Date'].dt.date <= end_date) &
+                (df_v['Transaction'].str.upper() == 'BUY')
             ]
-            vanguard_total = vanguard_period['Amount'].sum()
-            breakdown['Vanguard'] = vanguard_total
-            total += vanguard_total
+            v_total = (vbuy['Quantity'] * vbuy['Purchase Price']).sum()
+            breakdown['Vanguard'] = v_total
+            total += v_total
     except:
         breakdown['Vanguard'] = 0.0
-    
-    # Commodities Contributions
+    # Metals
     try:
-        commodities_df = get_commodities_transactions()
-        if not commodities_df.empty:
-            commodities_period = commodities_df[
-                (commodities_df['Date'].dt.date >= start_date) & 
-                (commodities_df['Date'].dt.date <= end_date) &
-                (commodities_df['Transaction'].str.upper() == 'BUY')
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
+        if not df_m.empty:
+            df_m.columns = [c.strip() for c in df_m.columns]
+            df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
+            df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
+            df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
+            if 'Currency' not in df_m.columns:
+                df_m['Currency'] = 'AUD'
+            mbuy = df_m[
+                (df_m['Date'].dt.date >= start_date) &
+                (df_m['Date'].dt.date <= end_date) &
+                (df_m['Transaction'].str.upper() == 'BUY')
             ]
-            commodities_total = (commodities_period['Quantity'] * commodities_period['Purchase Price']).sum()
-            breakdown['Commodities'] = commodities_total
-            total += commodities_total
+            m_total = sum(
+                convert_purchase_to_aud(
+                    row['Quantity'] * row['Purchase Price'],
+                    row['Currency'],
+                    row['Date'].strftime('%Y-%m-%d')
+                ) for _, row in mbuy.iterrows()
+            )
+            breakdown['Metals'] = m_total
+            total += m_total
     except:
-        breakdown['Commodities'] = 0.0
-    
+        breakdown['Metals'] = 0.0
     return total, breakdown
 
 def calculate_fx_impact_period(start_date, end_date):
-    """Calculate FX impact on net worth from currency movements"""
     try:
         start_fx = get_fx_at(pd.Timestamp(start_date))
-        end_fx = get_fx_at(pd.Timestamp(end_date))
-        
+        end_fx   = get_fx_at(pd.Timestamp(end_date))
         date_obj = pd.Timestamp(start_date)
         snapshot = df_raw[df_raw['Data'] <= date_obj].groupby('ISIN')['Qty'].sum()
         european_start = 0.0
@@ -928,16 +741,78 @@ def calculate_fx_impact_period(start_date, end_date):
                 ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
                 p = ledger_price.iloc[0] if not ledger_price.empty else 0
             european_start += float(qty * p)
-        
-        european_end = current_market_value_eur
-        avg_european_exposure = (european_start + european_end) / 2
-        fx_impact = avg_european_exposure * (end_fx - start_fx)
-        return fx_impact
+        avg_exposure = (european_start + current_market_value_eur) / 2
+        return avg_exposure * (end_fx - start_fx)
     except:
         return 0.0
-# ==================== CONTRIBUTION TRACKING FUNCTIONS ====================
 
+def analyze_net_worth_change(df_history, start_date, end_date):
+    mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
+    df_period = df_history[mask].copy()
+    if len(df_period) < 2:
+        return None
+    start_row  = df_period.iloc[0]
+    end_row    = df_period.iloc[-1]
+    start_value = float(start_row['Total_AUD'])
+    end_value   = float(end_row['Total_AUD'])
+    total_change = end_value - start_value
+    total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
+    portfolio_mapping = {
+        'N26_AUD': 'N26 European ETFs',
+        'Raiz_AUD': 'Raiz ETFs',
+        'Vanguard_AUD': 'Vanguard VDAL',
+        'Shares_AUD': 'ASX Shares',
+        'Commodities_AUD': 'Commodities',
+        'Super_AUD': 'Super',
+        'Cash_AUD': 'Cash'
+    }
+    portfolio_gains = {}
+    has_real_data = False
+    for col, name in portfolio_mapping.items():
+        if col in start_row.index and col in end_row.index:
+            sv = float(start_row[col]) if pd.notna(start_row[col]) else 0
+            ev = float(end_row[col])   if pd.notna(end_row[col])   else 0
+            if sv != 0 or ev != 0:
+                has_real_data = True
+            portfolio_gains[name] = ev - sv
+        else:
+            portfolio_gains[name] = 0.0
+    total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0.0
+    fx_impact           = df_period['FX_Impact_AUD'].sum()     if 'FX_Impact_AUD'     in df_period.columns else 0.0
+    if has_real_data:
+        market_gains = sum(portfolio_gains.values()) - total_contributions
+    else:
+        market_gains = total_change - total_contributions - fx_impact
+        portfolio_gains = {}
+        has_real_data = False
+    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
+    market_pct  = (market_gains        / abs(total_change) * 100) if total_change != 0 else 0
+    fx_pct      = (fx_impact           / abs(total_change) * 100) if total_change != 0 else 0
+    return {
+        'start_date': start_row['Date'].date(),
+        'end_date':   end_row['Date'].date(),
+        'start_value': start_value,
+        'end_value':   end_value,
+        'total_change': total_change,
+        'total_change_pct': total_change_pct,
+        'total_contributions': total_contributions,
+        'market_gains': market_gains,
+        'portfolio_gains': portfolio_gains,
+        'has_portfolio_data': has_real_data,
+        'fx_impact': fx_impact,
+        'contrib_pct': contrib_pct,
+        'market_pct': market_pct,
+        'fx_pct': fx_pct,
+        'days': (end_row['Date'] - start_row['Date']).days
+    }
 
+@st.cache_data(ttl=600)
+def get_usd_aud():
+    try:
+        rate = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+        return 1 / rate if rate > 0 else 1.58
+    except:
+        return 1.58
 
 # ── METAL / COMMODITY FUNCTIONS (top-level so cache clears work) ─────────────
 METAL_CONFIG = {
@@ -1159,288 +1034,103 @@ with tab0:
             margin=dict(t=30, b=30, r=200))
         st.plotly_chart(fig_history, use_container_width=True)
         # Summary stats
-        # Summary stats with attribution (replace the existing h1,h2,h3 section)
-    if len(df_history) > 1:
-        h1, h2, h3, h4 = st.columns(4)
-        h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
-                  df_history['Date'].iloc[0].strftime('%d %b %Y'))
-        h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
-                  df_history['Date'].iloc[-1].strftime('%d %b %Y'))
-        delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
-        h3.metric("Total Change", f"${delta:+,.2f}",
-                  f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
-                  delta_color="normal" if delta >= 0 else "inverse")
-        
-        # Show contribution attribution if available
-        if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
-            total_contributions = df_history['Contributions_AUD'].iloc[-1]
-            total_gains = df_history['Market_Gains_AUD'].iloc[-1] if 'Market_Gains_AUD' in df_history.columns else 0
-            total_fx = df_history['FX_Impact_AUD'].iloc[-1] if 'FX_Impact_AUD' in df_history.columns else 0
-            
-            h4.metric("Contributions", f"${total_contributions:+,.2f}",
-                      f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
+        if len(df_history) > 1:
+            h1, h2, h3, h4 = st.columns(4)
+            h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
+                      df_history['Date'].iloc[0].strftime('%d %b %Y'))
+            h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
+                      df_history['Date'].iloc[-1].strftime('%d %b %Y'))
+            delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
+            h3.metric("Total Change", f"${delta:+,.2f}",
+                      f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
+                      delta_color="normal" if delta >= 0 else "inverse")
+            if 'Contributions_AUD' in df_history.columns:
+                total_contribs = df_history['Contributions_AUD'].sum()
+                total_mkt = df_history['Market_Gains_AUD'].sum() if 'Market_Gains_AUD' in df_history.columns else 0
+                h4.metric("Contributions", f"${total_contribs:+,.0f}",
+                          f"Market gains: ${total_mkt:+,.0f}")
+    else:
+        st.info("Net worth history will appear here after the first end-of-month snapshot.")
+
     st.divider()
-    
-    # ==================== PERIOD ANALYSIS SECTION ====================
-    st.markdown("### 🔍 Period Analysis — What Drove the Change?")
-    st.caption("Select a date range to analyze how contributions, market performance, and currency movements affected your net worth.")
-    
+    st.markdown("### 🔍 Period Analysis")
+    st.caption("Select a date range to analyse what drove the change in your net worth.")
+
     if not df_history.empty and len(df_history) > 1:
-        # Date range selector
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
             min_date = df_history['Date'].min().date()
             max_date = df_history['Date'].max().date()
-            start_date = st.date_input(
-                "Start Date",
-                value=df_history['Date'].iloc[0].date(),
-                min_value=min_date,
-                max_value=max_date,
-                key="analysis_start"
-            )
-        with col_date2:
-            end_date = st.date_input(
-                "End Date",
-                value=df_history['Date'].iloc[-1].date(),
-                min_value=min_date,
-                max_value=max_date,
-                key="analysis_end"
-            )
-        
-        # Ensure start_date <= end_date
-        if start_date > end_date:
+            pa_start = st.date_input("Start Date", value=min_date,
+                                     min_value=min_date, max_value=max_date, key="pa_start")
+        with col_d2:
+            pa_end = st.date_input("End Date", value=max_date,
+                                   min_value=min_date, max_value=max_date, key="pa_end")
+        if pa_start > pa_end:
             st.error("Start date must be before end date")
         else:
-            # Get analysis
-            analysis = analyze_net_worth_change(df_history, start_date, end_date)
-            
+            analysis = analyze_net_worth_change(df_history, pa_start, pa_end)
             if analysis:
-                # Summary metrics
-                st.markdown(f"#### 📅 {analysis['start_date'].strftime('%d %b %Y')} → {analysis['end_date'].strftime('%d %b %Y')} ({analysis['days']} days)")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric(
-                        "Starting Net Worth", 
-                        f"${analysis['start_value']:,.2f}",
-                        help=f"Value on {analysis['start_date'].strftime('%d %b %Y')}"
-                    )
-                with col2:
-                    st.metric(
-                        "Ending Net Worth", 
-                        f"${analysis['end_value']:,.2f}",
-                        delta=f"${analysis['total_change']:+,.2f} ({analysis['total_change_pct']:+.2f}%)",
-                        delta_color="normal" if analysis['total_change'] >= 0 else "inverse"
-                    )
-                with col3:
-                    st.metric(
-                        "Period Length", 
-                        f"{analysis['days']} days",
-                        f"{(analysis['days']/365):.2f} years"
-                    )
-                
+                st.markdown(f"#### {analysis['start_date'].strftime('%d %b %Y')} → {analysis['end_date'].strftime('%d %b %Y')} ({analysis['days']} days)")
+                ac1, ac2, ac3 = st.columns(3)
+                ac1.metric("Starting NW", f"${analysis['start_value']:,.2f}")
+                ac2.metric("Ending NW", f"${analysis['end_value']:,.2f}",
+                           delta=f"${analysis['total_change']:+,.2f} ({analysis['total_change_pct']:+.2f}%)",
+                           delta_color="normal" if analysis['total_change'] >= 0 else "inverse")
+                ac3.metric("Period", f"{analysis['days']} days", f"{analysis['days']/365:.2f} years")
                 st.divider()
-                
-                # Attribution breakdown - Three columns
                 st.markdown("#### 📊 Change Attribution")
-                
-                # Create three columns for the main components
-                col_contrib, col_market, col_fx = st.columns(3)
-                
-                with col_contrib:
-                    contrib_color = "#27ae60" if analysis['total_contributions'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">💰 New Contributions</div>
-                            <div style="font-size: 1.5rem; color: {contrib_color}; font-weight: bold;">
-                                ${analysis['total_contributions']:+,.2f}
-                            </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['contrib_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Money added to investments & savings
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col_market:
-                    market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">📈 Market Gains</div>
-                            <div style="font-size: 1.5rem; color: {market_color}; font-weight: bold;">
-                                ${analysis['market_gains']:+,.2f}
-                            </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['market_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Investment returns from all portfolios
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Portfolio breakdown expander (only one copy, right here)
-                    if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
-                        with st.expander("📋 See breakdown by portfolio"):
-                            for portfolio, gain in analysis['portfolio_gains'].items():
-                                if gain != 0:
-                                    gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
-                                    pct_of_market = (gain / analysis['market_gains'] * 100) if analysis['market_gains'] != 0 else 0
-                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span> <span style='color:#666; font-size:0.8rem'>({pct_of_market:.1f}% of market gains)</span>", unsafe_allow_html=True)
-                    else:
-                        st.caption("📊 *Portfolio breakdown will appear here after you save 2+ snapshots with portfolio data.*")
-                
-                with col_fx:
-                    fx_color = "#27ae60" if analysis['fx_impact'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">💱 FX Impact</div>
-                            <div style="font-size: 1.5rem; color: {fx_color}; font-weight: bold;">
-                                ${analysis['fx_impact']:+,.2f}
-                            </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['fx_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Currency movements (AUD/EUR)
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Waterfall chart for visual representation
-                st.markdown("#### 📊 Visual Breakdown")
-                
-                # Prepare data for waterfall chart
-                waterfall_data = []
-                if analysis['total_contributions'] != 0:
-                    waterfall_data.append({'Category': 'Contributions', 'Value': analysis['total_contributions']})
-                if analysis['market_gains'] != 0:
-                    waterfall_data.append({'Category': 'Market Gains', 'Value': analysis['market_gains']})
-                if analysis['fx_impact'] != 0:
-                    waterfall_data.append({'Category': 'FX Impact', 'Value': analysis['fx_impact']})
-                
-                if waterfall_data:
-                    fig_waterfall = go.Figure()
-                    
-                    # Add bars
-                    colors = ['#27ae60' if x['Value'] >= 0 else '#e74c3c' for x in waterfall_data]
-                    fig_waterfall.add_trace(go.Bar(
-                        x=[x['Category'] for x in waterfall_data],
-                        y=[x['Value'] for x in waterfall_data],
-                        marker_color=colors,
-                        text=[f"${x['Value']:+,.2f}" for x in waterfall_data],
-                        textposition='outside',
-                    ))
-                    
-                    # Add a line from start to end
-                    fig_waterfall.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
-                    
-                    fig_waterfall.update_layout(
-                        title=f"From ${analysis['start_value']:,.2f} to ${analysis['end_value']:,.2f}",
-                        yaxis=dict(title="Amount (AUD)", tickprefix="$"),
-                        height=350,
-                        showlegend=False
-                    )
-                    st.plotly_chart(fig_waterfall, use_container_width=True)
-                    
+                ab1, ab2, ab3 = st.columns(3)
+                for col_w, label, val, pct, help_txt in [
+                    (ab1, "💰 New Contributions", analysis['total_contributions'], analysis['contrib_pct'], "Money added to investments"),
+                    (ab2, "📈 Market Gains",      analysis['market_gains'],        analysis['market_pct'], "Investment returns"),
+                    (ab3, "💱 FX Impact",         analysis['fx_impact'],           analysis['fx_pct'],     "Currency movements (AUD/EUR)"),
+                ]:
+                    colour = "#27ae60" if val >= 0 else "#e74c3c"
+                    col_w.markdown(
+                        "<div style='text-align:center;padding:15px;background:#f8f9fa;border-radius:10px;'>"
+                        + f"<div style='font-size:1.1rem;font-weight:600;'>{label}</div>"
+                        + f"<div style='font-size:1.5rem;color:{colour};font-weight:bold;'>${val:+,.2f}</div>"
+                        + f"<div style='font-size:0.9rem;color:#666;'>{abs(pct):.1f}% of total change</div>"
+                        + f"<div style='font-size:0.8rem;color:#888;margin-top:8px;'>{help_txt}</div>"
+                        + "</div>",
+                        unsafe_allow_html=True)
+                if analysis.get('has_portfolio_data') and analysis['portfolio_gains']:
+                    with st.expander("📋 Portfolio breakdown"):
+                        for pname, gain in analysis['portfolio_gains'].items():
+                            if gain != 0:
+                                gc = "#27ae60" if gain >= 0 else "#e74c3c"
+                                pct_m = (gain/analysis['market_gains']*100) if analysis['market_gains'] != 0 else 0
+                                st.markdown(
+                                    f"**{pname}**: <span style='color:{gc}'>${gain:+,.2f}</span> "
+                                    + f"<span style='color:#666;font-size:0.8rem'>({pct_m:.1f}% of market gains)</span>",
+                                    unsafe_allow_html=True)
+                wf_data = [x for x in [
+                    {'Category': 'Contributions', 'Value': analysis['total_contributions']},
+                    {'Category': 'Market Gains',  'Value': analysis['market_gains']},
+                    {'Category': 'FX Impact',     'Value': analysis['fx_impact']},
+                ] if x['Value'] != 0]
+                if wf_data:
                     st.divider()
-                      
-                    # Cumulative view over the selected period
-                    st.markdown("#### 📈 Cumulative Change Over Period")
-                    
-                    # Filter data for the selected period
-                    period_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-                    df_period_data = df_history[period_mask].copy()
-                    
-                    if len(df_period_data) > 1 and 'Contributions_AUD' in df_period_data.columns:
-                        # Calculate cumulative contributions and gains
-                        df_period_data = df_period_data.sort_values('Date')
-                        df_period_data['Cumulative_Contributions'] = df_period_data['Contributions_AUD'].cumsum()
-                        df_period_data['Cumulative_Market_Gains'] = df_period_data['Market_Gains_AUD'].cumsum()
-                        df_period_data['Cumulative_FX'] = df_period_data['FX_Impact_AUD'].cumsum()
-                        
-                        fig_cumulative = go.Figure()
-                        
-                        # Starting point
-                        start_value_cum = df_period_data.iloc[0]['Total_AUD']
-                        
-                        # Add stacked area
-                        fig_cumulative.add_trace(go.Scatter(
-                            x=df_period_data['Date'],
-                            y=start_value_cum + df_period_data['Cumulative_Contributions'],
-                            mode='lines',
-                            name='Starting + Contributions',
-                            line=dict(width=0.5, color='#27ae60'),
-                            fill=None,
-                            stackgroup='one',
-                            hovertemplate='Base + Contributions: $%{y:,.0f}<extra></extra>'
-                        ))
-                        
-                        fig_cumulative.add_trace(go.Scatter(
-                            x=df_period_data['Date'],
-                            y=df_period_data['Total_AUD'],
-                            mode='lines',
-                            name='Actual Net Worth',
-                            line=dict(color='#2980b9', width=2.5),
-                            fill='tonexty',
-                            fillcolor='rgba(41,128,185,0.2)',
-                            hovertemplate='Actual: $%{y:,.0f}<extra></extra>'
-                        ))
-                        
-                        fig_cumulative.update_layout(
-                            title="Cumulative Impact: How Each Component Built Up",
-                            xaxis_title="Date",
-                            yaxis_title="Net Worth (AUD)",
-                            yaxis_tickprefix="$",
-                            height=350,
-                            hovermode='x unified',
-                            legend=dict(orientation="h", y=1.05)
-                        )
-                        
-                        st.plotly_chart(fig_cumulative, use_container_width=True)
-                        
-                        # Best/worst periods
-                        st.markdown("#### 🏆 Best & Worst Periods")
-                        col_best, col_worst = st.columns(2)
-                        
-                        # Find best month
-                        df_history_copy = df_history.copy()
-                        df_history_copy['Monthly_Change'] = df_history_copy['Total_AUD'].diff()
-                        df_history_copy['Monthly_Change_Pct'] = df_history_copy['Total_AUD'].pct_change() * 100
-                        
-                        best_month = df_history_copy.loc[df_history_copy['Monthly_Change'].idxmax()] if not df_history_copy['Monthly_Change'].isna().all() else None
-                        worst_month = df_history_copy.loc[df_history_copy['Monthly_Change'].idxmin()] if not df_history_copy['Monthly_Change'].isna().all() else None
-                        
-                        with col_best:
-                            if best_month is not None and pd.notna(best_month['Monthly_Change']):
-                                st.metric(
-                                    "📈 Best Month",
-                                    f"${best_month['Monthly_Change']:+,.2f}",
-                                    f"{best_month['Monthly_Change_Pct']:+.1f}%",
-                                    help=f"Month ending {best_month['Date'].strftime('%b %Y')}"
-                                )
-                                if 'Contributions_AUD' in best_month.index:
-                                    st.caption(f"Contributions: ${best_month['Contributions_AUD']:,.0f} | Market: ${best_month['Market_Gains_AUD']:,.0f}")
-                        
-                        with col_worst:
-                            if worst_month is not None and pd.notna(worst_month['Monthly_Change']):
-                                st.metric(
-                                    "📉 Worst Month",
-                                    f"${worst_month['Monthly_Change']:+,.2f}",
-                                    f"{worst_month['Monthly_Change_Pct']:+.1f}%",
-                                    help=f"Month ending {worst_month['Date'].strftime('%b %Y')}"
-                                )
-                                if 'Contributions_AUD' in worst_month.index:
-                                    st.caption(f"Contributions: ${worst_month['Contributions_AUD']:,.0f} | Market: ${worst_month['Market_Gains_AUD']:,.0f}")
+                    st.markdown("#### 📊 Visual Breakdown")
+                    fig_wf = go.Figure()
+                    fig_wf.add_trace(go.Bar(
+                        x=[x['Category'] for x in wf_data],
+                        y=[x['Value'] for x in wf_data],
+                        marker_color=['#27ae60' if x['Value'] >= 0 else '#e74c3c' for x in wf_data],
+                        text=[f"${x['Value']:+,.0f}" for x in wf_data],
+                        textposition='outside'))
+                    fig_wf.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+                    fig_wf.update_layout(
+                        title=f"${analysis['start_value']:,.0f} to ${analysis['end_value']:,.0f}",
+                        yaxis=dict(title="Amount (AUD)", tickprefix="$"),
+                        height=320, showlegend=False)
+                    st.plotly_chart(fig_wf, use_container_width=True)
             else:
-                st.warning("Not enough data points in the selected period. Please select a wider range or save more snapshots.")
+                st.warning("Not enough data points in selected period. Widen the range or save more snapshots.")
     else:
-        st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")    
-    # This is your existing Save Snapshot button (put it AFTER the period analysis)
+        st.info("📊 Save at least two monthly snapshots to see period analysis.")
+
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
         if ok:
@@ -2358,15 +2048,6 @@ with tab6:
     st.header("🪙 Commodities — Revolut Precious Metals")
     st.caption("Holdings from your Metal Google Sheet tab. Prices fetched live from Yahoo Finance (USD futures → AUD).")
 
-    # USD→AUD rate
-    @st.cache_data(ttl=600)
-    def get_usd_aud():
-        try:
-            rate = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
-            return 1 / rate if rate > 0 else 1.58
-        except:
-            return 1.58
-
     usd_to_aud = get_usd_aud()
 
     df_metal, metal_error = load_metal_data()
@@ -2866,6 +2547,11 @@ with tab10:
                 ("Interest", "BPM Cash"),
                 ("Interest", "BPM Bonds"),
                 ("Returns",  "metals_pct"),
+                ("Returns",  "n26_pct"),
+                ("Returns",  "raiz_pct"),
+                ("Returns",  "vanguard_pct"),
+                ("Returns",  "shares_pct"),
+                ("Returns",  "super_pct"),
             ]
             rows = [["Category", "Key", "Value"]]
             for cat, key in CATEGORY_KEY_MAP:
