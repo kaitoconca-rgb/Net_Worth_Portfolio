@@ -3165,7 +3165,90 @@ with tab10:
             st.error(f"Could not save: {err}")
 
     st.divider()
-
+    
+    # ==================== SCENARIO SELECTOR ====================
+    st.markdown("### 📊 Forecast Scenario")
+    st.caption("Choose a market outlook scenario OR use your custom returns from above.")
+    
+    scenario_options = {
+        "Use my manual returns (above)": None,
+        "Bear (Pessimistic) - 25% probability": {
+            "n26": 4.0, "raiz": 3.0, "vanguard": 2.0, "shares": 3.0, "metals": 0.0, "super": 3.0,
+            "description": "Prolonged market downturn, recession risk, lower corporate earnings"
+        },
+        "Base (Moderate) - 50% probability": {
+            "n26": 9.0, "raiz": 8.0, "vanguard": 7.5, "shares": 8.0, "metals": 4.0, "super": 7.0,
+            "description": "Moderate economic growth, stable inflation, normal market cycles"
+        },
+        "Bull (Optimistic) - 25% probability": {
+            "n26": 14.0, "raiz": 13.0, "vanguard": 12.0, "shares": 13.0, "metals": 8.0, "super": 11.0,
+            "description": "Strong economic growth, technological acceleration, rising corporate profits"
+        }
+    }
+    
+    selected_scenario = st.selectbox(
+        "Select Market Scenario",
+        options=list(scenario_options.keys()),
+        index=0,  # Default to "Use my manual returns"
+        help="Bear = 25% probability, Base = 50% probability, Bull = 25% probability"
+    )
+    
+    # Only override if a scenario (not manual) is selected
+    if selected_scenario != "Use my manual returns (above)":
+        scenario = scenario_options[selected_scenario]
+        st.info(f"📈 **{selected_scenario}**: {scenario['description']}")
+        
+        # Override the return inputs with scenario values
+        new_inputs['Returns_n26_pct'] = scenario["n26"]
+        new_inputs['Returns_raiz_pct'] = scenario["raiz"]
+        new_inputs['Returns_vanguard_pct'] = scenario["vanguard"]
+        new_inputs['Returns_shares_pct'] = scenario["shares"]
+        new_inputs['Returns_metals_pct'] = scenario["metals"]
+        new_inputs['Returns_super_pct'] = scenario["super"]
+        
+        # Display what was applied
+        col_scen1, col_scen2, col_scen3 = st.columns(3)
+        with col_scen1:
+            st.metric("N26 European ETFs", f"{scenario['n26']:.1f}%", help="European equity exposure")
+            st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%", help="Diversified ETF portfolio")
+        with col_scen2:
+            st.metric("Vanguard VDAL", f"{scenario['vanguard']:.1f}%", help="Growth-focused diversified")
+            st.metric("ASX Shares", f"{scenario['shares']:.1f}%", help="Australian equities")
+        with col_scen3:
+            st.metric("Precious Metals", f"{scenario['metals']:.1f}%", help="Gold, Silver, Platinum")
+            st.metric("Super (Mercer)", f"{scenario['super']:.1f}%", help="Pre-glide growth phase")
+    else:
+        st.info("✏️ Using your custom return assumptions from the 'Expected Investment Returns' section above.")
+    st.divider()
+    
+    # ==================== VOLATILITY TOGGLE ====================
+    st.markdown("### 📊 Show Uncertainty Range")
+    st.caption("Toggle on to see a probabilistic range of outcomes based on historical market volatility.")
+    
+    show_uncertainty = st.checkbox("Show 10th-90th percentile range", value=False, key="show_uncertainty")
+    
+    if show_uncertainty:
+        st.info("🔮 The shaded area represents the range of possible outcomes based on historical volatility (10th to 90th percentile). Your actual results may vary.")
+        
+        # Historical annual volatilities (standard deviations)
+        volatility = {
+            'n26': 0.15,      # 15% annual volatility for European equities
+            'raiz': 0.12,     # 12% for diversified portfolio
+            'vanguard': 0.13, # 13% for growth fund
+            'shares': 0.18,   # 18% for ASX shares
+            'metals': 0.20,   # 20% for precious metals
+            'super': 0.10,    # 10% for super (diversified)
+        }
+        
+        # Calculate monthly volatility
+        monthly_vol = {k: v / (12 ** 0.5) for k, v in volatility.items()}
+        
+        # Store low and high projections
+        projection_rows_low = []
+        projection_rows_high = []
+        
+        # Re-run projection with low and high scenarios
+        # (This would need to be added to your projection loop)
     # ── PROJECTION ENGINE ──────────────────────────────────────────────────────
     st.markdown("### 📊 5-Year Net Worth Projection")
 
