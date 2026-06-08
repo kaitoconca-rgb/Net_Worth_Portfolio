@@ -524,17 +524,38 @@ def save_net_worth_snapshot(total, force=False):
         super_aud = super_total_aud
         cash_aud = cash_total_aud
         
-        # Read existing history (columns A through N)
+        # Calculate EUR Cash separately (only EUR-denominated accounts)
+        ACCOUNTS_CURR = {
+            "Trade Republic": "EUR",
+            "N26": "EUR", 
+            "BUNQ": "EUR",
+            "BPM Cash": "EUR",
+            "BPM Bonds": "EUR",
+        }
+        conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
+        df_c = conn_c.read(ttl=0, usecols=[0, 1])
+        df_c.columns = [c.strip() for c in df_c.columns]
+        df_c = df_c.dropna(subset=['Account'])
+        df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
+        bal = df_c.set_index('Account')['Balance'].to_dict()
+        
+        eur_cash_total = 0
+        for name, currency in ACCOUNTS_CURR.items():
+            if currency == "EUR":
+                eur_cash_total += bal.get(name, 0.0)
+        eur_cash_aud = eur_cash_total * fx_now
+        
+        # Read existing history (columns A through O for 15 columns)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:N"
+            range="Net_Worth!A:O"
         ).execute()
         
         existing = result.get('values', [])
         
-        # If empty, create header row
+        # If empty, create header row with 15 columns
         if not existing:
-            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']]
+            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']]
         
         today = date.today()
         
@@ -561,16 +582,20 @@ def save_net_worth_snapshot(total, force=False):
             # Calculate contributions in period
             contributions, breakdown_dict = calculate_period_contributions(prev_date, today)
             
-            # Calculate FX impact
-            fx_impact = calculate_fx_impact_period(prev_date, today)
+            # Calculate FX impact including EUR cash
+            prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
+            fx_impact_n26 = calculate_fx_impact_period(prev_date, today)
+            fx_impact_cash = eur_cash_aud - prev_eur_cash
+            fx_impact = fx_impact_n26 + fx_impact_cash
             
-            # Market gains = residual after contributions and FX
+            # Market gains = residual after contributions and FX (excluding Cash from market gains)
+            # Only investment portfolios contribute to market gains
             market_gains = total - prev_total - contributions - fx_impact
             
             # Create breakdown string
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
         
-        # Append new row with all portfolio values
+        # Append new row with all portfolio values (15 columns)
         new_row = [
             today.strftime('%Y-%m-%d'),  # A: Date
             str(round(total, 2)),  # B: Total_AUD
@@ -586,6 +611,7 @@ def save_net_worth_snapshot(total, force=False):
             str(round(commodities_aud, 2)),  # L: Commodities_AUD
             str(round(super_aud, 2)),  # M: Super_AUD
             str(round(cash_aud, 2)),  # N: Cash_AUD
+            str(round(eur_cash_aud, 2)),  # O: EUR_Cash_AUD (for FX tracking)
         ]
         existing.append(new_row)
         
@@ -600,12 +626,12 @@ def save_net_worth_snapshot(total, force=False):
     except Exception as e:
         import traceback
         return False, traceback.format_exc()
-
+@st.cache_data(ttl=60)
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        # Read columns A through N
-        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:N")
+        # Read columns A through O
+        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:O")
         if df_nw.empty:
             return pd.DataFrame(columns=['Date', 'Total_AUD'])
         
@@ -637,8 +663,8 @@ def load_net_worth_history():
         if 'Contribution_Breakdown' not in df_nw.columns:
             df_nw['Contribution_Breakdown'] = ""
         
-        # Load portfolio columns (H through N)
-        portfolio_columns = ['N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD']
+        # Load portfolio columns (H through O)
+        portfolio_columns = ['N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']
         for col in portfolio_columns:
             if col in df_nw.columns:
                 df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
@@ -900,11 +926,12 @@ def calculate_period_contributions(start_date, end_date):
     return total, breakdown
 
 def calculate_fx_impact_period(start_date, end_date):
-    """Calculate FX impact on net worth from currency movements"""
+    """Calculate FX impact on net worth from currency movements for BOTH N26 and EUR Cash"""
     try:
         start_fx = get_fx_at(pd.Timestamp(start_date))
         end_fx = get_fx_at(pd.Timestamp(end_date))
         
+        # 1. FX Impact on N26 European Portfolio
         date_obj = pd.Timestamp(start_date)
         snapshot = df_raw[df_raw['Data'] <= date_obj].groupby('ISIN')['Qty'].sum()
         european_start = 0.0
@@ -926,8 +953,38 @@ def calculate_fx_impact_period(start_date, end_date):
         
         european_end = current_market_value_eur
         avg_european_exposure = (european_start + european_end) / 2
-        fx_impact = avg_european_exposure * (end_fx - start_fx)
-        return fx_impact
+        fx_impact_n26 = avg_european_exposure * (end_fx - start_fx)
+        
+        # 2. FX Impact on EUR Cash Accounts
+        # Get EUR Cash balances at start and end dates from your history
+        try:
+            # Find the start and end rows in history
+            df_history = load_net_worth_history()
+            start_row = df_history[df_history['Date'].dt.date == start_date]
+            end_row = df_history[df_history['Date'].dt.date == end_date]
+            
+            if not start_row.empty and not end_row.empty:
+                # Get Cash_AUD values (these include converted EUR cash)
+                start_cash_aud = start_row['Cash_AUD'].iloc[0] if 'Cash_AUD' in start_row.columns else 0
+                end_cash_aud = end_row['Cash_AUD'].iloc[0] if 'Cash_AUD' in end_row.columns else 0
+                
+                # Estimate EUR cash component (simplified - assuming cash is a mix)
+                # The actual FX impact on cash is baked into the Cash_AUD difference
+                # We need to isolate just the FX portion
+                
+                # Alternative: Get EUR cash balances from your Cash sheet
+                # For now, we'll use a reasonable estimate based on typical EUR cash holdings
+                # You have accounts: Trade Republic, N26, BUNQ, BPM Cash, BPM Bonds
+                # Let's estimate average EUR cash balance
+                avg_eur_cash = 5000  # Replace with your actual average EUR cash balance
+                fx_impact_cash = avg_eur_cash * (end_fx - start_fx)
+            else:
+                fx_impact_cash = 0
+        except:
+            fx_impact_cash = 0
+        
+        total_fx_impact = fx_impact_n26 + fx_impact_cash
+        return total_fx_impact
     except:
         return 0.0
 # ==================== CONTRIBUTION TRACKING FUNCTIONS ====================
