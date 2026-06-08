@@ -540,7 +540,7 @@ def save_net_worth_snapshot(total, force=False):
         commodities_aud= commodities_total_aud
         super_aud      = super_total_aud
         cash_aud       = cash_total_aud
-        # Attribution vs previous snapshot
+        # Attribution vs previous snapshot - each step isolated so save never fails
         contributions = 0.0
         market_gains  = 0.0
         fx_impact     = 0.0
@@ -548,15 +548,26 @@ def save_net_worth_snapshot(total, force=False):
         contrib_breakdown = ""
         if len(existing) > 1:
             try:
-                prev_total = float(existing[-1][1])
+                prev_row = existing[-1]
+                prev_total = float(prev_row[1]) if len(prev_row) > 1 else 0.0
                 starting_bal = prev_total
-                prev_date = pd.to_datetime(existing[-1][0]).date()
+                prev_date = pd.to_datetime(prev_row[0]).date()
+            except Exception:
+                prev_total = 0.0
+                prev_date = today
+            try:
                 contributions, bd = calculate_period_contributions(prev_date, today)
-                fx_impact = calculate_fx_impact_period(prev_date, today)
-                market_gains = total - prev_total - contributions - fx_impact
                 contrib_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in bd.items() if v > 0])
             except Exception:
-                pass
+                contributions = 0.0
+            try:
+                fx_impact = calculate_fx_impact_period(prev_date, today)
+            except Exception:
+                fx_impact = 0.0
+            try:
+                market_gains = total - prev_total - contributions - fx_impact
+            except Exception:
+                market_gains = 0.0
         new_row = [
             today.strftime('%Y-%m-%d'), str(round(total, 2)),
             str(round(contributions, 2)), str(round(market_gains, 2)),
@@ -1132,12 +1143,17 @@ with tab0:
         st.info("📊 Save at least two monthly snapshots to see period analysis.")
 
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
-        ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
-        if ok:
-            st.success(f"✅ Snapshot saved: ${total_net_worth_aud:,.2f} AUD")
-            st.rerun()
-        else:
-            st.error(f"Could not save: {err}")
+        try:
+            ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
+            if ok:
+                st.success(f"✅ Snapshot saved: ${total_net_worth_aud:,.2f} AUD")
+                load_net_worth_history.clear()
+                st.rerun()
+            else:
+                st.error(f"Could not save: {err}")
+        except Exception as _snap_err:
+            import traceback
+            st.error(f"Snapshot failed: {traceback.format_exc()}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — N26 PERFORMANCE
