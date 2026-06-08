@@ -651,7 +651,8 @@ def load_net_worth_history():
         # ==================== NET WORTH CHANGE ANALYSIS ====================
 def analyze_net_worth_change(df_history, start_date, end_date):
     """
-    Analyze net worth change between two dates
+    Analyze net worth change between two dates using ONLY real saved portfolio data
+    No fake proportional allocation!
     """
     # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
@@ -660,43 +661,65 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     if len(df_period) < 2:
         return None
     
-    # Get start and end values
-    start_value = df_period.iloc[0]['Total_AUD']
-    end_value = df_period.iloc[-1]['Total_AUD']
+    # Get start and end rows
+    start_row = df_period.iloc[0]
+    end_row = df_period.iloc[-1]
+    
+    start_value = start_row['Total_AUD']
+    end_value = end_row['Total_AUD']
     total_change = end_value - start_value
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
     
-    # Get contributions from the period
-    total_contributions = 0
-    if 'Contributions_AUD' in df_period.columns:
-        total_contributions = df_period['Contributions_AUD'].sum()
+    # Calculate REAL portfolio gains using saved data (NO FALLBACK)
+    portfolio_gains = {}
+    portfolio_mapping = {
+        'N26_AUD': 'N26 European ETFs',
+        'Raiz_AUD': 'Raiz ETFs',
+        'Vanguard_AUD': 'Vanguard VDAL',
+        'Shares_AUD': 'ASX Shares',
+        'Commodities_AUD': 'Commodities',
+        'Super_AUD': 'Super',
+        'Cash_AUD': 'Cash'
+    }
     
-    # Get FX impact
-    fx_impact = 0
-    if 'FX_Impact_AUD' in df_period.columns:
-        fx_impact = df_period['FX_Impact_AUD'].sum()
+    total_saved_gains = 0
+    has_real_data = False
     
-    # Calculate market gains (residual)
-    market_gains = total_change - total_contributions - fx_impact
+    for col, name in portfolio_mapping.items():
+        if col in start_row.index and col in end_row.index:
+            start_val = start_row[col] if pd.notna(start_row[col]) else 0
+            end_val = end_row[col] if pd.notna(end_row[col]) else 0
+            gain = end_val - start_val
+            portfolio_gains[name] = gain
+            total_saved_gains += gain
+            if gain != 0 or start_val != 0 or end_val != 0:
+                has_real_data = True
+        else:
+            portfolio_gains[name] = 0
+    
+    # Get contributions and FX impact
+    total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
+    fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
+    
+    # Calculate market gains: either from saved portfolio data OR residual
+    if has_real_data and abs(total_saved_gains) > 0.01:
+        # Use the sum of saved portfolio gains
+        market_gains = total_saved_gains
+    else:
+        # Use residual calculation (total_change - contributions - fx_impact)
+        # This is accurate for the total, just can't break down by portfolio
+        market_gains = total_change - total_contributions - fx_impact
+        # Show that we don't have portfolio breakdown
+        portfolio_gains = {}  # Clear portfolio gains since we can't break it down
     
     # Calculate percentages
     contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
     market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
     fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
     
-    # Estimate portfolio breakdown (simplified - based on typical weights)
-    portfolio_gains = {
-        'N26 European ETFs': market_gains * 0.35 if market_gains != 0 else 0,
-        'Raiz ETFs': market_gains * 0.25 if market_gains != 0 else 0,
-        'Vanguard VDAL': market_gains * 0.15 if market_gains != 0 else 0,
-        'ASX Shares': market_gains * 0.10 if market_gains != 0 else 0,
-        'Commodities': market_gains * 0.05 if market_gains != 0 else 0,
-        'Super': market_gains * 0.10 if market_gains != 0 else 0,
-    }
-    
     return {
-        'start_date': df_period.iloc[0]['Date'].date(),
-        'end_date': df_period.iloc[-1]['Date'].date(),
+        'start_date': start_row['Date'].date(),
+        'end_date': end_row['Date'].date(),
         'start_value': start_value,
         'end_value': end_value,
         'total_change': total_change,
@@ -704,45 +727,13 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'total_contributions': total_contributions,
         'market_gains': market_gains,
         'portfolio_gains': portfolio_gains,
+        'has_portfolio_data': has_real_data,
         'fx_impact': fx_impact,
         'contrib_pct': contrib_pct,
         'market_pct': market_pct,
         'fx_pct': fx_pct,
-        'days': (df_period.iloc[-1]['Date'] - df_period.iloc[0]['Date']).days
+        'days': (end_row['Date'] - start_row['Date']).days
     }
-    
-    # Get FX impact
-    if fx_impact == 0 and 'FX_Impact_AUD' in df_history.columns:
-        contrib_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-        fx_impact = df_history.loc[contrib_mask, 'FX_Impact_AUD'].sum() if 'contrib_mask' in dir() else 0
-    
-    # Calculate total market gains
-    if market_gains == 0 and 'Market_Gains_AUD' in df_history.columns:
-        market_gains = df_history.loc[contrib_mask, 'Market_Gains_AUD'].sum() if 'contrib_mask' in dir() else 0
-    
-    # If we have portfolio-specific gains (from your actual portfolio tracking), use them
-    # Otherwise, estimate based on portfolio weights
-    portfolio_gains = {}
-    if n26_gains == 0 and raiz_gains == 0:
-        # Estimate based on portfolio growth between dates
-        # Get portfolio values at start and end (you'll need to pass these from your live data)
-        portfolio_gains = {
-            'N26 European ETFs': n26_gains if n26_gains != 0 else market_gains * 0.35,  # Example weighting
-            'Raiz ETFs': raiz_gains if raiz_gains != 0 else market_gains * 0.25,
-            'Vanguard VDAL': vanguard_gains if vanguard_gains != 0 else market_gains * 0.15,
-            'ASX Shares': shares_gains if shares_gains != 0 else market_gains * 0.10,
-            'Commodities': commodities_gains if commodities_gains != 0 else market_gains * 0.05,
-            'Super': super_gains if super_gains != 0 else market_gains * 0.10,
-        }
-    else:
-        portfolio_gains = {
-            'N26 European ETFs': n26_gains,
-            'Raiz ETFs': raiz_gains,
-            'Vanguard VDAL': vanguard_gains,
-            'ASX Shares': shares_gains,
-            'Commodities': commodities_gains,
-            'Super': super_gains,
-        }
     
     # Calculate percentages
     contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
@@ -1401,12 +1392,32 @@ with tab0:
                         help=f"Value on {analysis['start_date'].strftime('%d %b %Y')}"
                     )
                 with col2:
-                    st.metric(
-                        "Ending Net Worth", 
-                        f"${analysis['end_value']:,.2f}",
-                        delta=f"${analysis['total_change']:+,.2f} ({analysis['total_change_pct']:+.2f}%)",
-                        delta_color="normal" if analysis['total_change'] >= 0 else "inverse"
-                    )
+                    market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 1.1rem; font-weight: 600;">📈 Market Gains (Total)</div>
+                            <div style="font-size: 1.5rem; color: {market_color}; font-weight: bold;">
+                                ${analysis['market_gains']:+,.2f}
+                            </div>
+                            <div style="font-size: 0.9rem; color: #666;">
+                                {abs(analysis['market_pct']):.1f}% of total change
+                            </div>
+                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
+                                Total investment returns across all portfolios
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show REAL portfolio breakdown ONLY if we have data
+                    if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
+                        with st.expander("📋 Real breakdown by portfolio"):
+                            for portfolio, gain in analysis['portfolio_gains'].items():
+                                if gain != 0:
+                                    gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
+                                    pct_of_market = (gain / analysis['market_gains'] * 100) if analysis['market_gains'] != 0 else 0
+                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span> <span style='color:#666; font-size:0.8rem'>({pct_of_market:.1f}% of market gains)</span>", unsafe_allow_html=True)
+                    else:
+                        st.info("📊 *Portfolio breakdown will appear here after you save 2+ snapshots with portfolio data (starting from today).*")
                 with col3:
                     st.metric(
                         "Period Length", 
