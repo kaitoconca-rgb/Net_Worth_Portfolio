@@ -3508,7 +3508,7 @@ with tab10:
             avg_tax_rate = (df_yearly['Tax on Interest'].sum() / df_yearly['Gross Cash Flow'].sum() * 100) if df_yearly['Gross Cash Flow'].sum() != 0 else 0
             st.metric("Effective Tax Rate (on cash flow)", f"{abs(avg_tax_rate):.1f}%")
 
-       st.divider()
+    st.divider()
     
     # ==================== TOTAL WEALTH INCREASE (Using Same Projection Data) ====================
     st.markdown("### 📈 Total Wealth Increase (Cash + Unrealized Gains)")
