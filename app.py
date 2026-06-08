@@ -670,6 +670,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
     
     # Calculate REAL portfolio gains using saved data
+    # EXCLUDE Cash from market gains - Cash changes are captured in Contributions and FX Impact
     portfolio_gains = {}
     portfolio_mapping = {
         'N26_AUD': 'N26 European ETFs',
@@ -678,7 +679,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'Shares_AUD': 'ASX Shares',
         'Commodities_AUD': 'Commodities',
         'Super_AUD': 'Super',
-        'Cash_AUD': 'Cash'
+        # 'Cash_AUD' is EXCLUDED from market gains - it goes to FX Impact or Contributions
     }
     
     total_saved_gains = 0
@@ -690,13 +691,10 @@ def analyze_net_worth_change(df_history, start_date, end_date):
             end_val = end_row[col] if pd.notna(end_row[col]) else 0
             gain = end_val - start_val
             
-            # Only include if BOTH snapshots have non-zero data (real portfolio values)
             if start_val != 0 or end_val != 0:
                 has_real_data = True
                 portfolio_gains[name] = gain
                 total_saved_gains += gain
-            else:
-                portfolio_gains[name] = 0
         else:
             portfolio_gains[name] = 0
     
@@ -704,14 +702,11 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
     fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
     
-    # Calculate market gains
+    # Calculate market gains (excluding Cash)
     if has_real_data and len(df_period) >= 2:
-        # Use the sum of saved portfolio gains (changes)
         market_gains = total_saved_gains
     else:
-        # Use residual calculation
         market_gains = total_change - total_contributions - fx_impact
-        # Clear portfolio gains since we can't break it down accurately
         portfolio_gains = {}
         has_real_data = False
     
