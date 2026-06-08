@@ -514,12 +514,16 @@ def save_net_worth_snapshot(total, force=False):
             "token_uri": "https://oauth2.googleapis.com/token",
         }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        
+        # Read existing history (now with 7 columns for attribution)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:B"
+            range="Net_Worth!A:G"
         ).execute()
-        existing = result.get('values', [['Date', 'Total_AUD']])
+        
+        existing = result.get('values', [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown']])
         today = date.today()
+        
         if not force and len(existing) > 1:
             try:
                 last_date = pd.to_datetime(existing[-1][0])
@@ -527,7 +531,44 @@ def save_net_worth_snapshot(total, force=False):
                     return False, "Already saved this month"
             except:
                 pass
-        existing.append([today.strftime('%Y-%m-%d'), str(round(total, 2))])
+        
+        # Calculate attribution if we have previous snapshot
+        starting_balance = 0.0
+        contributions = 0.0
+        market_gains = 0.0
+        fx_impact = 0.0
+        contribution_breakdown = ""
+        
+        if len(existing) > 1:
+            prev_date = pd.to_datetime(existing[-1][0]).date()
+            prev_total = float(existing[-1][1])
+            starting_balance = prev_total
+            
+            # Calculate contributions in period
+            contributions, breakdown_dict = calculate_period_contributions(prev_date, today)
+            
+            # Calculate FX impact
+            fx_impact = calculate_fx_impact_period(prev_date, today)
+            
+            # Market gains = residual after contributions and FX
+            market_gains = total - prev_total - contributions - fx_impact
+            
+            # Create breakdown string
+            contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
+        
+        # Append new row with attribution
+        new_row = [
+            today.strftime('%Y-%m-%d'),
+            str(round(total, 2)),
+            str(round(contributions, 2)),
+            str(round(market_gains, 2)),
+            str(round(fx_impact, 2)),
+            str(round(starting_balance, 2)),
+            contribution_breakdown
+        ]
+        existing.append(new_row)
+        
+        # Update sheet
         service.spreadsheets().values().update(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A1",
@@ -538,19 +579,219 @@ def save_net_worth_snapshot(total, force=False):
     except Exception as e:
         import traceback
         return False, traceback.format_exc()
-
+@st.cache_data(ttl=60)
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:B")
+        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:G")
         if df_nw.empty:
-            return pd.DataFrame(columns=['Date', 'Total_AUD'])
+            return pd.DataFrame(columns=['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown'])
         df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
         df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
-        return df_nw.dropna()
+        
+        # Load all attribution columns if they exist
+        if 'Contributions_AUD' in df_nw.columns:
+            df_nw['Contributions_AUD'] = pd.to_numeric(df_nw['Contributions_AUD'], errors='coerce').fillna(0)
+        else:
+            df_nw['Contributions_AUD'] = 0.0
+            
+        if 'Market_Gains_AUD' in df_nw.columns:
+            df_nw['Market_Gains_AUD'] = pd.to_numeric(df_nw['Market_Gains_AUD'], errors='coerce').fillna(0)
+        else:
+            df_nw['Market_Gains_AUD'] = 0.0
+            
+        if 'FX_Impact_AUD' in df_nw.columns:
+            df_nw['FX_Impact_AUD'] = pd.to_numeric(df_nw['FX_Impact_AUD'], errors='coerce').fillna(0)
+        else:
+            df_nw['FX_Impact_AUD'] = 0.0
+            
+        if 'Starting_Balance_AUD' in df_nw.columns:
+            df_nw['Starting_Balance_AUD'] = pd.to_numeric(df_nw['Starting_Balance_AUD'], errors='coerce').fillna(0)
+        else:
+            df_nw['Starting_Balance_AUD'] = 0.0
+            
+        if 'Contribution_Breakdown' not in df_nw.columns:
+            df_nw['Contribution_Breakdown'] = ""
+            
+        return df_nw.dropna(subset=['Total_AUD'])
     except:
-        return pd.DataFrame(columns=['Date', 'Total_AUD'])
+        return pd.DataFrame(columns=['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown'])
+# ==================== ADDITION: CONTRIBUTION TRACKING ====================
+# Add these functions right after load_net_worth_history() and before the tabs
+
+@st.cache_data(ttl=300)
+def get_raiz_transactions():
+    """Get Raiz transaction history for contribution tracking"""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+        gs = st.secrets["gdrive"]
+        creds_dict = {
+            "type": gs.get("type", "service_account"),
+            "project_id": gs["project_id"],
+            "private_key_id": gs["private_key_id"],
+            "private_key": gs["private_key"],
+            "client_email": gs["client_email"],
+            "client_id": gs.get("client_id", ""),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
+            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
+        ).execute()
+        files = results.get("files", [])
+        if not files:
+            return pd.DataFrame()
+        request = service.files().get_media(fileId=files[0]["id"])
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buffer.seek(0)
+        df = pd.read_csv(buffer)
+        df.columns = [c.strip() for c in df.columns]
+        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+        return df
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_vanguard_transactions():
+    """Get Vanguard transaction history"""
+    try:
+        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:F")
+        if df_v.empty:
+            return pd.DataFrame()
+        df_v.columns = [c.strip() for c in df_v.columns]
+        df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
+        df_v['Amount'] = pd.to_numeric(df_v['Amount'], errors='coerce').fillna(0)
+        return df_v
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_commodities_transactions():
+    """Get commodities transaction history"""
+    try:
+        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
+        if df_m.empty:
+            return pd.DataFrame()
+        df_m.columns = [c.strip() for c in df_m.columns]
+        df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
+        df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
+        df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
+        return df_m
+    except:
+        return pd.DataFrame()
+
+def calculate_period_contributions(start_date, end_date):
+    """Calculate contributions across all asset classes between two dates"""
+    breakdown = {}
+    total = 0.0
+    
+    # N26 Contributions
+    try:
+        n26_contrib = df_raw[
+            (df_raw['Tipo'] == 'BUY') & 
+            (df_raw['Data'].dt.date >= start_date) & 
+            (df_raw['Data'].dt.date <= end_date)
+        ].copy()
+        n26_total = 0.0
+        for _, row in n26_contrib.iterrows():
+            fx_rate = get_fx_at(row['Data'])
+            n26_total += row['Inv_EUR'] * fx_rate
+        breakdown['N26'] = n26_total
+        total += n26_total
+    except:
+        breakdown['N26'] = 0.0
+    
+    # Raiz Contributions
+    try:
+        raiz_df = get_raiz_transactions()
+        if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
+            raiz_period = raiz_df[
+                (raiz_df['Trade Date'].dt.date >= start_date) & 
+                (raiz_df['Trade Date'].dt.date <= end_date) &
+                (raiz_df['Transaction Type'].str.upper().str.strip() == 'DEPOSIT')
+            ]
+            raiz_total = raiz_period['Amount'].sum()
+            breakdown['Raiz'] = raiz_total
+            total += raiz_total
+    except:
+        breakdown['Raiz'] = 0.0
+    
+    # Vanguard Contributions
+    try:
+        vanguard_df = get_vanguard_transactions()
+        if not vanguard_df.empty:
+            vanguard_period = vanguard_df[
+                (vanguard_df['Date'].dt.date >= start_date) & 
+                (vanguard_df['Date'].dt.date <= end_date) &
+                (vanguard_df['Transaction'].str.upper() == 'BUY')
+            ]
+            vanguard_total = vanguard_period['Amount'].sum()
+            breakdown['Vanguard'] = vanguard_total
+            total += vanguard_total
+    except:
+        breakdown['Vanguard'] = 0.0
+    
+    # Commodities Contributions
+    try:
+        commodities_df = get_commodities_transactions()
+        if not commodities_df.empty:
+            commodities_period = commodities_df[
+                (commodities_df['Date'].dt.date >= start_date) & 
+                (commodities_df['Date'].dt.date <= end_date) &
+                (commodities_df['Transaction'].str.upper() == 'BUY')
+            ]
+            commodities_total = (commodities_period['Quantity'] * commodities_period['Purchase Price']).sum()
+            breakdown['Commodities'] = commodities_total
+            total += commodities_total
+    except:
+        breakdown['Commodities'] = 0.0
+    
+    return total, breakdown
+
+def calculate_fx_impact_period(start_date, end_date):
+    """Calculate FX impact on net worth from currency movements"""
+    try:
+        start_fx = get_fx_at(pd.Timestamp(start_date))
+        end_fx = get_fx_at(pd.Timestamp(end_date))
+        
+        date_obj = pd.Timestamp(start_date)
+        snapshot = df_raw[df_raw['Data'] <= date_obj].groupby('ISIN')['Qty'].sum()
+        european_start = 0.0
+        for isin in df_raw['ISIN'].unique():
+            qty = snapshot.get(isin, 0)
+            if abs(qty) < 0.001:
+                continue
+            h = hist_map.get(isin)
+            p = None
+            if h is not None and not h.empty:
+                try:
+                    p = h.asof(date_obj)
+                except:
+                    p = None
+            if p is None or pd.isna(p) or p == 0:
+                ledger_price = df_raw[df_raw['ISIN'] == isin]['Prezzo_Acq'].dropna()
+                p = ledger_price.iloc[0] if not ledger_price.empty else 0
+            european_start += float(qty * p)
+        
+        european_end = current_market_value_eur
+        avg_european_exposure = (european_start + european_end) / 2
+        fx_impact = avg_european_exposure * (end_fx - start_fx)
+        return fx_impact
+    except:
+        return 0.0
 
 # ── METAL / COMMODITY FUNCTIONS (top-level so cache clears work) ─────────────
 METAL_CONFIG = {
@@ -772,16 +1013,26 @@ with tab0:
             margin=dict(t=30, b=30, r=200))
         st.plotly_chart(fig_history, use_container_width=True)
         # Summary stats
-        if len(df_history) > 1:
-            h1, h2, h3 = st.columns(3)
-            h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
-                      df_history['Date'].iloc[0].strftime('%d %b %Y'))
-            h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
-                      df_history['Date'].iloc[-1].strftime('%d %b %Y'))
-            delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
-            h3.metric("Total Change", f"${delta:+,.2f}",
-                      f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
-                      delta_color="normal" if delta >= 0 else "inverse")
+        # Summary stats with attribution (replace the existing h1,h2,h3 section)
+if len(df_history) > 1:
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
+              df_history['Date'].iloc[0].strftime('%d %b %Y'))
+    h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
+              df_history['Date'].iloc[-1].strftime('%d %b %Y'))
+    delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
+    h3.metric("Total Change", f"${delta:+,.2f}",
+              f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
+              delta_color="normal" if delta >= 0 else "inverse")
+    
+    # Show contribution attribution if available
+    if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
+        total_contributions = df_history['Contributions_AUD'].iloc[-1]
+        total_gains = df_history['Market_Gains_AUD'].iloc[-1] if 'Market_Gains_AUD' in df_history.columns else 0
+        total_fx = df_history['FX_Impact_AUD'].iloc[-1] if 'FX_Impact_AUD' in df_history.columns else 0
+        
+        h4.metric("Contributions", f"${total_contributions:+,.2f}",
+                  f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
     else:
         st.info("Net worth history will appear here after the first end-of-month snapshot.")
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
