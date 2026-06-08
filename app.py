@@ -3240,7 +3240,273 @@ with tab10:
                delta=f"${monthly_net_income*12:,.2f} p.a.")
 
     st.divider()
-
+    st.divider()
+    
+    # ==================== YEARLY CASH FLOW AFTER TAX ====================
+    st.markdown("### 💰 Yearly Cash Flow After Tax")
+    st.caption("Projected annual cash flow including investment returns, rental income, expenses, and estimated tax.")
+    
+    # Calculate yearly projections
+    years = list(range(1, 6))
+    yearly_data = []
+    
+    # Get starting values
+    current_n26 = current_market_value_eur * fx_now
+    current_raiz = raiz_total_aud
+    current_vdal = vanguard_total_aud
+    current_shares = shares_total_aud
+    current_metals = commodities_total_aud
+    current_cash = cash_total_aud
+    
+    # Use the monthly returns already calculated
+    for year in years:
+        year_end_month = year * 12
+        year_start_month = (year - 1) * 12
+        
+        # Get projection data for this year
+        year_end_data = df_proj[df_proj['Month'] == year_end_month]
+        year_start_data = df_proj[df_proj['Month'] == year_start_month] if year > 1 else None
+        
+        if not year_end_data.empty:
+            # Portfolio gains for the year
+            n26_start = current_n26 if year == 1 else yearly_data[-1].get('N26_End', current_n26)
+            raiz_start = current_raiz if year == 1 else yearly_data[-1].get('Raiz_End', current_raiz)
+            vdal_start = current_vdal if year == 1 else yearly_data[-1].get('Vanguard_End', current_vdal)
+            shares_start = current_shares if year == 1 else yearly_data[-1].get('Shares_End', current_shares)
+            metals_start = current_metals if year == 1 else yearly_data[-1].get('Metals_End', current_metals)
+            
+            n26_end = year_end_data['N26'].iloc[0]
+            raiz_end = year_end_data['Raiz'].iloc[0]
+            vdal_end = year_end_data['Vanguard'].iloc[0]
+            shares_end = year_end_data['Shares'].iloc[0]
+            metals_end = year_end_data['Metals'].iloc[0]
+            
+            portfolio_gains = (n26_end - n26_start) + (raiz_end - raiz_start) + (vdal_end - vdal_start) + (shares_end - shares_start) + (metals_end - metals_start)
+            
+            # Income sources
+            rental_income_aud = new_inputs.get('Income_rent_eur', 500) * fx_now * 12
+            cash_interest_annual = monthly_interest * 12
+            
+            # Expenses
+            annual_expenses = total_expenses * 12
+            
+            # Gross cash flow before tax
+            gross_cash_flow = rental_income_aud + cash_interest_annual - annual_expenses
+            
+            # Estimated tax (simplified - 19% on investment gains when realized)
+            # For cash flow, only tax on interest is paid annually
+            tax_on_interest = cash_interest_annual * 0.19
+            
+            # For portfolio gains, tax is deferred until sale, so not subtracted from cash flow
+            # But we show it as "unrealized gain" separate from cash
+            
+            net_cash_flow = gross_cash_flow - tax_on_interest
+            
+            yearly_data.append({
+                'Year': year,
+                'Year Ending': year_end_data['Date'].iloc[0].strftime('%b %Y'),
+                'Rental Income': rental_income_aud,
+                'Cash Interest': cash_interest_annual,
+                'Portfolio Gains (Unrealized)': portfolio_gains,
+                'Total Expenses': -annual_expenses,
+                'Gross Cash Flow': gross_cash_flow,
+                'Tax on Interest': -tax_on_interest,
+                'Net Cash Flow': net_cash_flow,
+                'N26_End': n26_end,
+                'Raiz_End': raiz_end,
+                'Vanguard_End': vdal_end,
+                'Shares_End': shares_end,
+                'Metals_End': metals_end,
+            })
+    
+    if yearly_data:
+        df_yearly = pd.DataFrame(yearly_data)
+        
+        # Display summary metrics
+        col_y1, col_y2, col_y3, col_y4 = st.columns(4)
+        with col_y1:
+            total_net_cash_5yr = df_yearly['Net Cash Flow'].sum()
+            st.metric("Total Net Cash Flow (5 Years)", f"${total_net_cash_5yr:,.2f}", 
+                     help="Rental income + interest - expenses - tax on interest")
+        with col_y2:
+            avg_annual_cash = total_net_cash_5yr / 5
+            st.metric("Average Annual Cash Flow", f"${avg_annual_cash:,.2f}")
+        with col_y3:
+            total_portfolio_gains = df_yearly['Portfolio Gains (Unrealized)'].sum()
+            st.metric("Total Portfolio Gains (Unrealized)", f"${total_portfolio_gains:,.2f}",
+                     help="Investment returns not yet taxed (deferred CGT)")
+        with col_y4:
+            total_tax_paid = df_yearly['Tax on Interest'].sum()
+            st.metric("Total Estimated Tax", f"-${abs(total_tax_paid):,.2f}",
+                     delta=f"${total_tax_paid:+,.2f}", delta_color="inverse")
+        
+        st.divider()
+        
+        # Detailed yearly table
+        st.markdown("#### 📅 Year-by-Year Breakdown")
+        
+        # Format for display
+        df_display = df_yearly[[
+            'Year', 'Year Ending', 'Rental Income', 'Cash Interest', 
+            'Portfolio Gains (Unrealized)', 'Total Expenses', 
+            'Gross Cash Flow', 'Tax on Interest', 'Net Cash Flow'
+        ]].copy()
+        
+        st.dataframe(
+            df_display.style
+            .format({
+                'Rental Income': '${:,.2f}',
+                'Cash Interest': '${:,.2f}',
+                'Portfolio Gains (Unrealized)': '${:,.2f}',
+                'Total Expenses': '${:,.2f}',
+                'Gross Cash Flow': '${:,.2f}',
+                'Tax on Interest': '${:,.2f}',
+                'Net Cash Flow': '${:,.2f}',
+            })
+            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Tax' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
+                 subset=['Gross Cash Flow', 'Net Cash Flow', 'Portfolio Gains (Unrealized)']),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        st.divider()
+        
+        # Cash Flow Chart
+        st.markdown("#### 📊 Cash Flow Visualization")
+        
+        fig_cf = go.Figure()
+        
+        # Add bars for income components
+        fig_cf.add_trace(go.Bar(
+            name='Rental Income',
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Rental Income'],
+            marker_color='#2980b9',
+            hovertemplate='Rental Income: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_cf.add_trace(go.Bar(
+            name='Cash Interest',
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Cash Interest'],
+            marker_color='#27ae60',
+            hovertemplate='Cash Interest: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_cf.add_trace(go.Bar(
+            name='Expenses',
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Total Expenses'],
+            marker_color='#e74c3c',
+            hovertemplate='Expenses: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        # Line for Net Cash Flow
+        fig_cf.add_trace(go.Scatter(
+            name='Net Cash Flow',
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Net Cash Flow'],
+            mode='lines+markers',
+            line=dict(color='#f39c12', width=3),
+            marker=dict(size=10, symbol='circle'),
+            hovertemplate='Net Cash Flow: $%{y:,.0f}<extra></extra>',
+            yaxis='y1'
+        ))
+        
+        fig_cf.update_layout(
+            title="Annual Cash Flow Breakdown",
+            xaxis_title="Year",
+            yaxis_title="Amount (AUD)",
+            yaxis_tickprefix="$",
+            barmode='group',
+            height=450,
+            hovermode='x unified',
+            legend=dict(orientation="h", y=1.08)
+        )
+        
+        st.plotly_chart(fig_cf, use_container_width=True)
+        
+        st.divider()
+        
+        # Cumulative Cash Flow
+        st.markdown("#### 📈 Cumulative Cash Flow Over 5 Years")
+        
+        df_yearly['Cumulative Net Cash'] = df_yearly['Net Cash Flow'].cumsum()
+        df_yearly['Cumulative Portfolio Gains'] = df_yearly['Portfolio Gains (Unrealized)'].cumsum()
+        
+        fig_cum_cf = go.Figure()
+        
+        fig_cum_cf.add_trace(go.Scatter(
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Cumulative Net Cash'],
+            mode='lines+markers',
+            name='Cumulative Net Cash Flow',
+            line=dict(color='#27ae60', width=3),
+            marker=dict(size=10),
+            fill='tozeroy',
+            fillcolor='rgba(39,174,96,0.1)',
+            hovertemplate='Net Cash: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_cum_cf.add_trace(go.Scatter(
+            x=df_yearly['Year'].astype(str),
+            y=df_yearly['Cumulative Portfolio Gains'],
+            mode='lines+markers',
+            name='Cumulative Unrealized Gains',
+            line=dict(color='#2980b9', width=3, dash='dot'),
+            marker=dict(size=10, symbol='diamond'),
+            hovertemplate='Unrealized Gains: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_cum_cf.update_layout(
+            title="5-Year Cumulative Wealth Build",
+            xaxis_title="Year",
+            yaxis_title="Cumulative Amount (AUD)",
+            yaxis_tickprefix="$",
+            height=400,
+            hovermode='x unified',
+            legend=dict(orientation="h", y=1.08)
+        )
+        
+        st.plotly_chart(fig_cum_cf, use_container_width=True)
+        
+        # Explanation of tax treatment
+        with st.expander("📖 Understanding the Cash Flow & Tax Calculation"):
+            st.markdown("""
+            ### How Cash Flow is Calculated
+            
+            **Annual Cash Flow = Rental Income + Cash Interest - Expenses - Tax on Interest**
+            
+            | Component | Tax Treatment |
+            |-----------|---------------|
+            | **Rental Income (Spanish Rent)** | Taxable in Australia at marginal rate (19% assumed) |
+            | **Cash Interest** | Taxed annually at 19% (added back to cash after tax) |
+            | **Portfolio Gains (N26, Raiz, Vanguard, Shares, Metals)** | **Unrealized** - not included in cash flow until sold. CGT deferred. |
+            | **Expenses** | Deductible against income |
+            
+            ### Important Notes
+            
+            - **Portfolio gains are shown separately** as "Unrealized Gains" because you don't pay tax until you sell
+            - **CGT changes from July 2027**: 50% discount replaced by indexation + 30% minimum tax
+            - **This is a projection** based on your assumptions - actual results will vary
+            - **Tax rate assumption**: 19% marginal rate (adjust in the Tax Impact section above)
+            """)
+        
+        # Add a summary card
+        st.divider()
+        st.markdown("#### 📋 5-Year Summary")
+        
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            ending_nw = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
+            st.metric("Projected Net Worth (Year 5)", f"${ending_nw:,.2f}",
+                     delta=f"${ending_nw - total_net_worth_aud:+,.2f}")
+        with col_s2:
+            total_cash_generated = df_yearly['Net Cash Flow'].sum()
+            st.metric("Total Cash Generated (5 Years)", f"${total_cash_generated:,.2f}")
+        with col_s3:
+            avg_tax_rate = (df_yearly['Tax on Interest'].sum() / df_yearly['Gross Cash Flow'].sum() * 100) if df_yearly['Gross Cash Flow'].sum() != 0 else 0
+            st.metric("Effective Tax Rate (on cash flow)", f"{abs(avg_tax_rate):.1f}%")
     # ── TAX IMPACT ────────────────────────────────────────────────────────────
     st.markdown("### 🧾 Annual Tax Impact & After-Tax Projection")
     st.caption(
