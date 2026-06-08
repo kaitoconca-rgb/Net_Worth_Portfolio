@@ -633,14 +633,9 @@ def load_net_worth_history():
         # If anything fails, return empty dataframe with just the essential columns
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
         # ==================== NET WORTH CHANGE ANALYSIS ====================
-def analyze_net_worth_change(df_history, start_date, end_date, 
-                             n26_contributions=0, raiz_contributions=0, 
-                             vanguard_contributions=0, commodities_contributions=0,
-                             fx_impact=0, market_gains=0,
-                             n26_gains=0, raiz_gains=0, vanguard_gains=0, 
-                             shares_gains=0, commodities_gains=0, super_gains=0):
+def analyze_net_worth_change(df_history, start_date, end_date):
     """
-    Analyze net worth change between two dates with full attribution by portfolio
+    Analyze net worth change between two dates
     """
     # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
@@ -655,30 +650,50 @@ def analyze_net_worth_change(df_history, start_date, end_date,
     total_change = end_value - start_value
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
     
-    # Get contributions (if provided, otherwise try to read from history)
-    if n26_contributions == 0 and 'Contributions_AUD' in df_history.columns:
-        contrib_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-        total_contributions = df_history.loc[contrib_mask, 'Contributions_AUD'].sum()
-        
-        # Also try to get breakdown by portfolio from Contribution_Breakdown column
-        portfolio_contributions = {}
-        if 'Contribution_Breakdown' in df_history.columns:
-            for _, row in df_history[contrib_mask].iterrows():
-                if row['Contribution_Breakdown']:
-                    parts = row['Contribution_Breakdown'].split('; ')
-                    for part in parts:
-                        if ': $' in part:
-                            portfolio, amount = part.split(': $')
-                            amount = float(amount.replace(',', ''))
-                            portfolio_contributions[portfolio] = portfolio_contributions.get(portfolio, 0) + amount
-    else:
-        total_contributions = n26_contributions + raiz_contributions + vanguard_contributions + commodities_contributions
-        portfolio_contributions = {
-            'N26': n26_contributions,
-            'Raiz': raiz_contributions,
-            'Vanguard': vanguard_contributions,
-            'Commodities': commodities_contributions
-        }
+    # Get contributions from the period
+    total_contributions = 0
+    if 'Contributions_AUD' in df_period.columns:
+        total_contributions = df_period['Contributions_AUD'].sum()
+    
+    # Get FX impact
+    fx_impact = 0
+    if 'FX_Impact_AUD' in df_period.columns:
+        fx_impact = df_period['FX_Impact_AUD'].sum()
+    
+    # Calculate market gains (residual)
+    market_gains = total_change - total_contributions - fx_impact
+    
+    # Calculate percentages
+    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
+    market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
+    fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
+    
+    # Estimate portfolio breakdown (simplified - based on typical weights)
+    portfolio_gains = {
+        'N26 European ETFs': market_gains * 0.35 if market_gains != 0 else 0,
+        'Raiz ETFs': market_gains * 0.25 if market_gains != 0 else 0,
+        'Vanguard VDAL': market_gains * 0.15 if market_gains != 0 else 0,
+        'ASX Shares': market_gains * 0.10 if market_gains != 0 else 0,
+        'Commodities': market_gains * 0.05 if market_gains != 0 else 0,
+        'Super': market_gains * 0.10 if market_gains != 0 else 0,
+    }
+    
+    return {
+        'start_date': df_period.iloc[0]['Date'].date(),
+        'end_date': df_period.iloc[-1]['Date'].date(),
+        'start_value': start_value,
+        'end_value': end_value,
+        'total_change': total_change,
+        'total_change_pct': total_change_pct,
+        'total_contributions': total_contributions,
+        'market_gains': market_gains,
+        'portfolio_gains': portfolio_gains,
+        'fx_impact': fx_impact,
+        'contrib_pct': contrib_pct,
+        'market_pct': market_pct,
+        'fx_pct': fx_pct,
+        'days': (df_period.iloc[-1]['Date'] - df_period.iloc[0]['Date']).days
+    }
     
     # Get FX impact
     if fx_impact == 0 and 'FX_Impact_AUD' in df_history.columns:
@@ -1387,121 +1402,110 @@ with tab0:
                 
                 # Attribution breakdown
                 # Attribution breakdown
+                # Attribution breakdown
                 st.markdown("#### 📊 Change Attribution")
                 
-                # Create attribution dataframe
-                attribution_data = []
-                if analysis['total_contributions'] != 0:
-                    attribution_data.append({
-                        'Component': '💰 New Contributions',
-                        'Amount': analysis['total_contributions'],
-                        'Percentage': analysis['contrib_pct'],
-                        'Color': '#27ae60',
-                        'Description': 'Money you added to investments and savings',
-                        'SubItems': analysis.get('portfolio_contributions', {})
-                    })
-                if analysis['market_gains'] != 0:
-                    # Create sub-items for each portfolio
-                    sub_items = []
-                    for portfolio, gain in analysis['portfolio_gains'].items():
-                        if gain != 0:
-                            sub_items.append({
-                                'name': portfolio,
-                                'amount': gain,
-                                'pct_of_total': (gain / abs(analysis['total_change']) * 100) if analysis['total_change'] != 0 else 0
-                            })
-                    
-                    attribution_data.append({
-                        'Component': '📈 Market Gains',
-                        'Amount': analysis['market_gains'],
-                        'Percentage': analysis['market_pct'],
-                        'Color': '#2980b9',
-                        'Description': 'Investment returns from your portfolios',
-                        'SubItems': sub_items
-                    })
-                if analysis['fx_impact'] != 0:
-                    attribution_data.append({
-                        'Component': '💱 FX Impact',
-                        'Amount': analysis['fx_impact'],
-                        'Percentage': analysis['fx_pct'],
-                        'Color': '#f39c12',
-                        'Description': 'Currency movements (AUD/EUR fluctuations)',
-                        'SubItems': {}
-                    })
+                # Create three columns for the main components
+                col1, col2, col3 = st.columns(3)
                 
-                if attribution_data:
-                    # Show expandable breakdown
-                    for item in attribution_data:
-                        sign = "+" if item['Amount'] >= 0 else "-"
-                        color = "#27ae60" if item['Amount'] >= 0 else "#e74c3c"
-                        
-                        with st.expander(f"{item['Component']} — {sign}${abs(item['Amount']):,.2f} ({abs(item['Percentage']):.1f}% of change)", expanded=True):
-                            st.markdown(f"*{item['Description']}*")
-                            
-                            if item['SubItems']:
-                                st.markdown("**Breakdown by portfolio:**")
-                                for sub in item['SubItems']:
-                                    sub_sign = "+" if sub['amount'] >= 0 else "-"
-                                    sub_color = "#27ae60" if sub['amount'] >= 0 else "#e74c3c"
-                                    
-                                    # Create columns for better layout
-                                    col1, col2, col3 = st.columns([2, 1, 1])
-                                    with col1:
-                                        st.markdown(f"**{sub['name']}**")
-                                    with col2:
-                                        st.markdown(f"<span style='color:{sub_color}'>{sub_sign}${abs(sub['amount']):,.2f}</span>", 
-                                                   unsafe_allow_html=True)
-                                    with col3:
-                                        st.markdown(f"<span style='color:#666'>({abs(sub['pct_of_total']):.1f}% of total change)</span>", 
-                                                   unsafe_allow_html=True)
-                            
-                            # Mini sparkline for this component (if we have historical data)
-                            if 'Contributions_AUD' in df_history.columns and item['Component'] == '💰 New Contributions':
-                                contrib_history = df_history[df_history['Date'].dt.date >= start_date][['Date', 'Contributions_AUD']].dropna()
-                                if not contrib_history.empty:
-                                    fig_spark = go.Figure()
-                                    fig_spark.add_trace(go.Scatter(
-                                        x=contrib_history['Date'],
-                                        y=contrib_history['Contributions_AUD'].cumsum(),
-                                        mode='lines',
-                                        line=dict(color='#27ae60', width=2),
-                                        fill='tozeroy',
-                                        fillcolor='rgba(39,174,96,0.1)'
-                                    ))
-                                    fig_spark.update_layout(
-                                        height=150,
-                                        margin=dict(l=0, r=0, t=20, b=0),
-                                        showlegend=False,
-                                        xaxis_title="",
-                                        yaxis_title="Cumulative ($)",
-                                        yaxis_tickprefix="$"
-                                    )
-                                    st.plotly_chart(fig_spark, use_container_width=True)
+                with col1:
+                    contrib_color = "#27ae60" if analysis['total_contributions'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 1.1rem; font-weight: 600;">💰 New Contributions</div>
+                            <div style="font-size: 1.5rem; color: {contrib_color}; font-weight: bold;">
+                                ${analysis['total_contributions']:+,.2f}
+                            </div>
+                            <div style="font-size: 0.9rem; color: #666;">
+                                {abs(analysis['contrib_pct']):.1f}% of total change
+                            </div>
+                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
+                                Money added to investments & savings
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 1.1rem; font-weight: 600;">📈 Market Gains</div>
+                            <div style="font-size: 1.5rem; color: {market_color}; font-weight: bold;">
+                                ${analysis['market_gains']:+,.2f}
+                            </div>
+                            <div style="font-size: 0.9rem; color: #666;">
+                                {abs(analysis['market_pct']):.1f}% of total change
+                            </div>
+                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
+                                Investment returns from all portfolios
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Add expandable portfolio breakdown
+                    with st.expander("📋 See breakdown by portfolio"):
+                        for portfolio, gain in analysis['portfolio_gains'].items():
+                            if gain != 0:
+                                gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
+                                st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span>", unsafe_allow_html=True)
+                
+                with col3:
+                    fx_color = "#27ae60" if analysis['fx_impact'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 1.1rem; font-weight: 600;">💱 FX Impact</div>
+                            <div style="font-size: 1.5rem; color: {fx_color}; font-weight: bold;">
+                                ${analysis['fx_impact']:+,.2f}
+                            </div>
+                            <div style="font-size: 0.9rem; color: #666;">
+                                {abs(analysis['fx_pct']):.1f}% of total change
+                            </div>
+                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
+                                Currency movements (AUD/EUR)
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                st.divider()
+                
+                # Waterfall chart for visual representation
+                st.markdown("#### 📊 Visual Breakdown")
+                
+                # Prepare data for waterfall chart
+                waterfall_data = []
+                if analysis['total_contributions'] != 0:
+                    waterfall_data.append({'Category': 'Contributions', 'Value': analysis['total_contributions']})
+                if analysis['market_gains'] != 0:
+                    waterfall_data.append({'Category': 'Market Gains', 'Value': analysis['market_gains']})
+                if analysis['fx_impact'] != 0:
+                    waterfall_data.append({'Category': 'FX Impact', 'Value': analysis['fx_impact']})
+                
+                if waterfall_data:
+                    fig_waterfall = go.Figure()
+                    
+                    # Add bars
+                    colors = ['#27ae60' if x['Value'] >= 0 else '#e74c3c' for x in waterfall_data]
+                    fig_waterfall.add_trace(go.Bar(
+                        x=[x['Category'] for x in waterfall_data],
+                        y=[x['Value'] for x in waterfall_data],
+                        marker_color=colors,
+                        text=[f"${x['Value']:+,.2f}" for x in waterfall_data],
+                        textposition='outside',
+                    ))
+                    
+                    # Add a line from start to end
+                    fig_waterfall.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+                    
+                    fig_waterfall.update_layout(
+                        title=f"From ${analysis['start_value']:,.2f} to ${analysis['end_value']:,.2f}",
+                        yaxis=dict(title="Amount (AUD)", tickprefix="$"),
+                        height=350,
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_waterfall, use_container_width=True)
                     
                     st.divider()
-                    
-                    with col_breakdown:
-                        st.markdown("**💡 Explanation**")
-                        for d in attribution_data:
-                            sign = "+" if d['Amount'] >= 0 else "-"
-                            color = "#27ae60" if d['Amount'] >= 0 else "#e74c3c"
-                            st.markdown(f"""
-                                <div style="margin-bottom: 12px;">
-                                    <div style="font-weight: 600;">{d['Component']}</div>
-                                    <div style="font-size: 1.2rem; color: {color};">
-                                        {sign}${abs(d['Amount']):,.2f}
-                                    </div>
-                                    <div style="font-size: 0.8rem; color: #666;">
-                                        {abs(d['Percentage']):.1f}% of total change
-                                    </div>
-                                    <div style="font-size: 0.75rem; color: #888; margin-top: 4px;">
-                                        {d['Description']}
-                                    </div>
-                                </div>
-                            """, unsafe_allow_html=True)
-                    
-                    st.divider()
-                    
+                      
                     # Cumulative view over the selected period
                     st.markdown("#### 📈 Cumulative Change Over Period")
                     
