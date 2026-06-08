@@ -3508,43 +3508,46 @@ with tab10:
             avg_tax_rate = (df_yearly['Tax on Interest'].sum() / df_yearly['Gross Cash Flow'].sum() * 100) if df_yearly['Gross Cash Flow'].sum() != 0 else 0
             st.metric("Effective Tax Rate (on cash flow)", f"{abs(avg_tax_rate):.1f}%")
 
-        st.divider()
+    st.divider()
     
-    # ==================== TOTAL WEALTH INCREASE (Cash + Unrealized Gains) ====================
+    # ==================== TOTAL WEALTH INCREASE (Using Same Projection Data) ====================
     st.markdown("### 📈 Total Wealth Increase (Cash + Unrealized Gains)")
-    st.caption("This combines actual cash flow WITH unrealized portfolio gains to show your true wealth growth each year.")
+    st.caption("This combines actual cash flow WITH unrealized portfolio gains to show your true wealth growth each year. Based on the same projection as above.")
     
-    if yearly_data:
-        # Calculate Total Wealth Increase = Net Cash Flow + Unrealized Portfolio Gains
-        for item in yearly_data:
-            item['Total Wealth Increase'] = item['Net Cash Flow'] + item['Portfolio Gains (Unrealized)']
-            item['Ending Wealth'] = total_net_worth_aud + sum([y['Total Wealth Increase'] for y in yearly_data if y['Year'] <= item['Year']])
+    if yearly_data and not df_proj.empty:
+        # Use the projection data directly for consistency
+        projection_start_nw = total_net_worth_aud
+        projection_end_nw = df_proj.iloc[-1]['Projected NW']
+        total_projected_growth = projection_end_nw - projection_start_nw
+        
+        # Calculate year-by-year from projection
+        for i, item in enumerate(yearly_data):
+            if i == 0:
+                item['Year End NW'] = projection_start_nw + item['Total Wealth Increase']
+            else:
+                item['Year End NW'] = yearly_data[i-1]['Year End NW'] + item['Total Wealth Increase']
         
         df_wealth = pd.DataFrame(yearly_data)
         
-        # Summary metrics - showing the REAL picture
+        # Summary metrics - using projection data
         col_w1, col_w2, col_w3, col_w4 = st.columns(4)
         with col_w1:
-            total_wealth_increase = df_wealth['Total Wealth Increase'].sum()
-            st.metric("Total Wealth Increase (5 Years)", f"${total_wealth_increase:,.2f}",
-                     help="Net Cash Flow + Unrealized Portfolio Gains",
+            st.metric("Total Wealth Increase (5 Years)", f"${total_projected_growth:,.2f}",
+                     help="Net Cash Flow + Unrealized Portfolio Gains (from projection)",
                      delta_color="normal")
         with col_w2:
-            avg_annual_wealth = total_wealth_increase / 5
+            avg_annual_wealth = total_projected_growth / 5
             st.metric("Average Annual Wealth Increase", f"${avg_annual_wealth:,.2f}",
                      help=f"{avg_annual_wealth/total_net_worth_aud*100:.1f}% of current net worth")
         with col_w3:
-            ending_wealth = df_wealth['Ending Wealth'].iloc[-1]
-            st.metric("Projected Net Worth (Year 5)", f"${ending_wealth:,.2f}",
-                     delta=f"${ending_wealth - total_net_worth_aud:+,.2f}")
+            st.metric("Starting Net Worth", f"${projection_start_nw:,.2f}")
         with col_w4:
-            total_unrealized = df_wealth['Portfolio Gains (Unrealized)'].sum()
-            st.metric("Total Unrealized Gains", f"${total_unrealized:,.2f}",
-                     help="Tax-deferred until you sell")
+            st.metric("Projected Net Worth (Year 5)", f"${projection_end_nw:,.2f}",
+                     delta=f"${total_projected_growth:+,.2f}")
         
         st.divider()
         
-        # Detailed table combining cash flow AND portfolio gains
+        # Detailed table showing year-by-year wealth build
         st.markdown("#### 📅 Year-by-Year Wealth Breakdown")
         
         df_wealth_display = df_wealth[[
@@ -3552,7 +3555,7 @@ with tab10:
             'Net Cash Flow', 
             'Portfolio Gains (Unrealized)',
             'Total Wealth Increase',
-            'Ending Wealth'
+            'Year End NW'
         ]].copy()
         
         st.dataframe(
@@ -3561,10 +3564,10 @@ with tab10:
                 'Net Cash Flow': '${:,.2f}',
                 'Portfolio Gains (Unrealized)': '${:,.2f}',
                 'Total Wealth Increase': '${:,.2f}',
-                'Ending Wealth': '${:,.2f}',
+                'Year End NW': '${:,.2f}',
             })
-            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
-                 subset=['Net Cash Flow', 'Portfolio Gains (Unrealized)', 'Total Wealth Increase']),
+            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Net Cash' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
+                 subset=['Total Wealth Increase', 'Year End NW']),
             use_container_width=True,
             hide_index=True
         )
@@ -3606,208 +3609,77 @@ with tab10:
         
         st.plotly_chart(fig_wealth, use_container_width=True)
         
-        # Line chart showing cumulative wealth growth
-        st.markdown("#### 📈 Cumulative Wealth Growth")
+        # Line chart showing cumulative wealth growth from projection
+        st.markdown("#### 📈 5-Year Net Worth Projection")
         
+        # Get monthly projection data for smooth line
         fig_cum_wealth = go.Figure()
         
+        # Add the full monthly projection line
         fig_cum_wealth.add_trace(go.Scatter(
-            x=df_wealth['Year'].astype(str),
-            y=df_wealth['Ending Wealth'],
-            mode='lines+markers',
-            name='Projected Net Worth',
-            line=dict(color='#2980b9', width=3),
-            marker=dict(size=12),
-            fill='tozeroy',
-            fillcolor='rgba(41,128,185,0.1)',
-            hovertemplate='Net Worth: $%{y:,.0f}<extra></extra>'
+            x=df_proj['Date'],
+            y=df_proj['Projected NW'],
+            mode='lines',
+            name='Monthly Projection',
+            line=dict(color='#2980b9', width=2),
+            hovertemplate='Projected: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        # Add year-end markers
+        fig_cum_wealth.add_trace(go.Scatter(
+            x=df_wealth['Year Ending'].apply(lambda d: pd.Timestamp(d)),
+            y=df_wealth['Year End NW'],
+            mode='markers',
+            name='Year End Values',
+            marker=dict(size=12, color='#f39c12', symbol='circle', line=dict(color='white', width=2)),
+            hovertemplate='Year End: $%{y:,.0f}<extra></extra>'
         ))
         
         # Add starting point
         fig_cum_wealth.add_trace(go.Scatter(
-            x=['Start'],
-            y=[total_net_worth_aud],
+            x=[pd.Timestamp(today)],
+            y=[projection_start_nw],
             mode='markers',
-            name=f'Starting Net Worth (${total_net_worth_aud/1e6:.1f}M)',
-            marker=dict(size=15, color='#f39c12', symbol='star'),
-            hovertemplate=f'Start: ${total_net_worth_aud:,.0f}<extra></extra>'
+            name=f'Current (${projection_start_nw/1e6:.1f}M)',
+            marker=dict(size=15, color='#e74c3c', symbol='star'),
+            hovertemplate=f'Current: ${projection_start_nw:,.0f}<extra></extra>'
         ))
         
         fig_cum_wealth.update_layout(
-            title="5-Year Net Worth Projection (Including Unrealized Gains)",
-            xaxis_title="Year",
+            title="5-Year Net Worth Projection",
+            xaxis_title="Date",
             yaxis_title="Net Worth (AUD)",
             yaxis_tickprefix="$",
-            height=400,
+            height=450,
             hovermode='x unified',
             legend=dict(orientation="h", y=1.08)
         )
         
         st.plotly_chart(fig_cum_wealth, use_container_width=True)
         
-        st.divider()
-        
-        # ==================== SCENARIO MODELLING WITH CASH REDEPLOYMENT ====================
-        st.markdown("### 💡 Scenario: What If I Move Cash to Investments?")
-        st.caption("Compare your current projection against a scenario where you redeploy cash into higher-return investments.")
-        
-        col_sim1, col_sim2, col_sim3 = st.columns(3)
-        with col_sim1:
-            sim_amount = st.number_input(
-                "Amount to redeploy (AUD)",
-                min_value=0.0, 
-                max_value=float(cash_total_aud),
-                value=min(100000.0, float(cash_total_aud)),
-                step=10000.0, 
-                format="%.0f",
-                key="wealth_sim_amount",
-                help=f"Your current cash total is ${cash_total_aud:,.2f} AUD")
-            st.caption(f"That's {sim_amount/cash_total_aud*100:.1f}% of your cash" if cash_total_aud > 0 else "")
-        
-        with col_sim2:
-            sim_target = st.selectbox(
-                "Redeploy into",
-                options=["N26 European ETFs", "Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
-                key="wealth_sim_target",
-                index=0)
-            target_return_map = {
-                "N26 European ETFs": new_inputs.get('Returns_n26_pct', hist_returns['n26']),
-                "Raiz ETFs": new_inputs.get('Returns_raiz_pct', hist_returns['raiz']),
-                "Vanguard VDAL": new_inputs.get('Returns_vanguard_pct', hist_returns['vanguard']),
-                "ASX Shares": new_inputs.get('Returns_shares_pct', hist_returns['shares']),
-            }
-            target_return_pct = target_return_map[sim_target]
-            st.caption(f"Expected return: {target_return_pct:.2f}% p.a.")
-        
-        with col_sim3:
-            sim_cash_rate = st.number_input(
-                "Cash interest rate being forgone (% p.a.)",
-                min_value=0.0, max_value=20.0,
-                value=2.0,
-                step=0.5, format="%.2f",
-                key="wealth_sim_rate",
-                help="The interest rate you'd lose by moving this cash out")
-        
-        if st.button("🔄 Run Wealth Scenario", key="wealth_scenario_btn"):
-            # Calculate scenario projections
-            sim_invest_r = annual_to_monthly(target_return_pct)
-            sim_cash_r = annual_to_monthly(sim_cash_rate)
+        # Interpretation help
+        with st.expander("📖 How to Read This Section"):
+            st.markdown("""
+            ### Understanding Your Wealth Growth
             
-            # Starting values
-            sim_nw = total_net_worth_aud
-            sim_invest_val = sim_amount
-            sim_cash_val = sim_amount
-            sim_invest_cb = sim_amount
+            Even though your **Net Cash Flow** might be negative (shown in red), your **Total Wealth Increase** is positive because:
             
-            sim_yearly = []
-            for year in range(1, 6):
-                # Grow investment
-                for _ in range(12):
-                    sim_invest_val *= (1 + sim_invest_r)
-                    sim_cash_val *= (1 + sim_cash_r)
-                
-                # Tax on cash interest (annual)
-                annual_cash_interest = sim_cash_val * (sim_cash_rate / 100)
-                tax_on_interest = annual_cash_interest * 0.19
-                sim_cash_val_after_tax = sim_cash_val - tax_on_interest
-                
-                # For investment, CGT deferred until sale
-                # Estimate after-tax value if sold at year end
-                gain = max(0, sim_invest_val - sim_invest_cb)
-                # Assume held >12 months for 50% discount (pre-2027)
-                cgt = gain * 0.50 * 0.19
-                sim_invest_after_cgt = sim_invest_val - cgt
-                
-                sim_yearly.append({
-                    'Year': year,
-                    'Investment Value (Gross)': sim_invest_val,
-                    'Investment Value (After CGT)': sim_invest_after_cgt,
-                    'Cash Value (After Tax)': sim_cash_val_after_tax,
-                    'Difference (After Tax)': sim_invest_after_cgt - sim_cash_val_after_tax,
-                })
+            | Component | What it means |
+            |-----------|---------------|
+            | **Net Cash Flow** | Actual cash in/out after rent, expenses, and tax on interest |
+            | **Unrealized Portfolio Gains** | Market appreciation of your investments (N26, Raiz, Vanguard, etc.) |
+            | **Total Wealth Increase** | Your TRUE wealth growth = Cash Flow + Portfolio Gains |
             
-            df_sim_wealth = pd.DataFrame(sim_yearly)
+            ### Why Cash Flow Can Be Negative While Wealth Grows
             
-            # Display results
-            st.markdown("#### 📊 Scenario Results")
+            - Your investments are appreciating faster than your cash outflow
+            - You're building wealth through capital gains, not just saving cash
+            - This is common when you have a large investment portfolio
             
-            col_r1, col_r2, col_r3 = st.columns(3)
-            with col_r1:
-                st.metric(
-                    "After 5 Years - Investment", 
-                    f"${df_sim_wealth['Investment Value (After CGT)'].iloc[-1]:,.2f}",
-                    delta=f"${df_sim_wealth['Investment Value (After CGT)'].iloc[-1] - sim_amount:+,.2f}"
-                )
-            with col_r2:
-                st.metric(
-                    "After 5 Years - Cash", 
-                    f"${df_sim_wealth['Cash Value (After Tax)'].iloc[-1]:,.2f}",
-                    delta=f"${df_sim_wealth['Cash Value (After Tax)'].iloc[-1] - sim_amount:+,.2f}"
-                )
-            with col_r3:
-                advantage = df_sim_wealth['Difference (After Tax)'].iloc[-1]
-                st.metric(
-                    "Net Advantage", 
-                    f"${advantage:+,.2f}",
-                    delta=f"{(advantage/sim_amount*100):+.1f}% return premium",
-                    delta_color="normal" if advantage >= 0 else "inverse"
-                )
+            ### The Bottom Line
             
-            # Year-by-year comparison
-            st.dataframe(
-                df_sim_wealth.style
-                .format({
-                    'Investment Value (Gross)': '${:,.2f}',
-                    'Investment Value (After CGT)': '${:,.2f}',
-                    'Cash Value (After Tax)': '${:,.2f}',
-                    'Difference (After Tax)': '${:,.2f}',
-                })
-                .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Difference' in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 and 'Difference' in str(v) else '')),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Chart showing the difference
-            fig_scenario = go.Figure()
-            fig_scenario.add_trace(go.Scatter(
-                x=df_sim_wealth['Year'],
-                y=df_sim_wealth['Investment Value (After CGT)'],
-                mode='lines+markers',
-                name=f'In {sim_target} (After CGT)',
-                line=dict(color='#27ae60', width=3),
-                marker=dict(size=10),
-            ))
-            fig_scenario.add_trace(go.Scatter(
-                x=df_sim_wealth['Year'],
-                y=df_sim_wealth['Cash Value (After Tax)'],
-                mode='lines+markers',
-                name='Stays in Cash (After Tax)',
-                line=dict(color='#e74c3c', width=3, dash='dot'),
-                marker=dict(size=10, symbol='diamond'),
-            ))
-            fig_scenario.update_layout(
-                title=f"${sim_amount:,.0f} Invested vs Kept as Cash",
-                xaxis_title="Year",
-                yaxis_title="Value (AUD)",
-                yaxis_tickprefix="$",
-                height=400,
-                hovermode='x unified'
-            )
-            st.plotly_chart(fig_scenario, use_container_width=True)
-            
-            # Impact on total net worth
-            st.markdown("#### 💰 Impact on Total 5-Year Net Worth")
-            base_nw = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
-            new_nw = base_nw + advantage
-            
-            col_imp1, col_imp2, col_imp3 = st.columns(3)
-            col_imp1.metric("Base Net Worth (Year 5)", f"${base_nw:,.2f}")
-            col_imp2.metric("With Redeployment", f"${new_nw:,.2f}", 
-                           delta=f"${advantage:+,.2f}",
-                           delta_color="normal" if advantage >= 0 else "inverse")
-            col_imp3.metric("Extra Annual Return", 
-                           f"{(advantage/5/sim_amount*100):+.2f}% p.a.",
-                           help="Average annual extra return from redeployment")
+            Looking only at cash flow gives an incomplete picture. Your **Total Wealth Increase** shows your real financial progress.
+            """)
     
     
     # ── TAX IMPACT ────────────────────────────────────────────────────────────
