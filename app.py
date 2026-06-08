@@ -581,16 +581,30 @@ def save_net_worth_snapshot(total, force=False):
         return False, traceback.format_exc()
 @st.cache_data(ttl=60)
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
+        # Try to read with 7 columns first
         df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:G")
         if df_nw.empty:
-            return pd.DataFrame(columns=['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown'])
+            # Fall back to 2 columns if the extended sheet doesn't exist yet
+            df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:B")
+            if df_nw.empty:
+                return pd.DataFrame(columns=['Date', 'Total_AUD'])
+            df_nw.columns = [c.strip() for c in df_nw.columns]
+            # Ensure we have at least Date and Total_AUD
+            if 'Date' not in df_nw.columns or 'Total_AUD' not in df_nw.columns:
+                return pd.DataFrame(columns=['Date', 'Total_AUD'])
+            df_nw['Date'] = pd.to_datetime(df_nw['Date'])
+            df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
+            return df_nw.dropna(subset=['Total_AUD'])
+        
+        # If we have 7 columns, process them
         df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
         df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
         
-        # Load all attribution columns if they exist
+        # Load attribution columns if they exist (with fallbacks)
         if 'Contributions_AUD' in df_nw.columns:
             df_nw['Contributions_AUD'] = pd.to_numeric(df_nw['Contributions_AUD'], errors='coerce').fillna(0)
         else:
@@ -615,8 +629,9 @@ def load_net_worth_history():
             df_nw['Contribution_Breakdown'] = ""
             
         return df_nw.dropna(subset=['Total_AUD'])
-    except:
-        return pd.DataFrame(columns=['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown'])
+    except Exception as e:
+        # If anything fails, return empty dataframe with just the essential columns
+        return pd.DataFrame(columns=['Date', 'Total_AUD'])
 # ==================== ADDITION: CONTRIBUTION TRACKING ====================
 # Add these functions right after load_net_worth_history() and before the tabs
 
@@ -1186,25 +1201,25 @@ with tab0:
         st.plotly_chart(fig_history, use_container_width=True)
         # Summary stats
         # Summary stats with attribution (replace the existing h1,h2,h3 section)
-if len(df_history) > 1:
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
-              df_history['Date'].iloc[0].strftime('%d %b %Y'))
-    h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
-              df_history['Date'].iloc[-1].strftime('%d %b %Y'))
-    delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
-    h3.metric("Total Change", f"${delta:+,.2f}",
-              f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
-              delta_color="normal" if delta >= 0 else "inverse")
-    
-    # Show contribution attribution if available
-    if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
-        total_contributions = df_history['Contributions_AUD'].iloc[-1]
-        total_gains = df_history['Market_Gains_AUD'].iloc[-1] if 'Market_Gains_AUD' in df_history.columns else 0
-        total_fx = df_history['FX_Impact_AUD'].iloc[-1] if 'FX_Impact_AUD' in df_history.columns else 0
+    if len(df_history) > 1:
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
+                  df_history['Date'].iloc[0].strftime('%d %b %Y'))
+        h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
+                  df_history['Date'].iloc[-1].strftime('%d %b %Y'))
+        delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
+        h3.metric("Total Change", f"${delta:+,.2f}",
+                  f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
+                  delta_color="normal" if delta >= 0 else "inverse")
         
-        h4.metric("Contributions", f"${total_contributions:+,.2f}",
-                  f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
+        # Show contribution attribution if available
+        if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
+            total_contributions = df_history['Contributions_AUD'].iloc[-1]
+            total_gains = df_history['Market_Gains_AUD'].iloc[-1] if 'Market_Gains_AUD' in df_history.columns else 0
+            total_fx = df_history['FX_Impact_AUD'].iloc[-1] if 'FX_Impact_AUD' in df_history.columns else 0
+            
+            h4.metric("Contributions", f"${total_contributions:+,.2f}",
+                      f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
     else:
         st.info("Net worth history will appear here after the first end-of-month snapshot.")
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
