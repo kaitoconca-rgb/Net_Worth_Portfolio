@@ -691,7 +691,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
             gain = end_val - start_val
             
             # Only include if BOTH snapshots have non-zero data (real portfolio values)
-            if start_val > 0 or end_val > 0:
+            if start_val != 0 or end_val != 0:
                 has_real_data = True
                 portfolio_gains[name] = gain
                 total_saved_gains += gain
