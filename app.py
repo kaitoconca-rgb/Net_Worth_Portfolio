@@ -3616,36 +3616,124 @@ with tab10:
     # Load actuals
     df_actual = load_net_worth_history()
 
+    # ── CHART (with uncertainty bands if applicable) ──
     fig_proj = go.Figure()
-
-    # Stacked area for portfolio components
-    components = [
-        ('N26', '#2980b9'),
-        ('Raiz', '#27ae60'),
-        ('Vanguard', '#2ecc71'),
-        ('Shares', '#1abc9c'),
-        ('Metals', '#f39c12'),
-        ('Super', '#8e44ad'),
-        ('Cash', '#e67e22'),
-    ]
-    for comp, colour in components:
+    
+    if uncertainty_mode == "📊 Uncertainty Range (10th-90th Percentile)":
+        # Add confidence band
         fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'], y=df_proj[comp],
-            name=comp, stackgroup='one',
-            line=dict(color=colour, width=0.5),
-            fillcolor=colour.replace('#', 'rgba(') + ',0.6)' if False else colour,
-            hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
+            x=df_proj['Date'],
+            y=df_proj['P90'],
+            mode='lines',
+            name='90th Percentile (Optimistic)',
+            line=dict(width=0),
+            showlegend=False,
+            hovertemplate='90th: $%{y:,.0f}<extra></extra>'
         ))
-
-    # Total projected line
-    fig_proj.add_trace(go.Scatter(
-        x=df_proj['Date'], y=df_proj['Projected NW'],
-        name='Total Projected', mode='lines',
-        line=dict(color='white', width=2, dash='dot'),
-        hovertemplate='Total: $%{y:,.0f}<extra></extra>'
-    ))
-
-    # Actual net worth dots
+        
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['P10'],
+            mode='lines',
+            name='10th-90th Percentile Range',
+            fill='tonexty',
+            fillcolor='rgba(41,128,185,0.2)',
+            line=dict(width=0),
+            hovertemplate='10th: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        # Add median line
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['Projected NW'],
+            mode='lines',
+            name='Median Projection',
+            line=dict(color='#2980b9', width=2.5),
+            hovertemplate='Median: $%{y:,.0f}<extra></extra>'
+        ))
+        
+    elif uncertainty_mode == "🎲 Monte Carlo Simulation (1000 scenarios)":
+        # Add confidence bands (5-95% and 25-75%)
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['P95'],
+            mode='lines',
+            name='95th Percentile',
+            line=dict(width=0),
+            showlegend=False
+        ))
+        
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['P5'],
+            mode='lines',
+            name='5th-95th Percentile Range',
+            fill='tonexty',
+            fillcolor='rgba(41,128,185,0.15)',
+            line=dict(width=0),
+            hovertemplate='5th: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['P75'],
+            mode='lines',
+            name='75th Percentile',
+            line=dict(width=0),
+            showlegend=False
+        ))
+        
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['P25'],
+            mode='lines',
+            name='25th-75th Percentile Range',
+            fill='tonexty',
+            fillcolor='rgba(41,128,185,0.3)',
+            line=dict(width=0),
+            hovertemplate='25th: $%{y:,.0f}<extra></extra>'
+        ))
+        
+        # Add median line
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'],
+            y=df_proj['Projected NW'],
+            mode='lines',
+            name='Median Projection',
+            line=dict(color='#2980b9', width=2.5),
+            hovertemplate='Median: $%{y:,.0f}<extra></extra>'
+        ))
+        
+    else:
+        # Original deterministic projection (your existing code)
+        # Stacked area for portfolio components
+        components = [
+            ('N26', '#2980b9'),
+            ('Raiz', '#27ae60'),
+            ('Vanguard', '#2ecc71'),
+            ('Shares', '#1abc9c'),
+            ('Metals', '#f39c12'),
+            ('Super', '#8e44ad'),
+            ('Cash', '#e67e22'),
+        ]
+        for comp, colour in components:
+            fig_proj.add_trace(go.Scatter(
+                x=df_proj['Date'], y=df_proj[comp],
+                name=comp, stackgroup='one',
+                line=dict(color=colour, width=0.5),
+                fillcolor=colour.replace('#', 'rgba(') + ',0.6)',
+                hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
+            ))
+        
+        # Total projected line
+        fig_proj.add_trace(go.Scatter(
+            x=df_proj['Date'], y=df_proj['Projected NW'],
+            name='Total Projected', mode='lines',
+            line=dict(color='white', width=2, dash='dot'),
+            hovertemplate='Total: $%{y:,.0f}<extra></extra>'
+        ))
+    
+    # Add actual dots (same for all modes)
     if not df_actual.empty:
         fig_proj.add_trace(go.Scatter(
             x=df_actual['Date'], y=df_actual['Total_AUD'],
@@ -3654,12 +3742,12 @@ with tab10:
                         line=dict(color='white', width=2)),
             hovertemplate='Actual: $%{y:,.2f}<extra></extra>'
         ))
-
-    # Today marker
+    
+    # Add today marker
     fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white",
                        opacity=0.5, annotation_text="Today",
                        annotation_position="top right")
-
+    
     fig_proj.update_layout(
         height=550, hovermode="x unified",
         yaxis=dict(title="Net Worth (AUD $)", tickprefix="$"),
