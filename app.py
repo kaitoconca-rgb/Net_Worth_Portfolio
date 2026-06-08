@@ -545,7 +545,7 @@ def save_net_worth_snapshot(total, force=False):
                 eur_cash_total += bal.get(name, 0.0)
         eur_cash_aud = eur_cash_total * fx_now
         
-        # Read existing history (columns A through O for 15 columns)
+        # Read existing history (columns A through O)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A:O"
@@ -553,7 +553,7 @@ def save_net_worth_snapshot(total, force=False):
         
         existing = result.get('values', [])
         
-        # If empty, create header row with 15 columns
+        # If empty, create header row
         if not existing:
             existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']]
         
@@ -579,35 +579,32 @@ def save_net_worth_snapshot(total, force=False):
             prev_total = float(existing[-1][1]) if existing[-1][1] else 0
             starting_balance = prev_total
             
-            # Calculate contributions in period
-            contributions, breakdown_dict = calculate_period_contributions(prev_date, today)
+            # Get previous portfolio values
+            prev_n26 = float(existing[-1][7]) if len(existing[-1]) > 7 and existing[-1][7] else 0
+            prev_raiz = float(existing[-1][8]) if len(existing[-1]) > 8 and existing[-1][8] else 0
+            prev_vanguard = float(existing[-1][9]) if len(existing[-1]) > 9 and existing[-1][9] else 0
+            prev_shares = float(existing[-1][10]) if len(existing[-1]) > 10 and existing[-1][10] else 0
+            prev_commodities = float(existing[-1][11]) if len(existing[-1]) > 11 and existing[-1][11] else 0
+            prev_super = float(existing[-1][12]) if len(existing[-1]) > 12 and existing[-1][12] else 0
+            prev_cash = float(existing[-1][13]) if len(existing[-1]) > 13 and existing[-1][13] else 0
+            prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
             
-            # Calculate market gains first (from investment portfolios only)
-            # Get previous and current portfolio values (excluding Cash)
-            prev_investments = 0
+            # 1. Market Gains = Change in investment portfolios (N26, Raiz, Vanguard, Shares, Commodities, Super)
+            prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
-            
-            if len(existing[-1]) > 7:
-                prev_n26 = float(existing[-1][7]) if existing[-1][7] else 0
-                prev_raiz = float(existing[-1][8]) if existing[-1][8] else 0
-                prev_vanguard = float(existing[-1][9]) if existing[-1][9] else 0
-                prev_shares = float(existing[-1][10]) if existing[-1][10] else 0
-                prev_commodities = float(existing[-1][11]) if existing[-1][11] else 0
-                prev_super = float(existing[-1][12]) if existing[-1][12] else 0
-                prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
-            
             market_gains = curr_investments - prev_investments
             
-            # Calculate FX impact (from N26 and EUR Cash)
-            fx_impact = calculate_fx_impact_period(prev_date, today)
+            # 2. FX Impact = Change in EUR_Cash (due to exchange rate movements)
+            fx_impact = eur_cash_aud - prev_eur_cash
             
-            # Contributions is the remainder
+            # 3. Contributions = Everything else (new money added, cash withdrawals, etc.)
             contributions = total - prev_total - market_gains - fx_impact
             
-            # Create breakdown string
+            # Get actual contributions from transaction data for breakdown
+            _, breakdown_dict = calculate_period_contributions(prev_date, today)
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
         
-        # Append new row with all portfolio values (15 columns)
+        # Append new row
         new_row = [
             today.strftime('%Y-%m-%d'),  # A: Date
             str(round(total, 2)),  # B: Total_AUD
@@ -623,7 +620,7 @@ def save_net_worth_snapshot(total, force=False):
             str(round(commodities_aud, 2)),  # L: Commodities_AUD
             str(round(super_aud, 2)),  # M: Super_AUD
             str(round(cash_aud, 2)),  # N: Cash_AUD
-            str(round(eur_cash_aud, 2)),  # O: EUR_Cash_AUD (for FX tracking)
+            str(round(eur_cash_aud, 2)),  # O: EUR_Cash_AUD
         ]
         existing.append(new_row)
         
