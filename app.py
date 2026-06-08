@@ -3389,7 +3389,7 @@ with tab10:
             marker=dict(size=12, color='#f39c12', symbol='circle', line=dict(color='white', width=2)),
             text=df_yearly_consistent['Year Growth'].apply(lambda x: f'+${x/1000:.0f}k'),
             textposition='top center',
-            hovertemplate='Year {year}: ${value:,.0f}<extra></extra>'.format,
+            hovertemplate='Year: %{x|%b %Y}<br>Net Worth: $%{y:,.0f}<br>Growth: %{text}<extra></extra>'
         ))
         
         fig_nw.add_trace(go.Scatter(
