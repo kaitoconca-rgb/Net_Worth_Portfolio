@@ -3349,6 +3349,15 @@ with tab10:
         })
 
     df_proj = pd.DataFrame(projection_rows)
+    
+    # Load cash balances for interest calculation (needed for uncertainty section)
+    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
+    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
+    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
+    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
+    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
+    
+   
     # ==================== UNCERTAINTY & MONTE CARLO ====================
     st.markdown("### 📊 Risk & Uncertainty Analysis")
     st.caption("Understand the range of possible outcomes based on historical market volatility.")
