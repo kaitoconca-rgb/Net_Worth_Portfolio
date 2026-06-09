@@ -3270,6 +3270,85 @@ with tab10:
     }
     st.divider()
     
+
+
+    # Monthly cash interest income
+    def monthly_cash_interest():
+        total_int = 0.0
+        for acc in interest_accounts:
+            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
+            # Get balance in AUD
+            bal = cash_bal.get(acc, 0.0)
+            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
+                bal = bal * fx_now
+            total_int += bal * rate
+        return total_int
+
+    monthly_interest = monthly_cash_interest()
+    monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
+    monthly_expenses = (
+        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
+        + new_inputs.get('Expense_travel', 0.0) / 12
+    )
+    monthly_net_income = monthly_rent_aud + monthly_interest - monthly_expenses
+
+    # Simulate month by month
+    months = 60
+    projection_rows = []
+    nw = start_nw
+    n26_v = current_market_value_eur * fx_now
+    raiz_v = raiz_total_aud
+    vdal_v = vanguard_total_aud
+    shares_v = shares_total_aud
+    metals_v = commodities_total_aud
+    super_v = super_total_aud
+    cash_v = cash_total_aud
+
+    today = date.today()
+
+    MARGINAL_RATE_PROJ  = 0.19
+    DIVIDEND_YIELD_PROJ = 0.02
+    CGT_TRANSITION_PROJ = pd.Timestamp('2027-07-01')
+
+    for m in range(1, months + 1):
+        proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
+
+        # Grow each portfolio
+        n26_v    *= (1 + monthly_r['n26'])
+        raiz_v   *= (1 + monthly_r['raiz'])
+        vdal_v   *= (1 + monthly_r['vanguard'])
+        shares_v *= (1 + monthly_r['shares'])
+        metals_v *= (1 + monthly_r['metals'])
+        super_v  *= (1 + monthly_r['super'])
+
+        # Cash grows by interest + rent, shrinks by expenses
+        cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+
+        # Annual tax deducted from cash each December (month 12, 24, 36...)
+        if m % 12 == 0:
+            tax_interest_yr  = monthly_interest * 12 * MARGINAL_RATE_PROJ
+            tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
+            cash_v -= (tax_interest_yr + tax_dividends_yr)
+
+        nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
+
+        projection_rows.append({
+            'Date': proj_date,
+            'Month': m,
+            'Projected NW': nw,
+            'N26': n26_v,
+            'Raiz': raiz_v,
+            'Vanguard': vdal_v,
+            'Shares': shares_v,
+            'Metals': metals_v,
+            'Super': super_v,
+            'Cash': cash_v,
+            'Monthly Income': monthly_rent_aud + monthly_interest,
+            'Monthly Expenses': monthly_expenses,
+            'Monthly Net': monthly_net_income,
+        })
+
+    df_proj = pd.DataFrame(projection_rows)
     # ==================== UNCERTAINTY & MONTE CARLO ====================
     st.markdown("### 📊 Risk & Uncertainty Analysis")
     st.caption("Understand the range of possible outcomes based on historical market volatility.")
@@ -3528,90 +3607,11 @@ with tab10:
         # Your existing projection code goes here
         pass
     # Load cash balances for interest calculation
-    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
+
     df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
     df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
     df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
     cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
-
-    # Monthly cash interest income
-    def monthly_cash_interest():
-        total_int = 0.0
-        for acc in interest_accounts:
-            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
-            # Get balance in AUD
-            bal = cash_bal.get(acc, 0.0)
-            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
-                bal = bal * fx_now
-            total_int += bal * rate
-        return total_int
-
-    monthly_interest = monthly_cash_interest()
-    monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
-    monthly_expenses = (
-        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
-        + new_inputs.get('Expense_travel', 0.0) / 12
-    )
-    monthly_net_income = monthly_rent_aud + monthly_interest - monthly_expenses
-
-    # Simulate month by month
-    months = 60
-    projection_rows = []
-    nw = start_nw
-    n26_v = current_market_value_eur * fx_now
-    raiz_v = raiz_total_aud
-    vdal_v = vanguard_total_aud
-    shares_v = shares_total_aud
-    metals_v = commodities_total_aud
-    super_v = super_total_aud
-    cash_v = cash_total_aud
-
-    today = date.today()
-
-    MARGINAL_RATE_PROJ  = 0.19
-    DIVIDEND_YIELD_PROJ = 0.02
-    CGT_TRANSITION_PROJ = pd.Timestamp('2027-07-01')
-
-    for m in range(1, months + 1):
-        proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
-
-        # Grow each portfolio
-        n26_v    *= (1 + monthly_r['n26'])
-        raiz_v   *= (1 + monthly_r['raiz'])
-        vdal_v   *= (1 + monthly_r['vanguard'])
-        shares_v *= (1 + monthly_r['shares'])
-        metals_v *= (1 + monthly_r['metals'])
-        super_v  *= (1 + monthly_r['super'])
-
-        # Cash grows by interest + rent, shrinks by expenses
-        cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
-
-        # Annual tax deducted from cash each December (month 12, 24, 36...)
-        if m % 12 == 0:
-            tax_interest_yr  = monthly_interest * 12 * MARGINAL_RATE_PROJ
-            tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
-            cash_v -= (tax_interest_yr + tax_dividends_yr)
-
-        nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
-
-        projection_rows.append({
-            'Date': proj_date,
-            'Month': m,
-            'Projected NW': nw,
-            'N26': n26_v,
-            'Raiz': raiz_v,
-            'Vanguard': vdal_v,
-            'Shares': shares_v,
-            'Metals': metals_v,
-            'Super': super_v,
-            'Cash': cash_v,
-            'Monthly Income': monthly_rent_aud + monthly_interest,
-            'Monthly Expenses': monthly_expenses,
-            'Monthly Net': monthly_net_income,
-        })
-
-    df_proj = pd.DataFrame(projection_rows)
-
     # ── CHART ─────────────────────────────────────────────────────────────────
     # Load actuals
     df_actual = load_net_worth_history()
