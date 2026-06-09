@@ -3143,6 +3143,8 @@ with tab10:
     st.divider()
     st.divider()
     
+    st.divider()
+    
     # ==================== SCENARIO SELECTOR ====================
     st.markdown("### 📊 Forecast Scenario")
     st.caption("Choose a market outlook scenario OR use your custom returns from above.")
@@ -3198,7 +3200,7 @@ with tab10:
         col_scen1, col_scen2, col_scen3 = st.columns(3)
         with col_scen1:
             st.metric("N26 European ETFs", f"{scenario['n26']:.1f}%")
-            st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%)
+            st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%")
         with col_scen2:
             st.metric("Vanguard VDAL", f"{scenario['vanguard']:.1f}%")
             st.metric("ASX Shares", f"{scenario['shares']:.1f}%")
