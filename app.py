@@ -817,7 +817,7 @@ def save_net_worth_snapshot(total, force=False):
             fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud - n26_dividends
             
             # Calculate contributions (everything else, including dividends)
-             contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud - n26_dividends - shares_dividends
+            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud - n26_dividends - shares_dividends
             
             # Get actual contributions from transaction data for breakdown
             _, breakdown_dict = calculate_period_contributions(prev_date, today)
