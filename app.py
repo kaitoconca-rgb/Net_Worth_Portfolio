@@ -503,14 +503,19 @@ def calculate_weighted_interest(prev_balance, prev_date, curr_balance, curr_date
     """
     Calculate interest using weighted average balance based on transaction dates.
     """
+    # Ensure transactions is a list (not None)
+    if transactions is None:
+        transactions = []
+    
     prev_date_obj = prev_date if hasattr(prev_date, 'date') else prev_date
     curr_date_obj = curr_date if hasattr(curr_date, 'date') else curr_date
     
+    days_in_period = (curr_date_obj - prev_date_obj).days
+    if days_in_period <= 0:
+        return 0.0
+    
     if not transactions:
         # No transactions - simple constant balance
-        days = (curr_date_obj - prev_date_obj).days
-        if days <= 0:
-            return 0.0
         avg_balance = prev_balance
     else:
         # Sort transactions by date
@@ -530,7 +535,7 @@ def calculate_weighted_interest(prev_balance, prev_date, curr_balance, curr_date
                 total_weighted_balance += current_balance * days
                 total_days += days
             
-            # Apply transaction
+            # Apply transaction (amount can be positive or negative)
             current_balance += tx['amount']
             last_date = tx['date']
         
@@ -544,19 +549,15 @@ def calculate_weighted_interest(prev_balance, prev_date, curr_balance, curr_date
         avg_balance = total_weighted_balance / total_days if total_days > 0 else prev_balance
     
     # Calculate interest
-    days_in_period = (curr_date_obj - prev_date_obj).days
-    if days_in_period <= 0:
-        return 0.0
-    
     daily_rate = interest_rate_pct / 100 / 365
     interest_earned = avg_balance * daily_rate * days_in_period
     
     return interest_earned
 
-
 def get_cash_transactions_for_period(start_date, end_date):
     """
     Get all cash-affecting transactions between two dates.
+    Returns empty list if no transactions found.
     """
     transactions = []
     
@@ -578,12 +579,12 @@ def get_cash_transactions_for_period(start_date, end_date):
                     'type': 'N26_Sale'
                 })
     except Exception as e:
-        pass
+        pass  # Silently continue, return empty list
     
     # Raiz transactions
     try:
         raiz_df = get_raiz_transactions()
-        if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
+        if raiz_df is not None and not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
             raiz_period = raiz_df[(raiz_df['Trade Date'].dt.date >= start_date) & (raiz_df['Trade Date'].dt.date <= end_date)]
             for _, tx in raiz_period.iterrows():
                 if tx['Transaction Type'] == 'DEPOSIT':
@@ -599,7 +600,10 @@ def get_cash_transactions_for_period(start_date, end_date):
                         'type': 'Raiz_Withdrawal'
                     })
     except Exception as e:
-        pass
+        pass  # Silently continue
+    
+    # Return sorted list (will be empty if no transactions)
+    return sorted(transactions, key=lambda x: x['date']) if transactions else []
     
    
 def save_net_worth_snapshot(total, force=False):
