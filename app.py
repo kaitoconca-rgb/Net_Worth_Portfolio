@@ -652,53 +652,21 @@ def save_net_worth_snapshot(total, force=False):
                 eur_cash_total += bal.get(name, 0.0)
         eur_cash_aud = eur_cash_total * fx_now
         
-        # Load interest rates from Forecast tab (DYNAMIC)
-        try:
-            df_forecast = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
-            if not df_forecast.empty:
-                df_forecast.columns = [c.strip() for c in df_forecast.columns]
-                # Convert values to numeric, removing % if present
-                def clean_rate(val):
-                    if isinstance(val, str):
-                        val = val.replace('%', '').strip()
-                    return pd.to_numeric(val, errors='coerce')
-                df_forecast['Value'] = df_forecast['Value'].apply(clean_rate).fillna(0)
-                
-                # Get AUD interest rates (for CBA, Me Bank, Rabobank, Up)
-                aud_rates = []
-                for acc in ['CBA', 'Me Bank', 'Rabobank', 'Up']:
-                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
-                    if not rate_row.empty:
-                        aud_rates.append(float(rate_row['Value'].iloc[0]))
-                aud_interest_rate = max(aud_rates) if aud_rates else 5.35
-                
-                # Get EUR interest rates (for Trade Republic, N26, BUNQ, BPM Cash, BPM Bonds)
-                eur_rates = []
-                for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
-                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
-                    if not rate_row.empty:
-                        eur_rates.append(float(rate_row['Value'].iloc[0]))
-                eur_interest_rate = max(eur_rates) if eur_rates else 2.0
-            else:
-                aud_interest_rate = 5.35
-                eur_interest_rate = 2.0
-        except:
-            aud_interest_rate = 5.35
-            eur_interest_rate = 2.0
-        
-        # Read existing history (columns A through O)
+        # Read existing history (columns A through T)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:O"
+            range="Net_Worth!A:T"
         ).execute()
         
         existing = result.get('values', [])
         
-        # If empty, create header row
+        # If empty, create header row with 20 columns
         if not existing:
             existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 
                         'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 
-                        'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']]
+                        'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD',
+                        'EUR_Cash_Deposits_AUD', 'AUD_Cash_Interest_AUD', 'EUR_Cash_Interest_AUD',
+                        'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD']]
         
         today = date.today()
         
@@ -710,14 +678,51 @@ def save_net_worth_snapshot(total, force=False):
             except:
                 pass
         
-        # Calculate attribution if we have previous snapshot
+        # Initialize tracking variables
         starting_balance = 0.0
         contributions = 0.0
         market_gains = 0.0
         fx_impact = 0.0
         aud_cash_interest = 0.0
         eur_cash_interest = 0.0
+        eur_cash_deposits_aud = 0.0
+        n26_dividends = 0.0
+        shares_dividends = 0.0
         contribution_breakdown = ""
+        
+        # Get interest rates from Forecast tab
+        try:
+            df_forecast = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
+            aud_interest_rate = 5.35  # Default
+            eur_interest_rate = 2.0   # Default
+            if not df_forecast.empty:
+                df_forecast.columns = [c.strip() for c in df_forecast.columns]
+                def clean_rate(val):
+                    if isinstance(val, str):
+                        val = val.replace('%', '').strip()
+                    return pd.to_numeric(val, errors='coerce')
+                df_forecast['Value'] = df_forecast['Value'].apply(clean_rate).fillna(0)
+                
+                # Get AUD rates
+                aud_rates = []
+                for acc in ['CBA', 'Me Bank', 'Rabobank', 'Up']:
+                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
+                    if not rate_row.empty:
+                        aud_rates.append(float(rate_row['Value'].iloc[0]))
+                if aud_rates:
+                    aud_interest_rate = max(aud_rates)
+                
+                # Get EUR rates
+                eur_rates = []
+                for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
+                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
+                    if not rate_row.empty:
+                        eur_rates.append(float(rate_row['Value'].iloc[0]))
+                if eur_rates:
+                    eur_interest_rate = max(eur_rates)
+        except:
+            aud_interest_rate = 5.35
+            eur_interest_rate = 2.0
         
         if len(existing) > 1:
             prev_date = pd.to_datetime(existing[-1][0]).date()
@@ -734,48 +739,38 @@ def save_net_worth_snapshot(total, force=False):
             prev_cash = float(existing[-1][13]) if len(existing[-1]) > 13 and existing[-1][13] else 0
             prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
             
-            # Get cash transactions for weighted interest calculation
-            cash_transactions = get_cash_transactions_for_period(prev_date, today)
-            
-            # Separate AUD and EUR cash transactions
-            aud_transactions = []
-            eur_transactions = []
-            
-            for tx in cash_transactions:
-                if tx.get('type') in ['N26_Investment', 'N26_Sale', 'N26_Dividend']:
-                    eur_transactions.append(tx)
-                else:
-                    aud_transactions.append(tx)
-            
-            # Calculate AUD cash interest using dynamic rate
+            # Calculate days in period
             days_in_period = (today - prev_date).days
             if days_in_period > 0:
-                aud_cash_interest = calculate_weighted_interest(
-                    prev_cash, prev_date, cash_aud, today, aud_transactions, aud_interest_rate
-                )
-                eur_cash_interest = calculate_weighted_interest(
-                    prev_eur_cash, prev_date, eur_cash_aud, today, eur_transactions, eur_interest_rate
-                )
-            else:
-                aud_cash_interest = 0.0
-                eur_cash_interest = 0.0
+                # Calculate interest using simple average (simpler for now)
+                # AUD cash interest
+                avg_aud_cash = (prev_cash + cash_aud) / 2
+                aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
+                
+                # EUR cash interest
+                avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
+                eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
             
-            # 1. Market Gains = Change in investment portfolios
+            # Calculate EUR cash deposits (estimate from change minus interest)
+            eur_cash_change = eur_cash_aud - prev_eur_cash
+            eur_cash_deposits_aud = max(0, eur_cash_change - eur_cash_interest)
+            
+            # Calculate market gains from investments
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
             market_gains = curr_investments - prev_investments
             
-            # 2. FX Impact = Change in EUR_Cash (excluding interest)
-            fx_impact = eur_cash_aud - prev_eur_cash - eur_cash_interest
+            # Calculate FX impact (change in EUR cash minus interest and deposits)
+            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud
             
-            # 3. Contributions = Everything else (new money added)
-            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest
+            # Calculate contributions (everything else)
+            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud
             
             # Get actual contributions from transaction data for breakdown
             _, breakdown_dict = calculate_period_contributions(prev_date, today)
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
         
-        # Append new row with all portfolio values
+        # Append new row with all 20 columns
         new_row = [
             today.strftime('%Y-%m-%d'),  # A: Date
             str(round(total, 2)),  # B: Total_AUD
@@ -792,6 +787,11 @@ def save_net_worth_snapshot(total, force=False):
             str(round(super_aud, 2)),  # M: Super_AUD
             str(round(cash_aud, 2)),  # N: Cash_AUD
             str(round(eur_cash_aud, 2)),  # O: EUR_Cash_AUD
+            str(round(eur_cash_deposits_aud, 2)),  # P: EUR_Cash_Deposits_AUD
+            str(round(aud_cash_interest, 2)),  # Q: AUD_Cash_Interest_AUD
+            str(round(eur_cash_interest, 2)),  # R: EUR_Cash_Interest_AUD
+            "0",  # S: N26_Dividends_Received_AUD (placeholder until you add tracking)
+            "0",  # T: Shares_Dividends_Received_AUD (placeholder until you add tracking)
         ]
         existing.append(new_row)
         
