@@ -748,9 +748,62 @@ def save_net_worth_snapshot(total, force=False):
                 aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
                 
                 # EUR cash interest
-                avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
-                eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
+                            # Calculate interest using simple average
+            avg_aud_cash = (prev_cash + cash_aud) / 2
+            aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
             
+            # EUR cash interest
+            avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
+            eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
+            
+            # ========== DIVIDEND READING SECTION - ADD THIS HERE ==========
+            n26_dividends = 0.0
+            shares_dividends = 0.0
+            try:
+                df_div = _sheets_read(PORTFOLIO_SHEET_ID, "Dividends!A:D")
+                if not df_div.empty:
+                    df_div.columns = [c.strip() for c in df_div.columns]
+                    df_div['Date'] = pd.to_datetime(df_div['Date'])
+                    df_div['Amount'] = pd.to_numeric(df_div['Amount'], errors='coerce').fillna(0)
+                    df_div['Currency'] = df_div['Currency'].str.upper().str.strip()
+                    
+                    # Filter dividends in the period
+                    period_divs = df_div[(df_div['Date'].dt.date >= prev_date) & (df_div['Date'].dt.date <= today)]
+                    
+                    if not period_divs.empty:
+                        for _, div in period_divs.iterrows():
+                            amount = div['Amount']
+                            currency = div['Currency']
+                            portfolio = str(div['Portfolio']).upper()
+                            div_date = div['Date']
+                            
+                            # Convert to AUD if needed
+                            if currency == 'EUR':
+                                fx_rate = get_fx_at(div_date)
+                                amount_aud = amount * fx_rate
+                            elif currency == 'AUD':
+                                amount_aud = amount
+                            elif currency == 'USD':
+                                try:
+                                    usd_to_aud = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+                                    amount_aud = amount / usd_to_aud
+                                except:
+                                    amount_aud = amount * 1.58
+                            else:
+                                amount_aud = amount
+                            
+                            # Add to appropriate portfolio
+                            if 'N26' in portfolio:
+                                n26_dividends += amount_aud
+                            elif 'SHARE' in portfolio:
+                                shares_dividends += amount_aud
+                            else:
+                                shares_dividends += amount_aud
+            except Exception as div_err:
+                pass
+            # ========== END OF DIVIDEND READING SECTION ==========
+            
+            # Calculate EUR cash deposits... 
             # Calculate EUR cash deposits (estimate from change minus interest)
             eur_cash_change = eur_cash_aud - prev_eur_cash
             eur_cash_deposits_aud = max(0, eur_cash_change - eur_cash_interest)
@@ -758,13 +811,13 @@ def save_net_worth_snapshot(total, force=False):
             # Calculate market gains from investments
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
-            market_gains = curr_investments - prev_investments
+           market_gains = curr_investments - prev_investments - n26_dividends
             
             # Calculate FX impact (change in EUR cash minus interest and deposits)
-            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud
+            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud - n26_dividends
             
-            # Calculate contributions (everything else)
-            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud
+            # Calculate contributions (everything else, including dividends)
+             contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud - n26_dividends - shares_dividends
             
             # Get actual contributions from transaction data for breakdown
             _, breakdown_dict = calculate_period_contributions(prev_date, today)
@@ -790,8 +843,8 @@ def save_net_worth_snapshot(total, force=False):
             str(round(eur_cash_deposits_aud, 2)),  # P: EUR_Cash_Deposits_AUD
             str(round(aud_cash_interest, 2)),  # Q: AUD_Cash_Interest_AUD
             str(round(eur_cash_interest, 2)),  # R: EUR_Cash_Interest_AUD
-            "0",  # S: N26_Dividends_Received_AUD (placeholder until you add tracking)
-            "0",  # T: Shares_Dividends_Received_AUD (placeholder until you add tracking)
+            str(round(n26_dividends, 2)),  # S: N26_Dividends_Received_AUD
+            str(round(shares_dividends, 2)),  # T: Shares_Dividends_Received_AUD
         ]
         existing.append(new_row)
         
