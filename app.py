@@ -3705,7 +3705,7 @@ with tab10:
         ))
         
     else:
-        # Original deterministic projection (your existing code)
+        # Original deterministic projection
         # Stacked area for portfolio components
         components = [
             ('N26', '#2980b9'),
@@ -3721,7 +3721,7 @@ with tab10:
                 x=df_proj['Date'], y=df_proj[comp],
                 name=comp, stackgroup='one',
                 line=dict(color=colour, width=0.5),
-                fillcolor=colour.replace('#', 'rgba(') + ',0.6)',
+                fillcolor=colour,
                 hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
             ))
         
@@ -3733,7 +3733,7 @@ with tab10:
             hovertemplate='Total: $%{y:,.0f}<extra></extra>'
         ))
     
-    # Add actual dots (same for all modes)
+    # Actual net worth dots
     if not df_actual.empty:
         fig_proj.add_trace(go.Scatter(
             x=df_actual['Date'], y=df_actual['Total_AUD'],
@@ -3743,7 +3743,7 @@ with tab10:
             hovertemplate='Actual: $%{y:,.2f}<extra></extra>'
         ))
     
-    # Add today marker
+    # Today marker
     fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white",
                        opacity=0.5, annotation_text="Today",
                        annotation_position="top right")
@@ -3758,7 +3758,6 @@ with tab10:
         paper_bgcolor='rgba(0,0,0,0)'
     )
     st.plotly_chart(fig_proj, use_container_width=True)
-
     # ── KEY MILESTONES ─────────────────────────────────────────────────────────
     st.markdown("### 🎯 Key Milestones")
     milestones = [500000, 750000, 1000000, 1500000, 2000000, 2500000, 3000000]
