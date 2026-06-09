@@ -499,7 +499,109 @@ def save_cash_balances(balances_dict):
     except Exception as e:
         import traceback
         return False, traceback.format_exc()
+def calculate_weighted_interest(prev_balance, prev_date, curr_balance, curr_date, transactions, interest_rate_pct):
+    """
+    Calculate interest using weighted average balance based on transaction dates.
+    """
+    prev_date_obj = prev_date if hasattr(prev_date, 'date') else prev_date
+    curr_date_obj = curr_date if hasattr(curr_date, 'date') else curr_date
+    
+    if not transactions:
+        # No transactions - simple constant balance
+        days = (curr_date_obj - prev_date_obj).days
+        if days <= 0:
+            return 0.0
+        avg_balance = prev_balance
+    else:
+        # Sort transactions by date
+        sorted_txs = sorted(transactions, key=lambda x: x['date'])
+        
+        total_weighted_balance = 0
+        total_days = 0
+        current_balance = prev_balance
+        last_date = prev_date_obj
+        
+        for tx in sorted_txs:
+            tx_date = tx['date'].date() if hasattr(tx['date'], 'date') else tx['date']
+            last_date_obj = last_date.date() if hasattr(last_date, 'date') else last_date
+            
+            days = (tx_date - last_date_obj).days
+            if days > 0:
+                total_weighted_balance += current_balance * days
+                total_days += days
+            
+            # Apply transaction
+            current_balance += tx['amount']
+            last_date = tx['date']
+        
+        # Add remaining days after last transaction
+        last_date_obj = last_date.date() if hasattr(last_date, 'date') else last_date
+        days = (curr_date_obj - last_date_obj).days
+        if days > 0:
+            total_weighted_balance += current_balance * days
+            total_days += days
+        
+        avg_balance = total_weighted_balance / total_days if total_days > 0 else prev_balance
+    
+    # Calculate interest
+    days_in_period = (curr_date_obj - prev_date_obj).days
+    if days_in_period <= 0:
+        return 0.0
+    
+    daily_rate = interest_rate_pct / 100 / 365
+    interest_earned = avg_balance * daily_rate * days_in_period
+    
+    return interest_earned
 
+
+def get_cash_transactions_for_period(start_date, end_date):
+    """
+    Get all cash-affecting transactions between two dates.
+    """
+    transactions = []
+    
+    # N26 transactions (Buying = cash outflow, Selling = cash inflow)
+    try:
+        n26_txs = df_raw[(df_raw['Data'].dt.date >= start_date) & (df_raw['Data'].dt.date <= end_date)]
+        for _, tx in n26_txs.iterrows():
+            fx_rate = get_fx_at(tx['Data'])
+            if tx['Tipo'] == 'BUY':
+                transactions.append({
+                    'date': tx['Data'],
+                    'amount': -tx['Inv_EUR'] * fx_rate,
+                    'type': 'N26_Investment'
+                })
+            elif tx['Tipo'] == 'SELL':
+                transactions.append({
+                    'date': tx['Data'],
+                    'amount': tx['Inv_EUR'] * fx_rate,
+                    'type': 'N26_Sale'
+                })
+    except Exception as e:
+        pass
+    
+    # Raiz transactions
+    try:
+        raiz_df = get_raiz_transactions()
+        if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
+            raiz_period = raiz_df[(raiz_df['Trade Date'].dt.date >= start_date) & (raiz_df['Trade Date'].dt.date <= end_date)]
+            for _, tx in raiz_period.iterrows():
+                if tx['Transaction Type'] == 'DEPOSIT':
+                    transactions.append({
+                        'date': tx['Trade Date'],
+                        'amount': -tx['Amount'],
+                        'type': 'Raiz_Deposit'
+                    })
+                elif tx['Transaction Type'] == 'WITHDRAWAL':
+                    transactions.append({
+                        'date': tx['Trade Date'],
+                        'amount': tx['Amount'],
+                        'type': 'Raiz_Withdrawal'
+                    })
+    except Exception as e:
+        pass
+    
+   
 def save_net_worth_snapshot(total, force=False):
     try:
         from google.oauth2 import service_account
@@ -546,6 +648,40 @@ def save_net_worth_snapshot(total, force=False):
                 eur_cash_total += bal.get(name, 0.0)
         eur_cash_aud = eur_cash_total * fx_now
         
+        # Load interest rates from Forecast tab (DYNAMIC)
+        try:
+            df_forecast = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
+            if not df_forecast.empty:
+                df_forecast.columns = [c.strip() for c in df_forecast.columns]
+                # Convert values to numeric, removing % if present
+                def clean_rate(val):
+                    if isinstance(val, str):
+                        val = val.replace('%', '').strip()
+                    return pd.to_numeric(val, errors='coerce')
+                df_forecast['Value'] = df_forecast['Value'].apply(clean_rate).fillna(0)
+                
+                # Get AUD interest rates (for CBA, Me Bank, Rabobank, Up)
+                aud_rates = []
+                for acc in ['CBA', 'Me Bank', 'Rabobank', 'Up']:
+                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
+                    if not rate_row.empty:
+                        aud_rates.append(float(rate_row['Value'].iloc[0]))
+                aud_interest_rate = max(aud_rates) if aud_rates else 5.35
+                
+                # Get EUR interest rates (for Trade Republic, N26, BUNQ, BPM Cash, BPM Bonds)
+                eur_rates = []
+                for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
+                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
+                    if not rate_row.empty:
+                        eur_rates.append(float(rate_row['Value'].iloc[0]))
+                eur_interest_rate = max(eur_rates) if eur_rates else 2.0
+            else:
+                aud_interest_rate = 5.35
+                eur_interest_rate = 2.0
+        except:
+            aud_interest_rate = 5.35
+            eur_interest_rate = 2.0
+        
         # Read existing history (columns A through O)
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
@@ -556,7 +692,9 @@ def save_net_worth_snapshot(total, force=False):
         
         # If empty, create header row
         if not existing:
-            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']]
+            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 
+                        'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 
+                        'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']]
         
         today = date.today()
         
@@ -573,6 +711,8 @@ def save_net_worth_snapshot(total, force=False):
         contributions = 0.0
         market_gains = 0.0
         fx_impact = 0.0
+        aud_cash_interest = 0.0
+        eur_cash_interest = 0.0
         contribution_breakdown = ""
         
         if len(existing) > 1:
@@ -590,22 +730,48 @@ def save_net_worth_snapshot(total, force=False):
             prev_cash = float(existing[-1][13]) if len(existing[-1]) > 13 and existing[-1][13] else 0
             prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
             
-            # 1. Market Gains = Change in investment portfolios (N26, Raiz, Vanguard, Shares, Commodities, Super)
+            # Get cash transactions for weighted interest calculation
+            cash_transactions = get_cash_transactions_for_period(prev_date, today)
+            
+            # Separate AUD and EUR cash transactions
+            aud_transactions = []
+            eur_transactions = []
+            
+            for tx in cash_transactions:
+                if tx.get('type') in ['N26_Investment', 'N26_Sale', 'N26_Dividend']:
+                    eur_transactions.append(tx)
+                else:
+                    aud_transactions.append(tx)
+            
+            # Calculate AUD cash interest using dynamic rate
+            days_in_period = (today - prev_date).days
+            if days_in_period > 0:
+                aud_cash_interest = calculate_weighted_interest(
+                    prev_cash, prev_date, cash_aud, today, aud_transactions, aud_interest_rate
+                )
+                eur_cash_interest = calculate_weighted_interest(
+                    prev_eur_cash, prev_date, eur_cash_aud, today, eur_transactions, eur_interest_rate
+                )
+            else:
+                aud_cash_interest = 0.0
+                eur_cash_interest = 0.0
+            
+            # 1. Market Gains = Change in investment portfolios
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
             market_gains = curr_investments - prev_investments
             
-            # 2. FX Impact = Change in EUR_Cash (due to exchange rate movements)
-            fx_impact = eur_cash_aud - prev_eur_cash
+            # 2. FX Impact = Change in EUR_Cash (excluding interest)
+            fx_impact = eur_cash_aud - prev_eur_cash - eur_cash_interest
             
-            # 3. Contributions = Everything else (new money added, cash withdrawals, etc.)
-            contributions = total - prev_total - market_gains - fx_impact
+            # 3. Contributions = Everything else (new money added)
+            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest
             
             # Get actual contributions from transaction data for breakdown
             _, breakdown_dict = calculate_period_contributions(prev_date, today)
             contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
         
-        # Append new row
+        # Append new row with all portfolio values
         new_row = [
             today.strftime('%Y-%m-%d'),  # A: Date
             str(round(total, 2)),  # B: Total_AUD
