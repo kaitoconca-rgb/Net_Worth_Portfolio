@@ -810,8 +810,8 @@ def save_net_worth_snapshot(total, force=False):
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        # Read columns A through O
-        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:O")
+        # Read columns A through T (20 columns)
+        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:T")
         if df_nw.empty:
             return pd.DataFrame(columns=['Date', 'Total_AUD'])
         
@@ -850,6 +850,15 @@ def load_net_worth_history():
                 df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
             else:
                 df_nw[col] = 0.0
+        
+        # Load new tracking columns (P through T)
+        tracking_columns = ['EUR_Cash_Deposits_AUD', 'AUD_Cash_Interest_AUD', 'EUR_Cash_Interest_AUD', 
+                           'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD']
+        for col in tracking_columns:
+            if col in df_nw.columns:
+                df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
+            else:
+                df_nw[col] = 0.0
             
         return df_nw.dropna(subset=['Total_AUD'])
     except Exception as e:
@@ -857,8 +866,7 @@ def load_net_worth_history():
         # ==================== NET WORTH CHANGE ANALYSIS ====================
 def analyze_net_worth_change(df_history, start_date, end_date):
     """
-    Analyze net worth change between two dates using ONLY real saved portfolio data
-    Cash is EXCLUDED from market gains - it appears in Contributions or FX Impact
+    Analyze net worth change between two dates with full attribution including interest and dividends.
     """
     # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
@@ -876,8 +884,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_change = end_value - start_value
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
     
-    # Calculate REAL portfolio gains using saved data
-    # EXCLUDE Cash from market gains - Cash changes are captured in Contributions and FX Impact
+    # Calculate portfolio gains (investments only, excluding cash)
     portfolio_gains = {}
     portfolio_mapping = {
         'N26_AUD': 'N26 European ETFs',
@@ -886,7 +893,6 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'Shares_AUD': 'ASX Shares',
         'Commodities_AUD': 'Commodities',
         'Super_AUD': 'Super',
-        # 'Cash_AUD' is EXCLUDED - goes to Contributions or FX Impact
     }
     
     total_saved_gains = 0
@@ -905,23 +911,36 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         else:
             portfolio_gains[name] = 0
     
-    # Get contributions and FX impact from saved data
+    # Get all attribution components from saved data
     total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
     fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
+    aud_cash_interest = df_period['AUD_Cash_Interest_AUD'].sum() if 'AUD_Cash_Interest_AUD' in df_period.columns else 0
+    eur_cash_interest = df_period['EUR_Cash_Interest_AUD'].sum() if 'EUR_Cash_Interest_AUD' in df_period.columns else 0
+    n26_dividends = df_period['N26_Dividends_Received_AUD'].sum() if 'N26_Dividends_Received_AUD' in df_period.columns else 0
+    shares_dividends = df_period['Shares_Dividends_Received_AUD'].sum() if 'Shares_Dividends_Received_AUD' in df_period.columns else 0
+    eur_cash_deposits = df_period['EUR_Cash_Deposits_AUD'].sum() if 'EUR_Cash_Deposits_AUD' in df_period.columns else 0
     
-    # If we have real portfolio data, use it for market gains
+    # Total cash interest
+    total_cash_interest = aud_cash_interest + eur_cash_interest
+    
+    # Total dividends
+    total_dividends = n26_dividends + shares_dividends
+    
+    # Calculate market gains (using saved data or residual)
     if has_real_data and len(df_period) >= 2:
         market_gains = total_saved_gains
     else:
-        # Calculate market gains as residual
-        market_gains = total_change - total_contributions - fx_impact
+        market_gains = total_change - total_contributions - fx_impact - total_cash_interest - total_dividends - eur_cash_deposits
         portfolio_gains = {}
         has_real_data = False
     
-    # Calculate percentages
+    # Calculate percentages based on total change
     contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
     market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
     fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
+    interest_pct = (total_cash_interest / abs(total_change) * 100) if total_change != 0 else 0
+    dividends_pct = (total_dividends / abs(total_change) * 100) if total_change != 0 else 0
+    deposits_pct = (eur_cash_deposits / abs(total_change) * 100) if total_change != 0 else 0
     
     return {
         'start_date': start_row['Date'].date(),
@@ -935,33 +954,20 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'portfolio_gains': portfolio_gains,
         'has_portfolio_data': has_real_data,
         'fx_impact': fx_impact,
+        'aud_cash_interest': aud_cash_interest,
+        'eur_cash_interest': eur_cash_interest,
+        'total_cash_interest': total_cash_interest,
+        'n26_dividends': n26_dividends,
+        'shares_dividends': shares_dividends,
+        'total_dividends': total_dividends,
+        'eur_cash_deposits': eur_cash_deposits,
         'contrib_pct': contrib_pct,
         'market_pct': market_pct,
         'fx_pct': fx_pct,
+        'interest_pct': interest_pct,
+        'dividends_pct': dividends_pct,
+        'deposits_pct': deposits_pct,
         'days': (end_row['Date'] - start_row['Date']).days
-    }
-    
-    # Calculate percentages
-    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
-    market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
-    fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
-    
-    return {
-        'start_date': df_period.iloc[0]['Date'].date(),
-        'end_date': df_period.iloc[-1]['Date'].date(),
-        'start_value': start_value,
-        'end_value': end_value,
-        'total_change': total_change,
-        'total_change_pct': total_change_pct,
-        'total_contributions': total_contributions,
-        'portfolio_contributions': portfolio_contributions,
-        'market_gains': market_gains,
-        'portfolio_gains': portfolio_gains,
-        'fx_impact': fx_impact,
-        'contrib_pct': contrib_pct,
-        'market_pct': market_pct,
-        'fx_pct': fx_pct,
-        'days': (df_period.iloc[-1]['Date'] - df_period.iloc[0]['Date']).days
     }
 # ==================== ADDITION: CONTRIBUTION TRACKING ====================
 # Add these functions right after load_net_worth_history() and before the tabs
@@ -1448,70 +1454,77 @@ with tab0:
                 st.divider()
                 
                 # Attribution breakdown - Three columns
+                # Attribution breakdown - Now with 5 components
                 st.markdown("#### 📊 Change Attribution")
                 
-                # Create three columns for the main components
-                col_contrib, col_market, col_fx = st.columns(3)
+                # Create five columns for all components
+                col_contrib, col_market, col_interest, col_dividends, col_fx = st.columns(5)
                 
                 with col_contrib:
                     contrib_color = "#27ae60" if analysis['total_contributions'] >= 0 else "#e74c3c"
                     st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">💰 New Contributions</div>
-                            <div style="font-size: 1.5rem; color: {contrib_color}; font-weight: bold;">
-                                ${analysis['total_contributions']:+,.2f}
+                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 0.9rem; font-weight: 600;">💰 Contributions</div>
+                            <div style="font-size: 1.2rem; color: {contrib_color}; font-weight: bold;">
+                                ${analysis['total_contributions']:+,.0f}
                             </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['contrib_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Money added to investments & savings
-                            </div>
+                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['contrib_pct']):.0f}%</div>
                         </div>
                     """, unsafe_allow_html=True)
                 
                 with col_market:
                     market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
                     st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">📈 Market Gains</div>
-                            <div style="font-size: 1.5rem; color: {market_color}; font-weight: bold;">
-                                ${analysis['market_gains']:+,.2f}
+                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 0.9rem; font-weight: 600;">📈 Market Gains</div>
+                            <div style="font-size: 1.2rem; color: {market_color}; font-weight: bold;">
+                                ${analysis['market_gains']:+,.0f}
                             </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['market_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Investment returns from all portfolios
-                            </div>
+                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['market_pct']):.0f}%</div>
                         </div>
                     """, unsafe_allow_html=True)
                     
-                    # Portfolio breakdown expander (only one copy, right here)
+                    # Portfolio breakdown expander
                     if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
-                        with st.expander("📋 See breakdown by portfolio"):
+                        with st.expander("📋 By portfolio"):
                             for portfolio, gain in analysis['portfolio_gains'].items():
                                 if gain != 0:
                                     gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
-                                    pct_of_market = (gain / analysis['market_gains'] * 100) if analysis['market_gains'] != 0 else 0
-                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.2f} AUD</span> <span style='color:#666; font-size:0.8rem'>({pct_of_market:.1f}% of market gains)</span>", unsafe_allow_html=True)
-                    else:
-                        st.caption("📊 *Portfolio breakdown will appear here after you save 2+ snapshots with portfolio data.*")
+                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.0f}</span>", unsafe_allow_html=True)
+                
+                with col_interest:
+                    interest_color = "#27ae60" if analysis['total_cash_interest'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 0.9rem; font-weight: 600;">🏦 Cash Interest</div>
+                            <div style="font-size: 1.2rem; color: {interest_color}; font-weight: bold;">
+                                ${analysis['total_cash_interest']:+,.0f}
+                            </div>
+                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['interest_pct']):.0f}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                with col_dividends:
+                    dividends_color = "#27ae60" if analysis['total_dividends'] >= 0 else "#e74c3c"
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 0.9rem; font-weight: 600;">💸 Dividends</div>
+                            <div style="font-size: 1.2rem; color: {dividends_color}; font-weight: bold;">
+                                ${analysis['total_dividends']:+,.0f}
+                            </div>
+                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['dividends_pct']):.0f}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
                 
                 with col_fx:
                     fx_color = "#27ae60" if analysis['fx_impact'] >= 0 else "#e74c3c"
                     st.markdown(f"""
-                        <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 1.1rem; font-weight: 600;">💱 FX Impact</div>
-                            <div style="font-size: 1.5rem; color: {fx_color}; font-weight: bold;">
-                                ${analysis['fx_impact']:+,.2f}
+                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
+                            <div style="font-size: 0.9rem; font-weight: 600;">💱 FX Impact</div>
+                            <div style="font-size: 1.2rem; color: {fx_color}; font-weight: bold;">
+                                ${analysis['fx_impact']:+,.0f}
                             </div>
-                            <div style="font-size: 0.9rem; color: #666;">
-                                {abs(analysis['fx_pct']):.1f}% of total change
-                            </div>
-                            <div style="font-size: 0.8rem; color: #888; margin-top: 8px;">
-                                Currency movements (AUD/EUR)
-                            </div>
+                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['fx_pct']):.0f}%</div>
                         </div>
                     """, unsafe_allow_html=True)
                 
