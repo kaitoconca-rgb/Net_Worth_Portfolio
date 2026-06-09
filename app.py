@@ -3350,14 +3350,37 @@ with tab10:
 
     df_proj = pd.DataFrame(projection_rows)
     
-    # Load cash balances for interest calculation (needed for uncertainty section)
+    # ===== RELOAD CASH BALANCES FOR UNCERTAINTY SECTION =====
     cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
     df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
     df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
+    df_cash_bal = df_cash_bal.dropna(subset=['Account'])
     df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
     cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
     
-   
+    # Also redefine interest_accounts if needed
+    interest_accounts = [
+        'CBA', 'Me Bank', 'Rabobank', 'Up',
+        'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'
+    ]
+    
+    # Redefine monthly_cash_interest function to use the local cash_bal
+    def monthly_cash_interest_local():
+        total_int = 0.0
+        for acc in interest_accounts:
+            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
+            bal = cash_bal.get(acc, 0.0)
+            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
+                bal = bal * fx_now
+            total_int += bal * rate
+        return total_int
+    
+    monthly_interest = monthly_cash_interest_local()
+    monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
+    monthly_expenses = (
+        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
+        + new_inputs.get('Expense_travel', 0.0) / 12
+    )
     # ==================== UNCERTAINTY & MONTE CARLO ====================
     st.markdown("### 📊 Risk & Uncertainty Analysis")
     st.caption("Understand the range of possible outcomes based on historical market volatility.")
