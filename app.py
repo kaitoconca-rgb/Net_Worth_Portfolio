@@ -3141,7 +3141,107 @@ with tab10:
             st.error(f"Could not save: {err}")
 
     st.divider()
-
+    st.divider()
+    
+    # ==================== SCENARIO SELECTOR ====================
+    st.markdown("### 📊 Forecast Scenario")
+    st.caption("Choose a market outlook scenario OR use your custom returns from above.")
+    
+    scenario_options = {
+        "Use my manual returns (above)": None,
+        "Bear (Pessimistic) - 25% probability": {
+            "n26": 4.0, "raiz": 3.0, "vanguard": 2.0, "shares": 3.0, "metals": 0.0, "super": 3.0,
+            "description": "Prolonged market downturn, recession risk, lower corporate earnings"
+        },
+        "Base (Moderate) - 50% probability": {
+            "n26": 9.0, "raiz": 8.0, "vanguard": 7.5, "shares": 8.0, "metals": 4.0, "super": 7.0,
+            "description": "Moderate economic growth, stable inflation, normal market cycles"
+        },
+        "Bull (Optimistic) - 25% probability": {
+            "n26": 14.0, "raiz": 13.0, "vanguard": 12.0, "shares": 13.0, "metals": 8.0, "super": 11.0,
+            "description": "Strong economic growth, technological acceleration, rising corporate profits"
+        }
+    }
+    
+    selected_scenario = st.selectbox(
+        "Select Market Scenario",
+        options=list(scenario_options.keys()),
+        index=0,
+        help="Bear = 25% probability, Base = 50% probability, Bull = 25% probability"
+    )
+    
+    # Store original manual values before override
+    if 'original_manual_returns' not in st.session_state:
+        st.session_state.original_manual_returns = {
+            'n26': new_inputs['Returns_n26_pct'],
+            'raiz': new_inputs['Returns_raiz_pct'],
+            'vanguard': new_inputs['Returns_vanguard_pct'],
+            'shares': new_inputs['Returns_shares_pct'],
+            'metals': new_inputs['Returns_metals_pct'],
+            'super': new_inputs['Returns_super_pct'],
+        }
+    
+    # Apply scenario if selected
+    if selected_scenario != "Use my manual returns (above)":
+        scenario = scenario_options[selected_scenario]
+        st.info(f"📈 **{selected_scenario}**: {scenario['description']}")
+        
+        # Override returns with scenario values
+        new_inputs['Returns_n26_pct'] = scenario["n26"]
+        new_inputs['Returns_raiz_pct'] = scenario["raiz"]
+        new_inputs['Returns_vanguard_pct'] = scenario["vanguard"]
+        new_inputs['Returns_shares_pct'] = scenario["shares"]
+        new_inputs['Returns_metals_pct'] = scenario["metals"]
+        new_inputs['Returns_super_pct'] = scenario["super"]
+        
+        # Display what was applied
+        col_scen1, col_scen2, col_scen3 = st.columns(3)
+        with col_scen1:
+            st.metric("N26 European ETFs", f"{scenario['n26']:.1f}%")
+            st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%)
+        with col_scen2:
+            st.metric("Vanguard VDAL", f"{scenario['vanguard']:.1f}%")
+            st.metric("ASX Shares", f"{scenario['shares']:.1f}%")
+        with col_scen3:
+            st.metric("Precious Metals", f"{scenario['metals']:.1f}%")
+            st.metric("Super (Mercer)", f"{scenario['super']:.1f}%")
+    else:
+        # Restore manual returns if switching back from scenario
+        if 'original_manual_returns' in st.session_state:
+            new_inputs['Returns_n26_pct'] = st.session_state.original_manual_returns['n26']
+            new_inputs['Returns_raiz_pct'] = st.session_state.original_manual_returns['raiz']
+            new_inputs['Returns_vanguard_pct'] = st.session_state.original_manual_returns['vanguard']
+            new_inputs['Returns_shares_pct'] = st.session_state.original_manual_returns['shares']
+            new_inputs['Returns_metals_pct'] = st.session_state.original_manual_returns['metals']
+            new_inputs['Returns_super_pct'] = st.session_state.original_manual_returns['super']
+        st.info("✏️ Using your custom return assumptions from above.")
+    
+    st.divider()
+    
+    # ==================== VOLATILITY & SENSITIVITY ====================
+    st.markdown("### 📊 Sensitivity Analysis")
+    st.caption("Adjust the return assumptions to see how sensitive your projections are to market changes.")
+    
+    col_sens1, col_sens2 = st.columns(2)
+    with col_sens1:
+        sensitivity_adjustment = st.slider(
+            "Adjust all returns by (% points)",
+            min_value=-5.0, max_value=5.0, value=0.0, step=0.5,
+            help="Positive values increase all expected returns, negative values decrease them"
+        )
+    with col_sens2:
+        st.metric("Impact on 5-Year NW", 
+                 f"${(df_proj.iloc[-1]['Projected NW'] * (1 + sensitivity_adjustment/100) - df_proj.iloc[-1]['Projected NW']):,.0f}" if 'df_proj' in dir() else "Run projection first",
+                 delta=f"{sensitivity_adjustment:+.1f}% to all returns")
+    
+    # Apply sensitivity adjustment
+    if sensitivity_adjustment != 0:
+        new_inputs['Returns_n26_pct'] = new_inputs.get('Returns_n26_pct', 11.0) + sensitivity_adjustment
+        new_inputs['Returns_raiz_pct'] = new_inputs.get('Returns_raiz_pct', 10.0) + sensitivity_adjustment
+        new_inputs['Returns_vanguard_pct'] = new_inputs.get('Returns_vanguard_pct', 9.5) + sensitivity_adjustment
+        new_inputs['Returns_shares_pct'] = new_inputs.get('Returns_shares_pct', 10.0) + sensitivity_adjustment
+        new_inputs['Returns_metals_pct'] = new_inputs.get('Returns_metals_pct', 5.0) + sensitivity_adjustment
+        new_inputs['Returns_super_pct'] = new_inputs.get('Returns_super_pct', 8.6) + sensitivity_adjustment
     # ── LOAD CASH BALANCES ONCE ───────────────────────────────────────────────
     cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
     df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
@@ -3275,7 +3375,85 @@ with tab10:
         paper_bgcolor='rgba(0,0,0,0)'
     )
     st.plotly_chart(fig_proj, use_container_width=True)
-
+    st.divider()
+    
+    # ==================== MONTE CARLO SIMULATION ====================
+    with st.expander("🎲 Monte Carlo Simulation (Advanced)"):
+        st.markdown("Run thousands of random market scenarios to see the range of possible outcomes.")
+        
+        run_mc = st.button("Run Monte Carlo Simulation (1,000 scenarios)", key="run_mc_btn")
+        
+        if run_mc:
+            with st.spinner("Running 1,000 market scenarios..."):
+                np.random.seed(42)
+                
+                # Historical volatilities
+                volatility = {
+                    'n26': 0.16, 'raiz': 0.12, 'vanguard': 0.14,
+                    'shares': 0.18, 'metals': 0.22, 'super': 0.11,
+                }
+                monthly_vol = {k: v / (12 ** 0.5) for k, v in volatility.items()}
+                
+                n_simulations = 1000
+                all_endings = []
+                
+                monthly_returns_used = {
+                    'n26': monthly_r['n26'],
+                    'raiz': monthly_r['raiz'],
+                    'vanguard': monthly_r['vanguard'],
+                    'shares': monthly_r['shares'],
+                    'metals': monthly_r['metals'],
+                    'super': monthly_r['super'],
+                }
+                
+                for sim in range(n_simulations):
+                    nw = start_nw
+                    n26_v = current_market_value_eur * fx_now
+                    raiz_v = raiz_total_aud
+                    vdal_v = vanguard_total_aud
+                    shares_v = shares_total_aud
+                    metals_v = commodities_total_aud
+                    super_v = super_total_aud
+                    cash_v = cash_total_aud
+                    
+                    for m in range(1, months + 1):
+                        n26_return = np.random.normal(monthly_returns_used['n26'], monthly_vol['n26'])
+                        raiz_return = np.random.normal(monthly_returns_used['raiz'], monthly_vol['raiz'])
+                        vdal_return = np.random.normal(monthly_returns_used['vanguard'], monthly_vol['vanguard'])
+                        shares_return = np.random.normal(monthly_returns_used['shares'], monthly_vol['shares'])
+                        metals_return = np.random.normal(monthly_returns_used['metals'], monthly_vol['metals'])
+                        super_return = np.random.normal(monthly_returns_used['super'], monthly_vol['super'])
+                        
+                        n26_v *= (1 + n26_return)
+                        raiz_v *= (1 + raiz_return)
+                        vdal_v *= (1 + vdal_return)
+                        shares_v *= (1 + shares_return)
+                        metals_v *= (1 + metals_return)
+                        super_v *= (1 + super_return)
+                        
+                        cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
+                        if m % 12 == 0:
+                            cash_v -= (monthly_interest * 12 * 0.19 + n26_v * 0.02 * 0.19)
+                        
+                        nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
+                    
+                    all_endings.append(nw)
+                
+                endings_series = pd.Series(all_endings)
+                
+                col_mc1, col_mc2, col_mc3, col_mc4 = st.columns(4)
+                col_mc1.metric("5th Percentile (Worst 5%)", f"${endings_series.quantile(0.05):,.0f}")
+                col_mc2.metric("Median (50th Percentile)", f"${endings_series.quantile(0.5):,.0f}")
+                col_mc3.metric("95th Percentile (Best 5%)", f"${endings_series.quantile(0.95):,.0f}")
+                col_mc4.metric("Probability of Growth", f"{(endings_series > start_nw).mean() * 100:.1f}%")
+                
+                # Histogram
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(x=endings_series, nbinsx=50, marker_color='#2980b9', opacity=0.7))
+                fig_hist.add_vline(x=start_nw, line_dash="dash", line_color="red", annotation_text="Starting NW")
+                fig_hist.add_vline(x=endings_series.quantile(0.5), line_dash="dash", line_color="green", annotation_text="Median")
+                fig_hist.update_layout(title="Distribution of 5-Year Outcomes", xaxis_title="Net Worth (AUD)", xaxis_tickprefix="$", height=400)
+                st.plotly_chart(fig_hist, use_container_width=True)
     # ── KEY MILESTONES ─────────────────────────────────────────────────────────
     st.markdown("### 🎯 Key Milestones")
     milestones = [500000, 750000, 1000000, 1500000, 2000000, 2500000, 3000000]
