@@ -811,7 +811,7 @@ def save_net_worth_snapshot(total, force=False):
             # Calculate market gains from investments
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
-           market_gains = curr_investments - prev_investments - n26_dividends
+            market_gains = curr_investments - prev_investments - n26_dividends
             
             # Calculate FX impact (change in EUR cash minus interest and deposits)
             fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud - n26_dividends
