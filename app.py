@@ -2985,7 +2985,12 @@ with tab10:
             if df_f.empty:
                 return {}
             df_f.columns = [c.strip() for c in df_f.columns]
-            df_f['Value'] = pd.to_numeric(df_f['Value'], errors='coerce').fillna(0)
+            # Clean percentage signs from values
+            def clean_value(val):
+                if isinstance(val, str):
+                    val = val.replace('%', '').strip()
+                return pd.to_numeric(val, errors='coerce')
+            df_f['Value'] = df_f['Value'].apply(clean_value).fillna(0)
             result = {}
             for _, row in df_f.iterrows():
                 cat = str(row['Category']).strip()
@@ -3046,20 +3051,10 @@ with tab10:
 
     # ── COMPUTE HISTORICAL RETURNS ─────────────────────────────────────────────
     def compute_benchmark_returns():
-        """
-        Benchmark-based return assumptions derived from long-term index performance.
-        These reflect the underlying ETF/index history, not your personal purchase timing.
-        Sources: PortfoliosLab, Morningstar, Raiz FY2024-25 report (Oct 2025).
-        All figures are % p.a., nominal, pre-tax.
-        """
         return {
-            # VWRL ~12.4% p.a. over 10yr, VUSA ~14.2% p.a. — blended N26 mix ~11%
             'n26':      11.0,
-            # Raiz Moderately Aggressive FY25: 14%, long-run average ~10%
             'raiz':     10.0,
-            # ASX broad market long-run average ~9-10% p.a.
             'vanguard': 9.5,
-            # Individual ASX stocks — use broad market benchmark
             'shares':   10.0,
         }
 
@@ -3071,7 +3066,6 @@ with tab10:
     st.caption("Edit and save — values persist in your Google Sheet.")
 
     col_inc, col_exp, col_int = st.columns(3)
-
     new_inputs = {}
 
     with col_inc:
@@ -3081,15 +3075,9 @@ with tab10:
             value=float(forecast_inputs.get('Income_rent_eur', 500.0)),
             step=50.0, format="%.2f")
         rent_aud = new_inputs['Income_rent_eur'] * fx_now
-        st.caption(f"≈ ${rent_aud:,.2f} AUD/month at current rate")
+        st.caption(f"≈ ${rent_aud:,.2f} AUD/month")
 
         st.markdown("**📈 Expected Investment Returns (% p.a.)**")
-        st.caption(
-            "Pre-filled from long-term benchmark returns (not your purchase timing): "
-            "N26 based on VWRL/VUSA 10yr avg ~11–14%; "
-            "Raiz based on Moderately Aggressive portfolio long-run avg ~10%; "
-            "Vanguard/ASX based on broad market ~9–10% p.a. Edit to adjust."
-        )
         new_inputs['Returns_n26_pct'] = st.number_input(
             "N26 European ETFs", min_value=-20.0, max_value=50.0,
             value=float(forecast_inputs.get('Returns_n26_pct', hist_returns['n26'])),
@@ -3130,21 +3118,13 @@ with tab10:
                 f"{label} (AUD/{freq[:2]})", min_value=0.0,
                 value=float(forecast_inputs.get(f'Expense_{key}', 0.0)),
                 step=100.0 if freq == 'annual' else 50.0, format="%.2f")
-            if freq == 'annual':
-                st.caption(f"≈ ${new_inputs[f'Expense_{key}']/12:,.2f} AUD/month")
-        # Convert travel to monthly for total
         monthly_travel = new_inputs.get('Expense_travel', 0.0) / 12
-        total_expenses = (sum(new_inputs[f'Expense_{k}'] for k, (_, f) in expense_cats.items() if f == 'monthly')
-                          + monthly_travel)
-        st.metric("Total Monthly Expenses", f"${total_expenses:,.2f} AUD",
-                  f"${total_expenses*12:,.2f} AUD/year")
+        total_expenses = (sum(new_inputs[f'Expense_{k}'] for k in ['housing','food','transport','health','other']) + monthly_travel)
+        st.metric("Total Monthly Expenses", f"${total_expenses:,.2f} AUD")
 
     with col_int:
         st.markdown("**🏦 Cash Interest Rates (% p.a.)**")
-        interest_accounts = [
-            'CBA', 'Me Bank', 'Rabobank', 'Up',
-            'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'
-        ]
+        interest_accounts = ['CBA', 'Me Bank', 'Rabobank', 'Up', 'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']
         for acc in interest_accounts:
             new_inputs[f'Interest_{acc}'] = st.number_input(
                 acc, min_value=0.0, max_value=20.0,
@@ -3152,111 +3132,40 @@ with tab10:
                 step=0.1, format="%.2f")
 
     if st.button("💾 Save Assumptions", type="primary", key="forecast_save_btn"):
-        # Map back to Category/Key structure
-        save_dict = {}
-        for k, v in new_inputs.items():
-            parts = k.split('_', 1)
-            if len(parts) == 2:
-                save_dict[k] = v
         ok, err = save_forecast_inputs(new_inputs)
         if ok:
             st.success("✅ Assumptions saved!")
-            load_forecast_inputs.clear()
+            st.cache_data.clear()
+            st.rerun()
         else:
             st.error(f"Could not save: {err}")
 
     st.divider()
-    
-    # ==================== SCENARIO SELECTOR ====================
-    st.markdown("### 📊 Forecast Scenario")
-    st.caption("Choose a market outlook scenario OR use your custom returns from above.")
-    
-    scenario_options = {
-        "Use my manual returns (above)": None,
-        "Bear (Pessimistic) - 25% probability": {
-            "n26": 4.0, "raiz": 3.0, "vanguard": 2.0, "shares": 3.0, "metals": 0.0, "super": 3.0,
-            "description": "Prolonged market downturn, recession risk, lower corporate earnings"
-        },
-        "Base (Moderate) - 50% probability": {
-            "n26": 9.0, "raiz": 8.0, "vanguard": 7.5, "shares": 8.0, "metals": 4.0, "super": 7.0,
-            "description": "Moderate economic growth, stable inflation, normal market cycles"
-        },
-        "Bull (Optimistic) - 25% probability": {
-            "n26": 14.0, "raiz": 13.0, "vanguard": 12.0, "shares": 13.0, "metals": 8.0, "super": 11.0,
-            "description": "Strong economic growth, technological acceleration, rising corporate profits"
-        }
-    }
-    
-    selected_scenario = st.selectbox(
-        "Select Market Scenario",
-        options=list(scenario_options.keys()),
-        index=0,  # Default to "Use my manual returns"
-        help="Bear = 25% probability, Base = 50% probability, Bull = 25% probability"
-    )
-    
-    # Only override if a scenario (not manual) is selected
-    if selected_scenario != "Use my manual returns (above)":
-        scenario = scenario_options[selected_scenario]
-        st.info(f"📈 **{selected_scenario}**: {scenario['description']}")
-        
-        # Override the return inputs with scenario values
-        new_inputs['Returns_n26_pct'] = scenario["n26"]
-        new_inputs['Returns_raiz_pct'] = scenario["raiz"]
-        new_inputs['Returns_vanguard_pct'] = scenario["vanguard"]
-        new_inputs['Returns_shares_pct'] = scenario["shares"]
-        new_inputs['Returns_metals_pct'] = scenario["metals"]
-        new_inputs['Returns_super_pct'] = scenario["super"]
-        
-        # Display what was applied
-        col_scen1, col_scen2, col_scen3 = st.columns(3)
-        with col_scen1:
-            st.metric("N26 European ETFs", f"{scenario['n26']:.1f}%", help="European equity exposure")
-            st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%", help="Diversified ETF portfolio")
-        with col_scen2:
-            st.metric("Vanguard VDAL", f"{scenario['vanguard']:.1f}%", help="Growth-focused diversified")
-            st.metric("ASX Shares", f"{scenario['shares']:.1f}%", help="Australian equities")
-        with col_scen3:
-            st.metric("Precious Metals", f"{scenario['metals']:.1f}%", help="Gold, Silver, Platinum")
-            st.metric("Super (Mercer)", f"{scenario['super']:.1f}%", help="Pre-glide growth phase")
-    else:
-        st.info("✏️ Using your custom return assumptions from the 'Expected Investment Returns' section above.")
-    st.divider()
-    
-    # ==================== VOLATILITY TOGGLE ====================
-    st.markdown("### 📊 Show Uncertainty Range")
-    st.caption("Toggle on to see a probabilistic range of outcomes based on historical market volatility.")
-    
-    show_uncertainty = st.checkbox("Show 10th-90th percentile range", value=False, key="show_uncertainty")
-    
-    if show_uncertainty:
-        st.info("🔮 The shaded area represents the range of possible outcomes based on historical volatility (10th to 90th percentile). Your actual results may vary.")
-        
-        # Historical annual volatilities (standard deviations)
-        volatility = {
-            'n26': 0.15,      # 15% annual volatility for European equities
-            'raiz': 0.12,     # 12% for diversified portfolio
-            'vanguard': 0.13, # 13% for growth fund
-            'shares': 0.18,   # 18% for ASX shares
-            'metals': 0.20,   # 20% for precious metals
-            'super': 0.10,    # 10% for super (diversified)
-        }
-        
-        # Calculate monthly volatility
-        monthly_vol = {k: v / (12 ** 0.5) for k, v in volatility.items()}
-        
-        # Store low and high projections
-        projection_rows_low = []
-        projection_rows_high = []
-        
-        # Re-run projection with low and high scenarios
-        # (This would need to be added to your projection loop)
+
+    # ── LOAD CASH BALANCES ONCE ───────────────────────────────────────────────
+    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
+    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
+    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
+    df_cash_bal = df_cash_bal.dropna(subset=['Account'])
+    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
+    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
+
+    # ── MONTHLY CASH INTEREST FUNCTION ────────────────────────────────────────
+    def monthly_cash_interest():
+        total_int = 0.0
+        for acc in interest_accounts:
+            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
+            bal = cash_bal.get(acc, 0.0)
+            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
+                bal = bal * fx_now
+            total_int += bal * rate
+        return total_int
+
     # ── PROJECTION ENGINE ──────────────────────────────────────────────────────
     st.markdown("### 📊 5-Year Net Worth Projection")
 
-    # Starting values from live portfolio
     start_nw = total_net_worth_aud
 
-    # Monthly return rates
     def annual_to_monthly(pct):
         return (1 + pct/100) ** (1/12) - 1
 
@@ -3268,31 +3177,12 @@ with tab10:
         'metals':   annual_to_monthly(new_inputs.get('Returns_metals_pct', 5.0)),
         'super':    annual_to_monthly(new_inputs.get('Returns_super_pct', 8.6)),
     }
-    st.divider()
-    
-
-
-    # Monthly cash interest income
-    def monthly_cash_interest():
-        total_int = 0.0
-        for acc in interest_accounts:
-            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
-            # Get balance in AUD
-            bal = cash_bal.get(acc, 0.0)
-            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
-                bal = bal * fx_now
-            total_int += bal * rate
-        return total_int
 
     monthly_interest = monthly_cash_interest()
     monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
-    monthly_expenses = (
-        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
-        + new_inputs.get('Expense_travel', 0.0) / 12
-    )
+    monthly_expenses = total_expenses
     monthly_net_income = monthly_rent_aud + monthly_interest - monthly_expenses
 
-    # Simulate month by month
     months = 60
     projection_rows = []
     nw = start_nw
@@ -3303,17 +3193,14 @@ with tab10:
     metals_v = commodities_total_aud
     super_v = super_total_aud
     cash_v = cash_total_aud
-
     today = date.today()
 
-    MARGINAL_RATE_PROJ  = 0.19
+    MARGINAL_RATE_PROJ = 0.19
     DIVIDEND_YIELD_PROJ = 0.02
-    CGT_TRANSITION_PROJ = pd.Timestamp('2027-07-01')
 
     for m in range(1, months + 1):
         proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
 
-        # Grow each portfolio
         n26_v    *= (1 + monthly_r['n26'])
         raiz_v   *= (1 + monthly_r['raiz'])
         vdal_v   *= (1 + monthly_r['vanguard'])
@@ -3321,10 +3208,8 @@ with tab10:
         metals_v *= (1 + monthly_r['metals'])
         super_v  *= (1 + monthly_r['super'])
 
-        # Cash grows by interest + rent, shrinks by expenses
         cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
 
-        # Annual tax deducted from cash each December (month 12, 24, 36...)
         if m % 12 == 0:
             tax_interest_yr  = monthly_interest * 12 * MARGINAL_RATE_PROJ
             tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
@@ -3343,443 +3228,43 @@ with tab10:
             'Metals': metals_v,
             'Super': super_v,
             'Cash': cash_v,
-            'Monthly Income': monthly_rent_aud + monthly_interest,
-            'Monthly Expenses': monthly_expenses,
-            'Monthly Net': monthly_net_income,
         })
 
     df_proj = pd.DataFrame(projection_rows)
-    
-    # ===== RELOAD CASH BALANCES FOR UNCERTAINTY SECTION =====
-    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
-    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
-    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
-    df_cash_bal = df_cash_bal.dropna(subset=['Account'])
-    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
-    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
-    
-    # Also redefine interest_accounts if needed
-    interest_accounts = [
-        'CBA', 'Me Bank', 'Rabobank', 'Up',
-        'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'
-    ]
-    
-    # Redefine monthly_cash_interest function to use the local cash_bal
-    def monthly_cash_interest_local():
-        total_int = 0.0
-        for acc in interest_accounts:
-            rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
-            bal = cash_bal.get(acc, 0.0)
-            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
-                bal = bal * fx_now
-            total_int += bal * rate
-        return total_int
-    
-    monthly_interest = monthly_cash_interest_local()
-    monthly_rent_aud = new_inputs.get('Income_rent_eur', 500.0) * fx_now
-    monthly_expenses = (
-        sum(new_inputs.get(f'Expense_{k}', 0.0) for k in ['housing','food','transport','health','other'])
-        + new_inputs.get('Expense_travel', 0.0) / 12
-    )
-    # ==================== UNCERTAINTY & MONTE CARLO ====================
-    st.markdown("### 📊 Risk & Uncertainty Analysis")
-    st.caption("Understand the range of possible outcomes based on historical market volatility.")
-    
-    uncertainty_mode = st.radio(
-        "Select analysis mode:",
-        options=["📈 Single Projection (Current)", "📊 Uncertainty Range (10th-90th Percentile)", "🎲 Monte Carlo Simulation (1000 scenarios)"],
-        horizontal=True,
-        key="uncertainty_mode"
-    )
-    
-    # Historical annual volatilities (standard deviations) for each asset class
-    # Source: Long-term market data
-    volatility = {
-        'n26': 0.16,      # 16% annual volatility for European equities
-        'raiz': 0.12,     # 12% for diversified ETF portfolio
-        'vanguard': 0.14, # 14% for growth diversified fund
-        'shares': 0.18,   # 18% for Australian shares
-        'metals': 0.22,   # 22% for precious metals (very volatile)
-        'super': 0.11,    # 11% for super (diversified with defensive assets)
-    }
-    
-    # Correlation assumptions (simplified)
-    # For Monte Carlo, we'll assume moderate positive correlation between assets
-    correlation = 0.6  # Assets tend to move together in market stress
-    
-    # Monthly volatility
-    monthly_vol = {k: v / (12 ** 0.5) for k, v in volatility.items()}
-    
-    if uncertainty_mode == "📊 Uncertainty Range (10th-90th Percentile)":
-        st.info("The shaded area represents the 10th to 90th percentile range of possible outcomes based on historical volatility. There is an 80% chance your actual net worth will fall within this range.")
-        
-        # Number of scenarios for percentile calculation
-        n_scenarios = 500
-        np.random.seed(42)  # For reproducibility
-        
-        # Store all scenario paths
-        all_scenarios = []
-        
-        for scenario in range(n_scenarios):
-            scenario_nw = []
-            nw = start_nw
-            n26_v = current_market_value_eur * fx_now
-            raiz_v = raiz_total_aud
-            vdal_v = vanguard_total_aud
-            shares_v = shares_total_aud
-            metals_v = commodities_total_aud
-            super_v = super_total_aud
-            cash_v = cash_total_aud
-            
-            for m in range(1, months + 1):
-                # Generate random shocks for each asset class
-                # Using correlated shocks (simplified - all move together)
-                shock = np.random.normal(0, 1)
-                
-                # Apply shocks with asset-specific volatility
-                n26_shock = 1 + (monthly_vol['n26'] * shock * 0.7 + np.random.normal(0, monthly_vol['n26'] * 0.7, 1)[0])
-                raiz_shock = 1 + (monthly_vol['raiz'] * shock * 0.7 + np.random.normal(0, monthly_vol['raiz'] * 0.7, 1)[0])
-                vdal_shock = 1 + (monthly_vol['vanguard'] * shock * 0.7 + np.random.normal(0, monthly_vol['vanguard'] * 0.7, 1)[0])
-                shares_shock = 1 + (monthly_vol['shares'] * shock * 0.7 + np.random.normal(0, monthly_vol['shares'] * 0.7, 1)[0])
-                metals_shock = 1 + (monthly_vol['metals'] * shock * 0.7 + np.random.normal(0, monthly_vol['metals'] * 0.7, 1)[0])
-                super_shock = 1 + (monthly_vol['super'] * shock * 0.7 + np.random.normal(0, monthly_vol['super'] * 0.7, 1)[0])
-                
-                # Grow each portfolio with randomness
-                n26_v *= (1 + monthly_r['n26']) * n26_shock
-                raiz_v *= (1 + monthly_r['raiz']) * raiz_shock
-                vdal_v *= (1 + monthly_r['vanguard']) * vdal_shock
-                shares_v *= (1 + monthly_r['shares']) * shares_shock
-                metals_v *= (1 + monthly_r['metals']) * metals_shock
-                super_v *= (1 + monthly_r['super']) * super_shock
-                
-                # Cash grows deterministically (no volatility)
-                cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
-                if m % 12 == 0:
-                    tax_interest_yr = monthly_interest * 12 * MARGINAL_RATE_PROJ
-                    tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
-                    cash_v -= (tax_interest_yr + tax_dividends_yr)
-                
-                nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
-                scenario_nw.append(nw)
-            
-            all_scenarios.append(scenario_nw)
-        
-        # Convert to DataFrame for percentile calculation
-        df_scenarios = pd.DataFrame(all_scenarios).T
-        
-        # Calculate percentiles
-        p10 = df_scenarios.quantile(0.1, axis=1)
-        p50 = df_scenarios.quantile(0.5, axis=1)
-        p90 = df_scenarios.quantile(0.9, axis=1)
-        
-        # Store for later use
-        uncertainty_p10 = p10
-        uncertainty_p50 = p50
-        uncertainty_p90 = p90
-        
-        # Also store for the projection (use median as main line)
-        projection_rows = []
-        for m in range(1, months + 1):
-            proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
-            projection_rows.append({
-                'Date': proj_date,
-                'Month': m,
-                'Projected NW': p50.iloc[m-1],
-                'P10': p10.iloc[m-1],
-                'P90': p90.iloc[m-1],
-            })
-        df_proj = pd.DataFrame(projection_rows)
-        
-        # Display probability metrics
-        final_p10 = p10.iloc[-1]
-        final_p50 = p50.iloc[-1]
-        final_p90 = p90.iloc[-1]
-        
-        col_prob1, col_prob2, col_prob3 = st.columns(3)
-        with col_prob1:
-            st.metric("10th Percentile (Pessimistic)", f"${final_p10:,.0f}",
-                     delta=f"${final_p10 - start_nw:+,.0f}",
-                     delta_color="inverse" if final_p10 - start_nw < 0 else "normal")
-        with col_prob2:
-            st.metric("50th Percentile (Median)", f"${final_p50:,.0f}",
-                     delta=f"${final_p50 - start_nw:+,.0f}")
-        with col_prob3:
-            st.metric("90th Percentile (Optimistic)", f"${final_p90:,.0f}",
-                     delta=f"${final_p90 - start_nw:+,.0f}",
-                     delta_color="normal")
-        
-        st.caption("📊 **Interpretation**: There is an 80% chance your net worth will fall between the 10th and 90th percentiles. The median (50th percentile) is the most likely outcome.")
 
-    elif uncertainty_mode == "🎲 Monte Carlo Simulation (1000 scenarios)":
-        st.info("🎲 Running 1,000 random market scenarios based on historical volatility. The chart shows the distribution of possible outcomes at each point in time.")
-        
-        # Number of Monte Carlo scenarios
-        n_simulations = 1000
-        np.random.seed(42)
-        
-        # Store all scenario endings
-        all_endings = []
-        all_scenarios = []
-        
-        for sim in range(n_simulations):
-            scenario_nw = []
-            nw = start_nw
-            n26_v = current_market_value_eur * fx_now
-            raiz_v = raiz_total_aud
-            vdal_v = vanguard_total_aud
-            shares_v = shares_total_aud
-            metals_v = commodities_total_aud
-            super_v = super_total_aud
-            cash_v = cash_total_aud
-            
-            for m in range(1, months + 1):
-                # Generate random returns with volatility
-                n26_return = np.random.normal(monthly_r['n26'], monthly_vol['n26'])
-                raiz_return = np.random.normal(monthly_r['raiz'], monthly_vol['raiz'])
-                vdal_return = np.random.normal(monthly_r['vanguard'], monthly_vol['vanguard'])
-                shares_return = np.random.normal(monthly_r['shares'], monthly_vol['shares'])
-                metals_return = np.random.normal(monthly_r['metals'], monthly_vol['metals'])
-                super_return = np.random.normal(monthly_r['super'], monthly_vol['super'])
-                
-                # Grow each portfolio with random returns
-                n26_v *= (1 + n26_return)
-                raiz_v *= (1 + raiz_return)
-                vdal_v *= (1 + vdal_return)
-                shares_v *= (1 + shares_return)
-                metals_v *= (1 + metals_return)
-                super_v *= (1 + super_return)
-                
-                # Cash grows deterministically
-                cash_v += monthly_interest - monthly_expenses + monthly_rent_aud
-                if m % 12 == 0:
-                    tax_interest_yr = monthly_interest * 12 * MARGINAL_RATE_PROJ
-                    tax_dividends_yr = n26_v * DIVIDEND_YIELD_PROJ * MARGINAL_RATE_PROJ
-                    cash_v -= (tax_interest_yr + tax_dividends_yr)
-                
-                nw = n26_v + raiz_v + vdal_v + shares_v + metals_v + super_v + cash_v
-                scenario_nw.append(nw)
-            
-            all_endings.append(scenario_nw[-1])
-            all_scenarios.append(scenario_nw)
-        
-        # Calculate statistics
-        df_monte_carlo = pd.DataFrame(all_scenarios).T
-        
-        # Calculate percentiles
-        p5 = df_monte_carlo.quantile(0.05, axis=1)
-        p25 = df_monte_carlo.quantile(0.25, axis=1)
-        p50 = df_monte_carlo.quantile(0.5, axis=1)
-        p75 = df_monte_carlo.quantile(0.75, axis=1)
-        p95 = df_monte_carlo.quantile(0.95, axis=1)
-        
-        # Create projection with confidence bands
-        projection_rows = []
-        for m in range(1, months + 1):
-            proj_date = pd.Timestamp(today) + pd.DateOffset(months=m)
-            projection_rows.append({
-                'Date': proj_date,
-                'Month': m,
-                'Projected NW': p50.iloc[m-1],
-                'P5': p5.iloc[m-1],
-                'P25': p25.iloc[m-1],
-                'P75': p75.iloc[m-1],
-                'P95': p95.iloc[m-1],
-            })
-        df_proj = pd.DataFrame(projection_rows)
-        
-        # Display Monte Carlo statistics
-        endings_series = pd.Series(all_endings)
-        
-        col_mc1, col_mc2, col_mc3, col_mc4 = st.columns(4)
-        with col_mc1:
-            st.metric("5th Percentile (Worst 5%)", f"${endings_series.quantile(0.05):,.0f}",
-                     delta=f"${endings_series.quantile(0.05) - start_nw:+,.0f}",
-                     delta_color="inverse")
-        with col_mc2:
-            st.metric("Median (50th Percentile)", f"${endings_series.quantile(0.5):,.0f}",
-                     delta=f"${endings_series.quantile(0.5) - start_nw:+,.0f}")
-        with col_mc3:
-            st.metric("95th Percentile (Best 5%)", f"${endings_series.quantile(0.95):,.0f}",
-                     delta=f"${endings_series.quantile(0.95) - start_nw:+,.0f}",
-                     delta_color="normal")
-        with col_mc4:
-            success_prob = (endings_series > start_nw).mean() * 100
-            st.metric("Probability of Growth", f"{success_prob:.1f}%",
-                     help="Chance that net worth increases over 5 years")
-        
-        # Show histogram of outcomes
-        st.markdown("#### 📊 Distribution of 5-Year Outcomes")
-        
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(
-            x=endings_series,
-            nbinsx=50,
-            marker_color='#2980b9',
-            opacity=0.7,
-            name='Outcomes'
-        ))
-        fig_hist.add_vline(x=start_nw, line_dash="dash", line_color="red",
-                          annotation_text="Starting NW", annotation_position="top left")
-        fig_hist.add_vline(x=endings_series.quantile(0.5), line_dash="dash", line_color="green",
-                          annotation_text="Median", annotation_position="top right")
-        fig_hist.update_layout(
-            title="Monte Carlo Simulation Results - 1,000 Scenarios",
-            xaxis_title="Net Worth (AUD)",
-            yaxis_title="Number of Scenarios",
-            xaxis_tickprefix="$",
-            height=400,
-            bargap=0.05
-        )
-        st.plotly_chart(fig_hist, use_container_width=True)
-        
-        st.caption("📊 **Interpretation**: The histogram shows the range of possible net worth outcomes after 5 years. The wider the distribution, the more uncertainty in your projections.")
-    
-    else:
-        # Original deterministic projection (what you already have)
-        # Your existing projection code goes here
-        pass
-    # Load cash balances for interest calculation
-
-    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
-    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
-    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
-    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
     # ── CHART ─────────────────────────────────────────────────────────────────
-    # Load actuals
     df_actual = load_net_worth_history()
-
-    # ── CHART (with uncertainty bands if applicable) ──
     fig_proj = go.Figure()
-    
-    if uncertainty_mode == "📊 Uncertainty Range (10th-90th Percentile)":
-        # Add confidence band
+
+    components = [
+        ('N26', '#2980b9'), ('Raiz', '#27ae60'), ('Vanguard', '#2ecc71'),
+        ('Shares', '#1abc9c'), ('Metals', '#f39c12'), ('Super', '#8e44ad'), ('Cash', '#e67e22'),
+    ]
+    for comp, colour in components:
         fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P90'],
-            mode='lines',
-            name='90th Percentile (Optimistic)',
-            line=dict(width=0),
-            showlegend=False,
-            hovertemplate='90th: $%{y:,.0f}<extra></extra>'
+            x=df_proj['Date'], y=df_proj[comp],
+            name=comp, stackgroup='one',
+            line=dict(color=colour, width=0.5),
+            fillcolor=colour,
+            hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
         ))
-        
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P10'],
-            mode='lines',
-            name='10th-90th Percentile Range',
-            fill='tonexty',
-            fillcolor='rgba(41,128,185,0.2)',
-            line=dict(width=0),
-            hovertemplate='10th: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        # Add median line
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['Projected NW'],
-            mode='lines',
-            name='Median Projection',
-            line=dict(color='#2980b9', width=2.5),
-            hovertemplate='Median: $%{y:,.0f}<extra></extra>'
-        ))
-        
-    elif uncertainty_mode == "🎲 Monte Carlo Simulation (1000 scenarios)":
-        # Add confidence bands (5-95% and 25-75%)
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P95'],
-            mode='lines',
-            name='95th Percentile',
-            line=dict(width=0),
-            showlegend=False
-        ))
-        
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P5'],
-            mode='lines',
-            name='5th-95th Percentile Range',
-            fill='tonexty',
-            fillcolor='rgba(41,128,185,0.15)',
-            line=dict(width=0),
-            hovertemplate='5th: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P75'],
-            mode='lines',
-            name='75th Percentile',
-            line=dict(width=0),
-            showlegend=False
-        ))
-        
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['P25'],
-            mode='lines',
-            name='25th-75th Percentile Range',
-            fill='tonexty',
-            fillcolor='rgba(41,128,185,0.3)',
-            line=dict(width=0),
-            hovertemplate='25th: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        # Add median line
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['Projected NW'],
-            mode='lines',
-            name='Median Projection',
-            line=dict(color='#2980b9', width=2.5),
-            hovertemplate='Median: $%{y:,.0f}<extra></extra>'
-        ))
-        
-    else:
-        # Original deterministic projection
-        # Stacked area for portfolio components
-        components = [
-            ('N26', '#2980b9'),
-            ('Raiz', '#27ae60'),
-            ('Vanguard', '#2ecc71'),
-            ('Shares', '#1abc9c'),
-            ('Metals', '#f39c12'),
-            ('Super', '#8e44ad'),
-            ('Cash', '#e67e22'),
-        ]
-        for comp, colour in components:
-            fig_proj.add_trace(go.Scatter(
-                x=df_proj['Date'], y=df_proj[comp],
-                name=comp, stackgroup='one',
-                line=dict(color=colour, width=0.5),
-                fillcolor=colour,
-                hovertemplate=f"{comp}: $%{{y:,.0f}}<extra></extra>"
-            ))
-        
-        # Total projected line
-        fig_proj.add_trace(go.Scatter(
-            x=df_proj['Date'], y=df_proj['Projected NW'],
-            name='Total Projected', mode='lines',
-            line=dict(color='white', width=2, dash='dot'),
-            hovertemplate='Total: $%{y:,.0f}<extra></extra>'
-        ))
-    
-    # Actual net worth dots
+
+    fig_proj.add_trace(go.Scatter(
+        x=df_proj['Date'], y=df_proj['Projected NW'],
+        name='Total Projected', mode='lines',
+        line=dict(color='white', width=2, dash='dot'),
+        hovertemplate='Total: $%{y:,.0f}<extra></extra>'
+    ))
+
     if not df_actual.empty:
         fig_proj.add_trace(go.Scatter(
             x=df_actual['Date'], y=df_actual['Total_AUD'],
             name='✅ Actual', mode='markers',
-            marker=dict(size=12, color='#e74c3c', symbol='circle',
-                        line=dict(color='white', width=2)),
+            marker=dict(size=12, color='#e74c3c', symbol='circle', line=dict(color='white', width=2)),
             hovertemplate='Actual: $%{y:,.2f}<extra></extra>'
         ))
-    
-    # Today marker
-    fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white",
-                       opacity=0.5, annotation_text="Today",
-                       annotation_position="top right")
-    
+
+    fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white", opacity=0.5, annotation_text="Today", annotation_position="top right")
     fig_proj.update_layout(
         height=550, hovermode="x unified",
         yaxis=dict(title="Net Worth (AUD $)", tickprefix="$"),
@@ -3790,6 +3275,7 @@ with tab10:
         paper_bgcolor='rgba(0,0,0,0)'
     )
     st.plotly_chart(fig_proj, use_container_width=True)
+
     # ── KEY MILESTONES ─────────────────────────────────────────────────────────
     st.markdown("### 🎯 Key Milestones")
     milestones = [500000, 750000, 1000000, 1500000, 2000000, 2500000, 3000000]
@@ -3802,12 +3288,7 @@ with tab10:
             if not hit.empty:
                 eta = hit.iloc[0]['Date']
                 months_away = hit.iloc[0]['Month']
-                milestone_rows.append({
-                    'Milestone': f"${m_val/1e6:.1f}M AUD",
-                    'Status': '🎯 Projected',
-                    'ETA': eta.strftime('%b %Y'),
-                    'Months Away': int(months_away)
-                })
+                milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '🎯 Projected', 'ETA': eta.strftime('%b %Y'), 'Months Away': int(months_away)})
             else:
                 milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '⏳ Beyond 5yr', 'ETA': '>2031'})
     st.dataframe(pd.DataFrame(milestone_rows), use_container_width=True, hide_index=True)
@@ -3817,577 +3298,89 @@ with tab10:
     # ── MONTHLY CASH FLOW SUMMARY ──────────────────────────────────────────────
     st.markdown("### 💵 Monthly Cash Flow Assumptions")
     cf1, cf2, cf3, cf4 = st.columns(4)
-    cf1.metric("Spanish Rent", f"${monthly_rent_aud:,.2f} AUD",
-               f"€{new_inputs.get('Income_rent_eur', 500):,.2f} EUR")
-    cf2.metric("Cash Interest", f"${monthly_interest:,.2f} AUD/month",
-               f"${monthly_interest*12:,.2f} p.a.")
+    cf1.metric("Spanish Rent", f"${monthly_rent_aud:,.2f} AUD", f"€{new_inputs.get('Income_rent_eur', 500):,.2f} EUR")
+    cf2.metric("Cash Interest", f"${monthly_interest:,.2f} AUD/month", f"${monthly_interest*12:,.2f} p.a.")
     cf3.metric("Total Expenses", f"-${monthly_expenses:,.2f} AUD/month")
-    cf4.metric("Net Monthly Cash Flow", f"${monthly_net_income:,.2f} AUD",
-               delta_color="normal" if monthly_net_income >= 0 else "inverse",
-               delta=f"${monthly_net_income*12:,.2f} p.a.")
+    cf4.metric("Net Monthly Cash Flow", f"${monthly_net_income:,.2f} AUD", delta_color="normal" if monthly_net_income >= 0 else "inverse", delta=f"${monthly_net_income*12:,.2f} p.a.")
 
     st.divider()
-    
-    # ==================== YEARLY CASH FLOW & WEALTH GROWTH (Consistent with Projection) ====================
+
+    # ── YEARLY CASH FLOW & WEALTH GROWTH ───────────────────────────────────────
     st.markdown("### 📈 5-Year Wealth Growth & Cash Flow Analysis")
     st.caption("All numbers below are derived from the same monthly projection shown in the chart above.")
-    
+
     if not df_proj.empty:
-        # Extract year-end values directly from the monthly projection
-        projection_start_nw = total_net_worth_aud
         projection_end_nw = df_proj.iloc[-1]['Projected NW']
-        total_projected_growth = projection_end_nw - projection_start_nw
-        
-        # Calculate year-end data from projection
+        total_projected_growth = projection_end_nw - start_nw
+
         year_end_data = []
         for year in range(1, 6):
             year_end_month = year * 12
-            year_start_month = (year - 1) * 12
-            
             year_end_row = df_proj[df_proj['Month'] == year_end_month]
-            year_start_row = df_proj[df_proj['Month'] == year_start_month] if year > 1 else None
-            
             if not year_end_row.empty:
                 end_nw = year_end_row['Projected NW'].iloc[0]
-                start_nw = projection_start_nw if year == 1 else year_end_data[-1]['End NW']
-                
-                # Calculate components for this year
-                year_growth = end_nw - start_nw
-                
-                # Estimate cash flow contribution (from your earlier calculation)
+                start_nw_year = start_nw if year == 1 else year_end_data[-1]['End NW']
+                year_growth = end_nw - start_nw_year
+
                 rental_income_aud = new_inputs.get('Income_rent_eur', 500) * fx_now * 12
                 cash_interest_annual = monthly_interest * 12
                 annual_expenses = total_expenses * 12
                 tax_on_interest = cash_interest_annual * 0.19
                 net_cash_flow = rental_income_aud + cash_interest_annual - annual_expenses - tax_on_interest
-                
-                # Unrealized gains = total growth - net cash flow
                 unrealized_gains = year_growth - net_cash_flow
-                
+
                 year_end_data.append({
                     'Year': year,
                     'Year Ending': year_end_row['Date'].iloc[0].strftime('%b %Y'),
-                    'Start NW': start_nw,
+                    'Start NW': start_nw_year,
                     'End NW': end_nw,
                     'Year Growth': year_growth,
                     'Net Cash Flow': net_cash_flow,
                     'Unrealized Gains': unrealized_gains,
                 })
-        
-        df_yearly_consistent = pd.DataFrame(year_end_data)
-        
-        # Summary metrics
+
+        df_yearly = pd.DataFrame(year_end_data)
+
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-        with col_s1:
-            st.metric("Starting Net Worth", f"${projection_start_nw:,.2f}")
-        with col_s2:
-            st.metric("Projected Net Worth (Year 5)", f"${projection_end_nw:,.2f}",
-                     delta=f"${total_projected_growth:+,.2f}")
-        with col_s3:
-            total_cash_flow_5yr = df_yearly_consistent['Net Cash Flow'].sum()
-            st.metric("Total Net Cash Flow (5 Years)", f"${total_cash_flow_5yr:,.2f}",
-                     delta_color="inverse" if total_cash_flow_5yr < 0 else "normal")
-        with col_s4:
-            total_unrealized_5yr = df_yearly_consistent['Unrealized Gains'].sum()
-            st.metric("Total Unrealized Gains (5 Years)", f"${total_unrealized_5yr:,.2f}",
-                     help="Tax-deferred market appreciation")
-        
+        col_s1.metric("Starting Net Worth", f"${start_nw:,.2f}")
+        col_s2.metric("Projected Net Worth (Year 5)", f"${projection_end_nw:,.2f}", delta=f"${total_projected_growth:+,.2f}")
+        col_s3.metric("Total Net Cash Flow (5 Years)", f"${df_yearly['Net Cash Flow'].sum():,.2f}", delta_color="inverse")
+        col_s4.metric("Total Unrealized Gains (5 Years)", f"${df_yearly['Unrealized Gains'].sum():,.2f}")
+
         st.divider()
-        
-        # Year-by-year table
         st.markdown("#### 📅 Year-by-Year Breakdown")
-        
-        st.dataframe(
-            df_yearly_consistent[[
-                'Year', 'Year Ending', 'Start NW', 'End NW', 'Year Growth', 
-                'Net Cash Flow', 'Unrealized Gains'
-            ]].style
-            .format({
-                'Start NW': '${:,.0f}',
-                'End NW': '${:,.0f}',
-                'Year Growth': '${:,.0f}',
-                'Net Cash Flow': '${:,.0f}',
-                'Unrealized Gains': '${:,.0f}',
-            })
-            .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Cash' not in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''), 
-                 subset=['Year Growth', 'Net Cash Flow', 'Unrealized Gains']),
-            use_container_width=True,
-            hide_index=True
-        )
-        
+        st.dataframe(df_yearly.style.format({
+            'Start NW': '${:,.0f}', 'End NW': '${:,.0f}', 'Year Growth': '${:,.0f}',
+            'Net Cash Flow': '${:,.0f}', 'Unrealized Gains': '${:,.0f}',
+        }), use_container_width=True, hide_index=True)
+
         st.divider()
-        
+
         # Stacked bar chart
-        st.markdown("#### 📊 What's Driving Your Wealth Growth?")
-        
         fig_consistent = go.Figure()
-        
-        fig_consistent.add_trace(go.Bar(
-            name='Net Cash Flow (after tax)',
-            x=df_yearly_consistent['Year'].astype(str),
-            y=df_yearly_consistent['Net Cash Flow'],
-            marker_color='#e74c3c',
-            hovertemplate='Cash Flow: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_consistent.add_trace(go.Bar(
-            name='Unrealized Portfolio Gains',
-            x=df_yearly_consistent['Year'].astype(str),
-            y=df_yearly_consistent['Unrealized Gains'],
-            marker_color='#27ae60',
-            hovertemplate='Portfolio Gains: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_consistent.update_layout(
-            title="Wealth Increase Breakdown (from monthly projection)",
-            xaxis_title="Year",
-            yaxis_title="Amount (AUD)",
-            yaxis_tickprefix="$",
-            barmode='stack',
-            height=450,
-            hovermode='x unified',
-            legend=dict(orientation="h", y=1.08)
-        )
-        
+        fig_consistent.add_trace(go.Bar(name='Net Cash Flow (after tax)', x=df_yearly['Year'].astype(str), y=df_yearly['Net Cash Flow'], marker_color='#e74c3c'))
+        fig_consistent.add_trace(go.Bar(name='Unrealized Portfolio Gains', x=df_yearly['Year'].astype(str), y=df_yearly['Unrealized Gains'], marker_color='#27ae60'))
+        fig_consistent.update_layout(title="Wealth Increase Breakdown", xaxis_title="Year", yaxis_title="Amount (AUD)", yaxis_tickprefix="$", barmode='stack', height=450)
         st.plotly_chart(fig_consistent, use_container_width=True)
-        
-        # Line chart showing net worth progression
-        st.markdown("#### 📈 Net Worth Progression")
-        
-        fig_nw = go.Figure()
-        
-        fig_nw.add_trace(go.Scatter(
-            x=df_proj['Date'],
-            y=df_proj['Projected NW'],
-            mode='lines',
-            name='Monthly Projection',
-            line=dict(color='#2980b9', width=2.5),
-            fill='tozeroy',
-            fillcolor='rgba(41,128,185,0.1)',
-            hovertemplate='Net Worth: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        # Add year-end markers
-        fig_nw.add_trace(go.Scatter(
-            x=df_yearly_consistent['Year Ending'].apply(lambda d: pd.Timestamp(d)),
-            y=df_yearly_consistent['End NW'],
-            mode='markers+text',
-            name='Year End',
-            marker=dict(size=12, color='#f39c12', symbol='circle', line=dict(color='white', width=2)),
-            text=df_yearly_consistent['Year Growth'].apply(lambda x: f'+${x/1000:.0f}k'),
-            textposition='top center',
-            hovertemplate='Year: %{x|%b %Y}<br>Net Worth: $%{y:,.0f}<br>Growth: %{text}<extra></extra>'
-        ))
-        
-        fig_nw.add_trace(go.Scatter(
-            x=[pd.Timestamp(today)],
-            y=[projection_start_nw],
-            mode='markers',
-            name=f'Current (${projection_start_nw/1e6:.2f}M)',
-            marker=dict(size=15, color='#e74c3c', symbol='star'),
-            hovertemplate=f'Current: ${projection_start_nw:,.0f}<extra></extra>'
-        ))
-        
-        fig_nw.update_layout(
-            title="5-Year Net Worth Projection",
-            xaxis_title="Date",
-            yaxis_title="Net Worth (AUD)",
-            yaxis_tickprefix="$",
-            height=450,
-            hovermode='x unified',
-            legend=dict(orientation="h", y=1.08)
-        )
-        
-        st.plotly_chart(fig_nw, use_container_width=True)
-        
-        # Summary interpretation
+
         st.markdown("#### 💡 Summary")
-        
-        total_cash = df_yearly_consistent['Net Cash Flow'].sum()
-        total_gains = df_yearly_consistent['Unrealized Gains'].sum()
-        
+        total_cash = df_yearly['Net Cash Flow'].sum()
+        total_gains = df_yearly['Unrealized Gains'].sum()
         col_i1, col_i2, col_i3 = st.columns(3)
-        with col_i1:
-            st.info(f"**Cash Flow:** ${total_cash:,.0f} over 5 years\n\nDespite negative cash flow, your wealth is growing through investments.")
-        with col_i2:
-            st.success(f"**Market Gains:** ${total_gains:,.0f} over 5 years\n\nYour investments are appreciating faster than your cash outflow.")
-        with col_i3:
-            st.info(f"**Total Wealth Increase:** ${total_projected_growth:,.0f}\n\nYour net worth is projected to grow by {total_projected_growth/projection_start_nw*100:.1f}% over 5 years.")
+        col_i1.info(f"**Cash Flow:** ${total_cash:,.0f} over 5 years")
+        col_i2.success(f"**Market Gains:** ${total_gains:,.0f} over 5 years")
+        col_i3.info(f"**Total Wealth Increase:** ${total_projected_growth:,.0f} ({total_projected_growth/start_nw*100:.1f}%)")
+
     st.divider()
 
     # ── FORECAST vs ACTUALS TABLE ──────────────────────────────────────────────
     st.markdown("### 📋 Forecast vs Actuals")
-    st.caption("Actual dots appear as you save monthly net worth snapshots.")
     if not df_actual.empty:
         df_vs = df_actual.copy()
-        df_vs['Month'] = df_vs['Date'].apply(
-            lambda d: round((d - pd.Timestamp(today)).days / 30.44))
-        df_vs = df_vs.merge(
-            df_proj[['Month', 'Projected NW']].rename(columns={'Projected NW': 'Projected'}),
-            on='Month', how='left')
+        df_vs['Month'] = df_vs['Date'].apply(lambda d: round((d - pd.Timestamp(today)).days / 30.44))
+        df_vs = df_vs.merge(df_proj[['Month', 'Projected NW']].rename(columns={'Projected NW': 'Projected'}), on='Month', how='left')
         df_vs['Variance ($)'] = df_vs['Total_AUD'] - df_vs['Projected']
         df_vs['Variance (%)'] = (df_vs['Variance ($)'] / df_vs['Projected'] * 100).round(2)
-        df_vs['Date'] = df_vs['Date'].dt.strftime('%Y-%m-%d')
-        st.dataframe(df_vs[['Date', 'Total_AUD', 'Projected', 'Variance ($)', 'Variance (%)']].style
-                     .format({'Total_AUD': '${:,.2f}', 'Projected': '${:,.2f}',
-                              'Variance ($)': '${:+,.2f}', 'Variance (%)': '{:+.2f}%'})
-                     .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
-                          else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
-                          subset=['Variance ($)', 'Variance (%)']),
-                     use_container_width=True, hide_index=True)
+        st.dataframe(df_vs[['Date', 'Total_AUD', 'Projected', 'Variance ($)', 'Variance (%)']].style.format({'Total_AUD': '${:,.2f}', 'Projected': '${:,.2f}', 'Variance ($)': '${:+,.2f}', 'Variance (%)': '{:+.2f}%'}), use_container_width=True, hide_index=True)
     else:
         st.info("No actuals yet — save a net worth snapshot from the Dashboard to start tracking.")
-
-    st.divider()
-
-    # ── PROJECTION TABLE ───────────────────────────────────────────────────────
-    st.divider()
-
-    # ── COMBINED CASH REDEPLOYMENT SIMULATOR (AUD Cash → AUD Investments + EUR Cash → N26) ──
-    st.markdown("### 💡 Combined Cash Redeployment Simulator")
-    st.caption("Simulate moving BOTH AUD cash to AUD investments AND EUR cash to N26 (EUR investment). See the combined 5-year impact.")
-    
-    # Get current cash balances by currency
-    conn_cash_check = st.connection("gsheets_cash", type=GSheetsConnection)
-    df_cash_check = conn_cash_check.read(ttl=0, usecols=[0, 1])
-    df_cash_check.columns = [c.strip() for c in df_cash_check.columns]
-    df_cash_check = df_cash_check.dropna(subset=['Account'])
-    df_cash_check['Balance'] = pd.to_numeric(df_cash_check['Balance'], errors='coerce').fillna(0)
-    cash_bal_check = df_cash_check.set_index('Account')['Balance'].to_dict()
-    
-    # Calculate AUD cash (AUD accounts only)
-    aud_cash_total = 0
-    for acc in ['CBA', 'Me Bank', 'Rabobank', 'Up']:
-        aud_cash_total += cash_bal_check.get(acc, 0.0)
-    
-    # Calculate EUR cash (EUR accounts only)
-    eur_cash_total = 0
-    for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
-        eur_cash_total += cash_bal_check.get(acc, 0.0)
-    eur_cash_aud_total = eur_cash_total * fx_now
-    
-    st.markdown("### 💰 Available Cash")
-    col_aud_disp, col_eur_disp = st.columns(2)
-    with col_aud_disp:
-        st.metric("🇦🇺 AUD Cash Available", f"${aud_cash_total:,.2f}")
-    with col_eur_disp:
-        st.metric("🇪🇺 EUR Cash Available", f"€{eur_cash_total:,.2f}", f"≈ ${eur_cash_aud_total:,.2f} AUD")
-    
-    st.divider()
-    
-    # ========== SCENARIO 1: AUD Cash → AUD Investment ==========
-    st.markdown("### 📊 Scenario 1: AUD Cash → AUD Investment")
-    st.caption("Move AUD cash into Australian dollar investments (Raiz, Vanguard, or ASX Shares)")
-    
-    col_s1_1, col_s1_2, col_s1_3 = st.columns(3)
-    with col_s1_1:
-        aud_amount = st.number_input(
-            "AUD amount to redeploy",
-            min_value=0.0,
-            max_value=float(aud_cash_total),
-            value=min(50000.0, float(aud_cash_total)),
-            step=10000.0,
-            format="%.0f",
-            key="aud_redeploy_amount",
-            help=f"Maximum available: ${aud_cash_total:,.2f}"
-        )
-        st.caption(f"{aud_amount/aud_cash_total*100:.1f}% of available AUD cash" if aud_cash_total > 0 else "")
-    
-    with col_s1_2:
-        aud_target = st.selectbox(
-            "AUD investment target",
-            options=["Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
-            key="aud_target",
-            index=0
-        )
-        aud_return_map = {
-            "Raiz ETFs": new_inputs.get('Returns_raiz_pct', hist_returns.get('raiz', 10.0)),
-            "Vanguard VDAL": new_inputs.get('Returns_vanguard_pct', hist_returns.get('vanguard', 9.5)),
-            "ASX Shares": new_inputs.get('Returns_shares_pct', hist_returns.get('shares', 10.0)),
-        }
-        aud_return_pct = aud_return_map[aud_target]
-        st.caption(f"Expected return: {aud_return_pct:.2f}% p.a.")
-    
-    with col_s1_3:
-        aud_cash_rate = st.number_input(
-            "AUD cash interest rate being forgone (% p.a.)",
-            min_value=0.0, max_value=20.0,
-            value=5.5,
-            step=0.5,
-            format="%.2f",
-            key="aud_cash_rate",
-            help="The interest rate you'd lose on this AUD cash"
-        )
-    
-    st.divider()
-    
-    # ========== SCENARIO 2: EUR Cash → N26 (EUR Investment) ==========
-    st.markdown("### 🌍 Scenario 2: EUR Cash → N26 European ETFs")
-    st.caption("Move EUR cash into Euro-denominated investments (N26 portfolio)")
-    
-    col_s2_1, col_s2_2, col_s2_3 = st.columns(3)
-    with col_s2_1:
-        eur_amount = st.number_input(
-            "EUR amount to redeploy",
-            min_value=0.0,
-            max_value=float(eur_cash_total),
-            value=min(50000.0, float(eur_cash_total)),
-            step=10000.0,
-            format="%.0f",
-            key="eur_redeploy_amount",
-            help=f"Maximum available: €{eur_cash_total:,.2f}"
-        )
-        eur_amount_aud = eur_amount * fx_now
-        st.caption(f"≈ ${eur_amount_aud:,.2f} AUD | {eur_amount/eur_cash_total*100:.1f}% of available EUR cash" if eur_cash_total > 0 else "")
-    
-    with col_s2_2:
-        eur_target = "N26 European ETFs"
-        st.info(f"**Target:** {eur_target}")
-        eur_return_pct = new_inputs.get('Returns_n26_pct', hist_returns.get('n26', 11.0))
-        st.caption(f"Expected return: {eur_return_pct:.2f}% p.a.")
-    
-    with col_s2_3:
-        eur_cash_rate = st.number_input(
-            "EUR cash interest rate being forgone (% p.a.)",
-            min_value=0.0, max_value=20.0,
-            value=2.0,
-            step=0.5,
-            format="%.2f",
-            key="eur_cash_rate",
-            help="The interest rate you'd lose on this EUR cash"
-        )
-    
-    st.divider()
-    
-    # ========== RUN COMBINED SIMULATION ==========
-    if st.button("🔄 Run Combined Scenario", type="primary", key="combined_scenario_btn"):
-        
-        # Calculate monthly rates
-        aud_monthly_r = annual_to_monthly(aud_return_pct)
-        aud_cash_monthly_r = annual_to_monthly(aud_cash_rate)
-        eur_monthly_r = annual_to_monthly(eur_return_pct)
-        eur_cash_monthly_r = annual_to_monthly(eur_cash_rate)
-        
-        # Initialize variables
-        aud_invest_val = aud_amount
-        aud_invest_cb = aud_amount
-        aud_cash_val = aud_amount  # What it would be if left in cash
-        
-        eur_invest_val = eur_amount
-        eur_invest_cb = eur_amount
-        eur_cash_val = eur_amount  # What it would be if left in cash
-        
-        aud_gain_pre2027 = 0.0
-        eur_gain_pre2027 = 0.0
-        
-        CGT_TRANS_SIM = pd.Timestamp('2027-07-01')
-        
-        sim_rows = []
-        
-        for m in range(1, 61):
-            proj_date_sim = pd.Timestamp(today) + pd.DateOffset(months=m)
-            is_post_sim = proj_date_sim >= CGT_TRANS_SIM
-            
-            # ===== AUD Investment Growth =====
-            aud_invest_val *= (1 + aud_monthly_r)
-            if not is_post_sim:
-                aud_gain_pre2027 = max(0, aud_invest_val - aud_invest_cb)
-            
-            # ===== AUD Cash Growth (counterfactual) =====
-            aud_cash_val *= (1 + aud_cash_monthly_r)
-            if m % 12 == 0:
-                annual_aud_interest = aud_cash_val * aud_cash_rate / 100
-                aud_cash_val -= annual_aud_interest * 0.19
-            
-            # ===== EUR Investment Growth =====
-            eur_invest_val *= (1 + eur_monthly_r)
-            eur_invest_val_aud = eur_invest_val * fx_now
-            if not is_post_sim:
-                eur_gain_pre2027 = max(0, eur_invest_val - eur_invest_cb)
-            
-            # ===== EUR Cash Growth (counterfactual) =====
-            eur_cash_val *= (1 + eur_cash_monthly_r)
-            if m % 12 == 0:
-                annual_eur_interest = eur_cash_val * eur_cash_rate / 100
-                eur_cash_val -= annual_eur_interest * 0.19
-            eur_cash_val_aud = eur_cash_val * fx_now
-            
-            # ===== Calculate After-Tax Values =====
-            # AUD Investment after CGT
-            aud_gain_total = max(0, aud_invest_val - aud_invest_cb)
-            if not is_post_sim:
-                aud_cgt = aud_gain_total * 0.50 * 0.19
-            else:
-                aud_post_gain = max(0, aud_gain_total - aud_gain_pre2027)
-                aud_cgt = (aud_gain_pre2027 * 0.50 * 0.19 + aud_post_gain * max(0.19, 0.30))
-            aud_invest_after_cgt = aud_invest_val - aud_cgt
-            
-            # EUR Investment after CGT
-            eur_gain_total = max(0, eur_invest_val - eur_invest_cb)
-            if not is_post_sim:
-                eur_cgt = eur_gain_total * 0.50 * 0.19
-            else:
-                eur_post_gain = max(0, eur_gain_total - eur_gain_pre2027)
-                eur_cgt = (eur_gain_pre2027 * 0.50 * 0.19 + eur_post_gain * max(0.19, 0.30))
-            eur_invest_after_cgt_eur = eur_invest_val - eur_cgt
-            eur_invest_after_cgt_aud = eur_invest_after_cgt_eur * fx_now
-            
-            # Combined values
-            total_redeployed_aud = aud_amount + eur_amount_aud
-            total_invest_after_cgt = aud_invest_after_cgt + eur_invest_after_cgt_aud
-            total_cash_after_tax = aud_cash_val + eur_cash_val_aud
-            total_advantage = total_invest_after_cgt - total_cash_after_tax
-            
-            sim_rows.append({
-                'Date': proj_date_sim,
-                'Month': m,
-                'AUD Investment Value (after CGT)': aud_invest_after_cgt,
-                'EUR Investment Value (after CGT)': eur_invest_after_cgt_aud,
-                'Total Redeployed Value (after CGT)': total_invest_after_cgt,
-                'Total Cash (if kept, after tax)': total_cash_after_tax,
-                'Combined Advantage': total_advantage,
-            })
-        
-        df_combined_sim = pd.DataFrame(sim_rows)
-        
-        # ========== RESULTS DISPLAY ==========
-        st.markdown("### 📊 Combined Scenario Results")
-        st.caption(f"Redeploying ${aud_amount:,.0f} AUD → {aud_target} + €{eur_amount:,.0f} EUR → N26 European ETFs")
-        
-        # Summary metrics
-        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-        
-        yr5 = df_combined_sim.iloc[-1]
-        
-        with col_r1:
-            st.metric(
-                "Total Redeployed",
-                f"${(aud_amount + eur_amount_aud):,.0f}",
-                help=f"AUD: ${aud_amount:,.0f} + EUR: €{eur_amount:,.0f} (≈${eur_amount_aud:,.0f})"
-            )
-        with col_r2:
-            st.metric(
-                "Value if Kept in Cash",
-                f"${yr5['Total Cash (if kept, after tax)']:,.0f}",
-                delta=f"+${yr5['Total Cash (if kept, after tax)'] - (aud_amount + eur_amount_aud):,.0f}"
-            )
-        with col_r3:
-            st.metric(
-                "Value if Redeployed",
-                f"${yr5['Total Redeployed Value (after CGT)']:,.0f}",
-                delta=f"+${yr5['Total Redeployed Value (after CGT)'] - (aud_amount + eur_amount_aud):,.0f}",
-                delta_color="normal"
-            )
-        with col_r4:
-            advantage = yr5['Combined Advantage']
-            st.metric(
-                "Net Advantage",
-                f"${advantage:+,.0f}",
-                delta=f"{(advantage/(aud_amount + eur_amount_aud)*100):+.1f}%",
-                delta_color="normal" if advantage >= 0 else "inverse"
-            )
-        
-        st.divider()
-        
-        # Chart showing comparison
-        st.markdown("#### 📈 5-Year Projection: Redeployed vs Kept in Cash")
-        
-        fig_combined = go.Figure()
-        
-        fig_combined.add_trace(go.Scatter(
-            x=df_combined_sim['Date'],
-            y=df_combined_sim['Total Redeployed Value (after CGT)'],
-            mode='lines',
-            name='💰 Redeployed (AUD Investments + N26)',
-            line=dict(color='#27ae60', width=3),
-            fill='tozeroy',
-            fillcolor='rgba(39,174,96,0.1)',
-            hovertemplate='Redeployed: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_combined.add_trace(go.Scatter(
-            x=df_combined_sim['Date'],
-            y=df_combined_sim['Total Cash (if kept, after tax)'],
-            mode='lines',
-            name='🏦 Kept in Cash (after tax)',
-            line=dict(color='#e74c3c', width=2.5, dash='dot'),
-            fill='tozeroy',
-            fillcolor='rgba(231,76,60,0.05)',
-            hovertemplate='Cash: $%{y:,.0f}<extra></extra>'
-        ))
-        
-        fig_combined.add_trace(go.Scatter(
-            x=df_combined_sim['Date'],
-            y=df_combined_sim['Combined Advantage'],
-            mode='lines',
-            name='📊 Extra Gain',
-            line=dict(color='#f39c12', width=2, dash='dash'),
-            hovertemplate='Advantage: $%{y:,.0f}<extra></extra>',
-            yaxis='y2'
-        ))
-        
-        fig_combined.add_vline(x='2027-07-01', line_dash='dash', line_color='#e74c3c',
-                               opacity=0.6, annotation_text='CGT change 1 Jul 2027',
-                               annotation_position='top left')
-        
-        fig_combined.update_layout(
-            height=450,
-            hovermode='x unified',
-            yaxis=dict(title="Value (AUD)", tickprefix="$"),
-            yaxis2=dict(title="Extra Gain (AUD)", tickprefix="$", overlaying='y', side='right', showgrid=False),
-            legend=dict(orientation="h", y=1.08),
-            margin=dict(t=50, b=30)
-        )
-        
-        st.plotly_chart(fig_combined, use_container_width=True)
-        
-        # Breakdown by currency
-        st.markdown("#### 📋 Breakdown by Currency")
-        
-        col_break1, col_break2 = st.columns(2)
-        
-        with col_break1:
-            st.markdown("**🇦🇺 AUD Component**")
-            st.metric(f"{aud_target}", f"${aud_invest_after_cgt:,.0f}",
-                     delta=f"${aud_invest_after_cgt - aud_amount:+,.0f}")
-            st.caption(f"vs Cash: ${aud_cash_val:,.0f} (advantage: ${aud_invest_after_cgt - aud_cash_val:+,.0f})")
-        
-        with col_break2:
-            st.markdown("**🇪🇺 EUR Component (N26)**")
-            st.metric("N26 European ETFs", f"${eur_invest_after_cgt_aud:,.0f}",
-                     delta=f"${eur_invest_after_cgt_aud - eur_amount_aud:+,.0f}")
-            st.caption(f"vs Cash: ${eur_cash_val_aud:,.0f} (advantage: ${eur_invest_after_cgt_aud - eur_cash_val_aud:+,.0f})")
-        
-        # Impact on total net worth
-        st.divider()
-        st.markdown("#### 💰 Impact on Total 5-Year Net Worth")
-        
-        current_proj_end = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
-        new_proj_end = current_proj_end + advantage
-        
-        col_imp1, col_imp2, col_imp3 = st.columns(3)
-        col_imp1.metric("Base Projected NW (Year 5)", f"${current_proj_end:,.0f}")
-        col_imp2.metric("With Redeployment", f"${new_proj_end:,.0f}",
-                       delta=f"+${advantage:,.0f}",
-                       delta_color="normal" if advantage >= 0 else "inverse")
-        col_imp3.metric("Extra Annual Return", 
-                       f"{(advantage/5/(aud_amount + eur_amount_aud)*100):+.2f}% p.a.",
-                       help="Average annual extra return from redeployment")
-        
-        # Show year-by-year table
-        with st.expander("📋 View Year-by-Year Projections"):
-            df_display = df_combined_sim[df_combined_sim['Month'] % 12 == 0].copy()
-            df_display['Year'] = (df_display['Month'] / 12).astype(int)
-            st.dataframe(
-                df_display[['Year', 'Date', 'Total Redeployed Value (after CGT)', 'Total Cash (if kept, after tax)', 'Combined Advantage']]
-                .style.format({
-                    'Total Redeployed Value (after CGT)': '${:,.0f}',
-                    'Total Cash (if kept, after tax)': '${:,.0f}',
-                    'Combined Advantage': '${:+,.0f}',
-                })
-                .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Advantage' in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 and 'Advantage' in str(v) else '')),
-                use_container_width=True,
-                hide_index=True
-            )
-    else:
-        st.info("👆 Click 'Run Combined Scenario' to see the 5-year impact of redeploying both AUD and EUR cash.")
