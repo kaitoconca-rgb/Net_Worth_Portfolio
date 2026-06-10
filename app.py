@@ -8,12 +8,8 @@ import time
 import numpy as np  
 from streamlit_gsheets import GSheetsConnection
 
-# --- FETCH CURRENT FX RATE ---
-try:
-    fx_data = yf.Ticker("EURAUD=X").history(period="1d")
-    FX_AUD_EUR = 1 / fx_data['Close'].iloc[-1]
-except:
-    FX_AUD_EUR = 0.61
+# NOTE: EUR/AUD rate is fetched via get_fx_data() below (cached, using fast_info).
+# fx_now is the single authoritative rate used throughout the app.
 
 # --- 0. PROTEZIONE ---
 def check_password():
@@ -742,19 +738,14 @@ def save_net_worth_snapshot(total, force=False):
             # Calculate days in period
             days_in_period = (today - prev_date).days
             if days_in_period > 0:
-                # Calculate interest using simple average (simpler for now)
+                # Calculate interest using simple average
                 # AUD cash interest
                 avg_aud_cash = (prev_cash + cash_aud) / 2
                 aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
                 
                 # EUR cash interest
-                            # Calculate interest using simple average
-            avg_aud_cash = (prev_cash + cash_aud) / 2
-            aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
-            
-            # EUR cash interest
-            avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
-            eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
+                avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
+                eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
             
             # ========== DIVIDEND READING SECTION - ADD THIS HERE ==========
             n26_dividends = 0.0
@@ -774,7 +765,7 @@ def save_net_worth_snapshot(total, force=False):
                         for _, div in period_divs.iterrows():
                             amount = div['Amount']
                             currency = div['Currency']
-                            portfolio = str(div['Portfolio']).upper()
+                            div_portfolio = str(div['Portfolio']).upper()
                             div_date = div['Date']
                             
                             # Convert to AUD if needed
@@ -793,9 +784,9 @@ def save_net_worth_snapshot(total, force=False):
                                 amount_aud = amount
                             
                             # Add to appropriate portfolio
-                            if 'N26' in portfolio:
+                            if 'N26' in div_portfolio:
                                 n26_dividends += amount_aud
-                            elif 'SHARE' in portfolio:
+                            elif 'SHARE' in div_portfolio:
                                 shares_dividends += amount_aud
                             else:
                                 shares_dividends += amount_aud
@@ -808,15 +799,15 @@ def save_net_worth_snapshot(total, force=False):
             eur_cash_change = eur_cash_aud - prev_eur_cash
             eur_cash_deposits_aud = max(0, eur_cash_change - eur_cash_interest)
             
-            # Calculate market gains from investments
+            # Calculate market gains from investments (pure price change only)
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
-            market_gains = curr_investments - prev_investments - n26_dividends
+            market_gains = curr_investments - prev_investments
             
-            # Calculate FX impact (change in EUR cash minus interest and deposits)
-            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud - n26_dividends
+            # Calculate FX impact (change in EUR cash minus interest and deposits only)
+            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud
             
-            # Calculate contributions (everything else, including dividends)
+            # Calculate contributions (everything else — dividends tracked separately)
             contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud - n26_dividends - shares_dividends
             
             # Get actual contributions from transaction data for breakdown
@@ -859,7 +850,6 @@ def save_net_worth_snapshot(total, force=False):
     except Exception as e:
         import traceback
         return False, traceback.format_exc()
-@st.cache_data(ttl=60)
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
@@ -1438,9 +1428,9 @@ with tab0:
         
         # Show contribution attribution if available
         if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
-            total_contributions = df_history['Contributions_AUD'].iloc[-1]
-            total_gains = df_history['Market_Gains_AUD'].iloc[-1] if 'Market_Gains_AUD' in df_history.columns else 0
-            total_fx = df_history['FX_Impact_AUD'].iloc[-1] if 'FX_Impact_AUD' in df_history.columns else 0
+            total_contributions = df_history['Contributions_AUD'].sum()
+            total_gains = df_history['Market_Gains_AUD'].sum() if 'Market_Gains_AUD' in df_history.columns else 0
+            total_fx = df_history['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_history.columns else 0
             
             h4.metric("Contributions", f"${total_contributions:+,.2f}",
                       f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
@@ -1592,6 +1582,10 @@ with tab0:
                     waterfall_data.append({'Category': 'Contributions', 'Value': analysis['total_contributions']})
                 if analysis['market_gains'] != 0:
                     waterfall_data.append({'Category': 'Market Gains', 'Value': analysis['market_gains']})
+                if analysis['total_cash_interest'] != 0:
+                    waterfall_data.append({'Category': 'Cash Interest', 'Value': analysis['total_cash_interest']})
+                if analysis['total_dividends'] != 0:
+                    waterfall_data.append({'Category': 'Dividends', 'Value': analysis['total_dividends']})
                 if analysis['fx_impact'] != 0:
                     waterfall_data.append({'Category': 'FX Impact', 'Value': analysis['fx_impact']})
                 
