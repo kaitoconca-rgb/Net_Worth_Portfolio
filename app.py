@@ -735,9 +735,9 @@ def save_net_worth_snapshot(total, force=False):
             prev_cash = float(existing[-1][13]) if len(existing[-1]) > 13 and existing[-1][13] else 0
             prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
             
-            # Calculate days in period
+            # Calculate days in period (minimum 1 day to avoid phantom interest on same-day saves)
             days_in_period = (today - prev_date).days
-            if days_in_period > 0:
+            if days_in_period >= 1:
                 # Calculate interest using simple average
                 # AUD cash interest
                 avg_aud_cash = (prev_cash + cash_aud) / 2
@@ -1706,12 +1706,13 @@ with tab0:
                 st.warning("Not enough data points in the selected period. Please select a wider range or save more snapshots.")
     else:
         st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")    
-    # This is your existing Save Snapshot button (put it AFTER the period analysis)
+    # Save Snapshot button — clears only history cache so graphs update
+    # without a full page reload (which would re-prompt password)
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
         if ok:
-            st.success(f"✅ Snapshot saved: ${total_net_worth_aud:,.2f} AUD")
-            st.rerun()
+            load_net_worth_history.clear()
+            st.success("✅ Snapshot saved — scroll up, graphs now reflect the new data.")
         else:
             st.error(f"Could not save: {err}")
 
