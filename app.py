@@ -24,11 +24,11 @@ def check_password():
         return False
     return st.session_state.get("password_correct", False)
 
+# --- 1. CONFIGURAZIONE --- (must be first Streamlit call)
+st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
+
 if not check_password():
     st.stop()
-
-# --- 1. CONFIGURAZIONE ---
-st.set_page_config(page_title="Claudio's Executive Console", layout="wide")
 
 ticker_map = {
     "LU2885245055": "8OU9.DE", "IE0032077012": "EQQQ.DE", "IE00B02KXL92": "DJMC.AS",
@@ -583,16 +583,17 @@ def get_cash_transactions_for_period(start_date, end_date):
         if raiz_df is not None and not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
             raiz_period = raiz_df[(raiz_df['Trade Date'].dt.date >= start_date) & (raiz_df['Trade Date'].dt.date <= end_date)]
             for _, tx in raiz_period.iterrows():
-                if tx['Transaction Type'] == 'DEPOSIT':
+                txtype = str(tx['Transaction Type']).upper().strip()
+                if txtype in ('INVEST', 'DEPOSIT'):
                     transactions.append({
                         'date': tx['Trade Date'],
-                        'amount': -tx['Amount'],
+                        'amount': -abs(tx['Amount']),
                         'type': 'Raiz_Deposit'
                     })
-                elif tx['Transaction Type'] == 'WITHDRAWAL':
+                elif txtype == 'WITHDRAWAL':
                     transactions.append({
                         'date': tx['Trade Date'],
-                        'amount': tx['Amount'],
+                        'amount': abs(tx['Amount']),
                         'type': 'Raiz_Withdrawal'
                     })
     except Exception as e:
@@ -603,6 +604,17 @@ def get_cash_transactions_for_period(start_date, end_date):
     
    
 def save_net_worth_snapshot(total, force=False):
+    """
+    Save a net worth snapshot with clean, non-overlapping attribution.
+
+    Attribution identity (must sum to total_change):
+        total_change = contributions + market_gains + aud_cash_interest
+                     + eur_cash_interest + dividends + fx_impact + unexplained
+
+    Each component is calculated directly (not as residuals of others),
+    except contributions which is the final residual to close the gap.
+    This ensures the waterfall always reconciles.
+    """
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
@@ -617,55 +629,41 @@ def save_net_worth_snapshot(total, force=False):
             "token_uri": "https://oauth2.googleapis.com/token",
         }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        
-        # Calculate current portfolio values in AUD
-        n26_aud = current_market_value_eur * fx_now
-        raiz_aud = raiz_total_aud
-        vanguard_aud = vanguard_total_aud
-        shares_aud = shares_total_aud
+
+        # ── Current snapshot values ───────────────────────────────────────
+        n26_aud       = current_market_value_eur * fx_now
+        raiz_aud      = raiz_total_aud
+        vanguard_aud  = vanguard_total_aud
+        shares_aud    = shares_total_aud
         commodities_aud = commodities_total_aud
-        super_aud = super_total_aud
-        cash_aud = cash_total_aud
-        
-        # Calculate EUR Cash separately (only EUR-denominated accounts)
-        ACCOUNTS_CURR = {
-            "Trade Republic": "EUR",
-            "N26": "EUR", 
-            "BUNQ": "EUR",
-            "BPM Cash": "EUR",
-            "BPM Bonds": "EUR",
-        }
+        super_aud     = super_total_aud
+        cash_aud      = cash_total_aud  # all cash in AUD equiv
+
+        # EUR cash sub-total (EUR accounts only, in AUD)
+        EUR_CASH_ACCOUNTS = ["Trade Republic", "N26", "BUNQ", "BPM Cash", "BPM Bonds"]
         conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
         df_c = conn_c.read(ttl=0, usecols=[0, 1])
         df_c.columns = [c.strip() for c in df_c.columns]
         df_c = df_c.dropna(subset=['Account'])
         df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
         bal = df_c.set_index('Account')['Balance'].to_dict()
-        
-        eur_cash_total = 0
-        for name, currency in ACCOUNTS_CURR.items():
-            if currency == "EUR":
-                eur_cash_total += bal.get(name, 0.0)
-        eur_cash_aud = eur_cash_total * fx_now
-        
-        # Read existing history (columns A through T)
+        eur_cash_eur  = sum(bal.get(a, 0.0) for a in EUR_CASH_ACCOUNTS)
+        eur_cash_aud  = eur_cash_eur * fx_now
+
+        # ── Read existing sheet ───────────────────────────────────────────
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A:T"
         ).execute()
-        
         existing = result.get('values', [])
-        
-        # If empty, create header row with 20 columns
         if not existing:
-            existing = [['Date', 'Total_AUD', 'Contributions_AUD', 'Market_Gains_AUD', 'FX_Impact_AUD', 
-                        'Starting_Balance_AUD', 'Contribution_Breakdown', 'N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 
-                        'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD',
-                        'EUR_Cash_Deposits_AUD', 'AUD_Cash_Interest_AUD', 'EUR_Cash_Interest_AUD',
-                        'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD']]
-        
+            existing = [['Date','Total_AUD','Contributions_AUD','Market_Gains_AUD','FX_Impact_AUD',
+                         'Starting_Balance_AUD','Contribution_Breakdown','N26_AUD','Raiz_AUD','Vanguard_AUD',
+                         'Shares_AUD','Commodities_AUD','Super_AUD','Cash_AUD','EUR_Cash_AUD',
+                         'EUR_Cash_Deposits_AUD','AUD_Cash_Interest_AUD','EUR_Cash_Interest_AUD',
+                         'N26_Dividends_Received_AUD','Shares_Dividends_Received_AUD']]
+
         today = date.today()
-        
         if not force and len(existing) > 1:
             try:
                 last_date = pd.to_datetime(existing[-1][0])
@@ -673,173 +671,166 @@ def save_net_worth_snapshot(total, force=False):
                     return False, "Already saved this month"
             except:
                 pass
-        
-        # Initialize tracking variables
-        starting_balance = 0.0
-        contributions = 0.0
-        market_gains = 0.0
-        fx_impact = 0.0
-        aud_cash_interest = 0.0
-        eur_cash_interest = 0.0
+
+        # ── Initialise all attribution to zero ───────────────────────────
+        starting_balance      = 0.0
+        contributions         = 0.0
+        market_gains          = 0.0
+        fx_impact             = 0.0
+        aud_cash_interest     = 0.0
+        eur_cash_interest     = 0.0
         eur_cash_deposits_aud = 0.0
-        n26_dividends = 0.0
-        shares_dividends = 0.0
+        n26_dividends         = 0.0
+        shares_dividends      = 0.0
         contribution_breakdown = ""
-        
-        # Get interest rates from Forecast tab
-        try:
-            df_forecast = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
-            aud_interest_rate = 5.35  # Default
-            eur_interest_rate = 2.0   # Default
-            if not df_forecast.empty:
-                df_forecast.columns = [c.strip() for c in df_forecast.columns]
-                def clean_rate(val):
-                    if isinstance(val, str):
-                        val = val.replace('%', '').strip()
-                    return pd.to_numeric(val, errors='coerce')
-                df_forecast['Value'] = df_forecast['Value'].apply(clean_rate).fillna(0)
-                
-                # Get AUD rates
-                aud_rates = []
-                for acc in ['CBA', 'Me Bank', 'Rabobank', 'Up']:
-                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
-                    if not rate_row.empty:
-                        aud_rates.append(float(rate_row['Value'].iloc[0]))
-                if aud_rates:
-                    aud_interest_rate = max(aud_rates)
-                
-                # Get EUR rates
-                eur_rates = []
-                for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
-                    rate_row = df_forecast[(df_forecast['Category'] == 'Interest') & (df_forecast['Key'] == acc)]
-                    if not rate_row.empty:
-                        eur_rates.append(float(rate_row['Value'].iloc[0]))
-                if eur_rates:
-                    eur_interest_rate = max(eur_rates)
-        except:
-            aud_interest_rate = 5.35
-            eur_interest_rate = 2.0
-        
+
         if len(existing) > 1:
-            prev_date = pd.to_datetime(existing[-1][0]).date()
-            prev_total = float(existing[-1][1]) if existing[-1][1] else 0
-            starting_balance = prev_total
-            
-            # Get previous portfolio values
-            prev_n26 = float(existing[-1][7]) if len(existing[-1]) > 7 and existing[-1][7] else 0
-            prev_raiz = float(existing[-1][8]) if len(existing[-1]) > 8 and existing[-1][8] else 0
-            prev_vanguard = float(existing[-1][9]) if len(existing[-1]) > 9 and existing[-1][9] else 0
-            prev_shares = float(existing[-1][10]) if len(existing[-1]) > 10 and existing[-1][10] else 0
-            prev_commodities = float(existing[-1][11]) if len(existing[-1]) > 11 and existing[-1][11] else 0
-            prev_super = float(existing[-1][12]) if len(existing[-1]) > 12 and existing[-1][12] else 0
-            prev_cash = float(existing[-1][13]) if len(existing[-1]) > 13 and existing[-1][13] else 0
-            prev_eur_cash = float(existing[-1][14]) if len(existing[-1]) > 14 and existing[-1][14] else 0
-            
-            # Calculate days in period (minimum 1 day to avoid phantom interest on same-day saves)
-            days_in_period = (today - prev_date).days
-            if days_in_period >= 1:
-                # Calculate interest using simple average
-                # AUD cash interest
-                avg_aud_cash = (prev_cash + cash_aud) / 2
-                aud_cash_interest = avg_aud_cash * (aud_interest_rate / 100) * (days_in_period / 365)
-                
-                # EUR cash interest
-                avg_eur_cash = (prev_eur_cash + eur_cash_aud) / 2
-                eur_cash_interest = avg_eur_cash * (eur_interest_rate / 100) * (days_in_period / 365)
-            
-            # ========== DIVIDEND READING SECTION - ADD THIS HERE ==========
-            n26_dividends = 0.0
-            shares_dividends = 0.0
+            # ── Previous row values ───────────────────────────────────────
+            prev = existing[-1]
+            def _f(idx, default=0.0):
+                try: return float(prev[idx]) if len(prev) > idx and prev[idx] else default
+                except: return default
+
+            prev_date         = pd.to_datetime(prev[0]).date()
+            prev_total        = _f(1)
+            starting_balance  = prev_total
+            prev_n26          = _f(7);  prev_raiz    = _f(8);  prev_vanguard = _f(9)
+            prev_shares       = _f(10); prev_comm    = _f(11); prev_super    = _f(12)
+            prev_cash         = _f(13); prev_eur_cash_aud = _f(14)
+            days_in_period    = (today - prev_date).days
+
+            # ── 1. INTEREST — weighted average rate × average balance ─────
+            # Only meaningful for periods ≥ 7 days (avoids test-save noise)
+            if days_in_period >= 7:
+                # Load rates from Forecast sheet
+                aud_rate = 5.35  # % p.a. default
+                eur_rate = 2.00  # % p.a. default
+                try:
+                    df_fc = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
+                    if not df_fc.empty:
+                        df_fc.columns = [c.strip() for c in df_fc.columns]
+                        df_fc['Value'] = df_fc['Value'].apply(
+                            lambda v: pd.to_numeric(str(v).replace('%','').strip(), errors='coerce')).fillna(0)
+                        # Weighted average: rate × balance / total balance
+                        aud_accs = ['CBA','Me Bank','Rabobank','Up']
+                        eur_accs = ['Trade Republic','N26','BUNQ','BPM Cash','BPM Bonds']
+                        def _weighted_rate(accs):
+                            total_bal = rate_num = 0.0
+                            for acc in accs:
+                                b = bal.get(acc, 0.0)
+                                r_row = df_fc[(df_fc['Category']=='Interest') & (df_fc['Key']==acc)]
+                                r = float(r_row['Value'].iloc[0]) if not r_row.empty else 0.0
+                                rate_num  += r * b
+                                total_bal += b
+                            return (rate_num / total_bal) if total_bal > 0 else 0.0
+                        aud_rate = _weighted_rate(aud_accs) or aud_rate
+                        eur_rate = _weighted_rate(eur_accs) or eur_rate
+                except:
+                    pass
+
+                # AUD cash interest: average of prev and current AUD cash balance
+                aud_cash_only = cash_aud - eur_cash_aud   # strip EUR component from total
+                prev_aud_cash = prev_cash - prev_eur_cash_aud
+                avg_aud = (prev_aud_cash + aud_cash_only) / 2
+                aud_cash_interest = avg_aud * (aud_rate / 100) * (days_in_period / 365)
+
+                # EUR cash interest: on EUR balances, converted to AUD
+                avg_eur_aud = (prev_eur_cash_aud + eur_cash_aud) / 2
+                eur_cash_interest = avg_eur_aud * (eur_rate / 100) * (days_in_period / 365)
+
+            # ── 2. DIVIDENDS — read from Dividends sheet ──────────────────
             try:
                 df_div = _sheets_read(PORTFOLIO_SHEET_ID, "Dividends!A:D")
                 if not df_div.empty:
                     df_div.columns = [c.strip() for c in df_div.columns]
-                    df_div['Date'] = pd.to_datetime(df_div['Date'])
+                    df_div['Date']   = pd.to_datetime(df_div['Date'])
                     df_div['Amount'] = pd.to_numeric(df_div['Amount'], errors='coerce').fillna(0)
                     df_div['Currency'] = df_div['Currency'].str.upper().str.strip()
-                    
-                    # Filter dividends in the period
-                    period_divs = df_div[(df_div['Date'].dt.date >= prev_date) & (df_div['Date'].dt.date <= today)]
-                    
-                    if not period_divs.empty:
-                        for _, div in period_divs.iterrows():
-                            amount = div['Amount']
-                            currency = div['Currency']
-                            div_portfolio = str(div['Portfolio']).upper()
-                            div_date = div['Date']
-                            
-                            # Convert to AUD if needed
-                            if currency == 'EUR':
-                                fx_rate = get_fx_at(div_date)
-                                amount_aud = amount * fx_rate
-                            elif currency == 'AUD':
-                                amount_aud = amount
-                            elif currency == 'USD':
-                                try:
-                                    usd_to_aud = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
-                                    amount_aud = amount / usd_to_aud
-                                except:
-                                    amount_aud = amount * 1.58
-                            else:
-                                amount_aud = amount
-                            
-                            # Add to appropriate portfolio
-                            if 'N26' in div_portfolio:
-                                n26_dividends += amount_aud
-                            elif 'SHARE' in div_portfolio:
-                                shares_dividends += amount_aud
-                            else:
-                                shares_dividends += amount_aud
-            except Exception as div_err:
+                    period_divs = df_div[
+                        (df_div['Date'].dt.date > prev_date) &
+                        (df_div['Date'].dt.date <= today)
+                    ]
+                    for _, div in period_divs.iterrows():
+                        amt = div['Amount']
+                        cur = div['Currency']
+                        if cur == 'EUR':
+                            amt_aud = amt * get_fx_at(div['Date'])
+                        elif cur == 'USD':
+                            try:
+                                amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+                            except:
+                                amt_aud = amt * 1.58
+                        else:
+                            amt_aud = amt  # AUD or unknown
+                        port = str(div.get('Portfolio','')).upper()
+                        if 'N26' in port:
+                            n26_dividends += amt_aud
+                        else:
+                            shares_dividends += amt_aud
+            except:
                 pass
-            # ========== END OF DIVIDEND READING SECTION ==========
-            
-            # Calculate EUR cash deposits... 
-            # Calculate EUR cash deposits (estimate from change minus interest)
-            eur_cash_change = eur_cash_aud - prev_eur_cash
-            eur_cash_deposits_aud = max(0, eur_cash_change - eur_cash_interest)
-            
-            # Calculate market gains from investments (pure price change only)
-            prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_commodities + prev_super
+
+            # ── 3. MARKET GAINS — investment portfolio price changes ───────
+            # = (current investment values) - (prev investment values)
+            # Exclude cash entirely; cash changes are contributions or interest
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
+            prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_comm + prev_super
             market_gains = curr_investments - prev_investments
-            
-            # Calculate FX impact (change in EUR cash minus interest and deposits only)
-            fx_impact = eur_cash_change - eur_cash_interest - eur_cash_deposits_aud
-            
-            # Calculate contributions (everything else — dividends tracked separately)
-            contributions = total - prev_total - market_gains - fx_impact - aud_cash_interest - eur_cash_interest - eur_cash_deposits_aud - n26_dividends - shares_dividends
-            
-            # Get actual contributions from transaction data for breakdown
+
+            # ── 4. FX IMPACT — N26 EUR portfolio revalued at new FX rate ──
+            # If EUR/AUD rate changed, the AUD value of the EUR portfolio changes
+            # even if the EUR price didn't move. We isolate this as FX impact.
+            # Approximation: prev_n26_eur * (fx_now - fx_prev)
+            # We don't store fx_prev, so estimate from prev_n26 / current_market_value_eur
+            # if prev was close, or use EUR cash change as proxy.
+            # Best available: change in EUR cash AUD value net of EUR deposits
+            eur_cash_change_aud = eur_cash_aud - prev_eur_cash_aud
+            # EUR cash deposits = new money added to EUR accounts (use transaction data)
             _, breakdown_dict = calculate_period_contributions(prev_date, today)
-            contribution_breakdown = "; ".join([f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0])
-        
-        # Append new row with all 20 columns
+            eur_deposits_from_tx = breakdown_dict.get('EUR_Cash', 0.0)
+            # FX impact on EUR cash = change that isn't explained by new deposits or interest
+            fx_impact = eur_cash_change_aud - eur_deposits_from_tx - eur_cash_interest
+            eur_cash_deposits_aud = eur_deposits_from_tx
+
+            # ── 5. CONTRIBUTIONS — residual (closes the identity) ─────────
+            # total_change = market_gains + contributions + aud_interest
+            #              + eur_interest + dividends + fx_impact
+            total_change = total - prev_total
+            contributions = (total_change
+                             - market_gains
+                             - aud_cash_interest
+                             - eur_cash_interest
+                             - (n26_dividends + shares_dividends)
+                             - fx_impact)
+
+            contribution_breakdown = "; ".join(
+                f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0
+            )
+
+        # ── Write row ─────────────────────────────────────────────────────
         new_row = [
-            today.strftime('%Y-%m-%d'),  # A: Date
-            str(round(total, 2)),  # B: Total_AUD
-            str(round(contributions, 2)),  # C: Contributions_AUD
-            str(round(market_gains, 2)),  # D: Market_Gains_AUD
-            str(round(fx_impact, 2)),  # E: FX_Impact_AUD
-            str(round(starting_balance, 2)),  # F: Starting_Balance_AUD
-            contribution_breakdown,  # G: Contribution_Breakdown
-            str(round(n26_aud, 2)),  # H: N26_AUD
-            str(round(raiz_aud, 2)),  # I: Raiz_AUD
-            str(round(vanguard_aud, 2)),  # J: Vanguard_AUD
-            str(round(shares_aud, 2)),  # K: Shares_AUD
-            str(round(commodities_aud, 2)),  # L: Commodities_AUD
-            str(round(super_aud, 2)),  # M: Super_AUD
-            str(round(cash_aud, 2)),  # N: Cash_AUD
-            str(round(eur_cash_aud, 2)),  # O: EUR_Cash_AUD
-            str(round(eur_cash_deposits_aud, 2)),  # P: EUR_Cash_Deposits_AUD
-            str(round(aud_cash_interest, 2)),  # Q: AUD_Cash_Interest_AUD
-            str(round(eur_cash_interest, 2)),  # R: EUR_Cash_Interest_AUD
-            str(round(n26_dividends, 2)),  # S: N26_Dividends_Received_AUD
-            str(round(shares_dividends, 2)),  # T: Shares_Dividends_Received_AUD
+            today.strftime('%Y-%m-%d'),
+            str(round(total,              2)),  # B Total
+            str(round(contributions,      2)),  # C Contributions
+            str(round(market_gains,       2)),  # D Market Gains
+            str(round(fx_impact,          2)),  # E FX Impact
+            str(round(starting_balance,   2)),  # F Starting Balance
+            contribution_breakdown,              # G Breakdown text
+            str(round(n26_aud,            2)),  # H N26
+            str(round(raiz_aud,           2)),  # I Raiz
+            str(round(vanguard_aud,       2)),  # J Vanguard
+            str(round(shares_aud,         2)),  # K Shares
+            str(round(commodities_aud,    2)),  # L Commodities
+            str(round(super_aud,          2)),  # M Super
+            str(round(cash_aud,           2)),  # N Cash total
+            str(round(eur_cash_aud,       2)),  # O EUR Cash AUD
+            str(round(eur_cash_deposits_aud, 2)),  # P EUR Deposits
+            str(round(aud_cash_interest,  2)),  # Q AUD Interest
+            str(round(eur_cash_interest,  2)),  # R EUR Interest
+            str(round(n26_dividends,      2)),  # S N26 Dividends
+            str(round(shares_dividends,   2)),  # T Shares Dividends
         ]
         existing.append(new_row)
-        
-        # Update sheet
         service.spreadsheets().values().update(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A1",
@@ -909,112 +900,79 @@ def load_net_worth_history():
         # ==================== NET WORTH CHANGE ANALYSIS ====================
 def analyze_net_worth_change(df_history, start_date, end_date):
     """
-    Analyze net worth change between two dates with full attribution including interest and dividends.
+    Read saved attribution columns for the period and return a clean summary.
+    All values come directly from what was recorded at save time — no re-derivation.
+    The components sum exactly to total_change by construction (contributions is the residual).
     """
-    # Filter history for the date range
     mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-    df_period = df_history[mask].copy()
-    
+    df_period = df_history[mask].sort_values('Date').copy()
     if len(df_period) < 2:
         return None
-    
-    # Get start and end rows
+
     start_row = df_period.iloc[0]
-    end_row = df_period.iloc[-1]
-    
-    start_value = start_row['Total_AUD']
-    end_value = end_row['Total_AUD']
+    end_row   = df_period.iloc[-1]
+    start_value  = float(start_row['Total_AUD'])
+    end_value    = float(end_row['Total_AUD'])
     total_change = end_value - start_value
     total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
-    
-    # Calculate portfolio gains (investments only, excluding cash)
-    portfolio_gains = {}
-    portfolio_mapping = {
-        'N26_AUD': 'N26 European ETFs',
-        'Raiz_AUD': 'Raiz ETFs',
-        'Vanguard_AUD': 'Vanguard VDAL',
-        'Shares_AUD': 'ASX Shares',
-        'Commodities_AUD': 'Commodities',
-        'Super_AUD': 'Super',
-    }
-    
-    total_saved_gains = 0
-    has_real_data = False
-    
-    for col, name in portfolio_mapping.items():
-        if col in start_row.index and col in end_row.index:
-            start_val = start_row[col] if pd.notna(start_row[col]) else 0
-            end_val = end_row[col] if pd.notna(end_row[col]) else 0
-            gain = end_val - start_val
-            
-            if start_val != 0 or end_val != 0:
-                has_real_data = True
-                portfolio_gains[name] = gain
-                total_saved_gains += gain
-        else:
-            portfolio_gains[name] = 0
-    
-    # Get all attribution components from saved data
-    total_contributions = df_period['Contributions_AUD'].sum() if 'Contributions_AUD' in df_period.columns else 0
-    fx_impact = df_period['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_period.columns else 0
-    aud_cash_interest = df_period['AUD_Cash_Interest_AUD'].sum() if 'AUD_Cash_Interest_AUD' in df_period.columns else 0
-    eur_cash_interest = df_period['EUR_Cash_Interest_AUD'].sum() if 'EUR_Cash_Interest_AUD' in df_period.columns else 0
-    n26_dividends = df_period['N26_Dividends_Received_AUD'].sum() if 'N26_Dividends_Received_AUD' in df_period.columns else 0
-    shares_dividends = df_period['Shares_Dividends_Received_AUD'].sum() if 'Shares_Dividends_Received_AUD' in df_period.columns else 0
-    eur_cash_deposits = df_period['EUR_Cash_Deposits_AUD'].sum() if 'EUR_Cash_Deposits_AUD' in df_period.columns else 0
-    
-    # Total cash interest
+
+    def _col(name):
+        """Sum a column across all rows in the period except the first (which is the baseline)."""
+        rows = df_period.iloc[1:]   # attribution rows: each row stores what CHANGED since prev
+        if name in rows.columns:
+            return float(rows[name].sum())
+        return 0.0
+
+    market_gains      = _col('Market_Gains_AUD')
+    total_contributions = _col('Contributions_AUD')
+    aud_cash_interest = _col('AUD_Cash_Interest_AUD')
+    eur_cash_interest = _col('EUR_Cash_Interest_AUD')
+    n26_dividends     = _col('N26_Dividends_Received_AUD')
+    shares_dividends  = _col('Shares_Dividends_Received_AUD')
+    fx_impact         = _col('FX_Impact_AUD')
     total_cash_interest = aud_cash_interest + eur_cash_interest
-    
-    # Total dividends
-    total_dividends = n26_dividends + shares_dividends
-    
-    # Calculate market gains (using saved data or residual)
-    if has_real_data and len(df_period) >= 2:
-        market_gains = total_saved_gains
-    else:
-        market_gains = total_change - total_contributions - fx_impact - total_cash_interest - total_dividends - eur_cash_deposits
-        portfolio_gains = {}
-        has_real_data = False
-    
-    # Calculate percentages based on total change
-    contrib_pct = (total_contributions / abs(total_change) * 100) if total_change != 0 else 0
-    market_pct = (market_gains / abs(total_change) * 100) if total_change != 0 else 0
-    fx_pct = (fx_impact / abs(total_change) * 100) if total_change != 0 else 0
-    interest_pct = (total_cash_interest / abs(total_change) * 100) if total_change != 0 else 0
-    dividends_pct = (total_dividends / abs(total_change) * 100) if total_change != 0 else 0
-    deposits_pct = (eur_cash_deposits / abs(total_change) * 100) if total_change != 0 else 0
-    
+    total_dividends     = n26_dividends + shares_dividends
+
+    def _pct(v):
+        return (v / abs(total_change) * 100) if total_change != 0 else 0
+
+    # Detect old rows with no attribution data (all zeros) — warn user but don't show as "unexplained"
+    attr_cols = ['Contributions_AUD','Market_Gains_AUD','AUD_Cash_Interest_AUD',
+                 'EUR_Cash_Interest_AUD','FX_Impact_AUD']
+    rows_with_data = df_period.iloc[1:]
+    has_zero_rows = False
+    if not rows_with_data.empty and all(c in rows_with_data.columns for c in attr_cols):
+        zero_mask = (rows_with_data[attr_cols].abs().sum(axis=1) == 0)
+        has_zero_rows = bool(zero_mask.any())
+
     return {
-        'start_date': start_row['Date'].date(),
-        'end_date': end_row['Date'].date(),
-        'start_value': start_value,
-        'end_value': end_value,
-        'total_change': total_change,
-        'total_change_pct': total_change_pct,
+        'start_date':        start_row['Date'].date(),
+        'end_date':          end_row['Date'].date(),
+        'start_value':       start_value,
+        'end_value':         end_value,
+        'total_change':      total_change,
+        'total_change_pct':  total_change_pct,
+        'market_gains':      market_gains,
         'total_contributions': total_contributions,
-        'market_gains': market_gains,
-        'portfolio_gains': portfolio_gains,
-        'has_portfolio_data': has_real_data,
-        'fx_impact': fx_impact,
         'aud_cash_interest': aud_cash_interest,
         'eur_cash_interest': eur_cash_interest,
         'total_cash_interest': total_cash_interest,
-        'n26_dividends': n26_dividends,
-        'shares_dividends': shares_dividends,
-        'total_dividends': total_dividends,
-        'eur_cash_deposits': eur_cash_deposits,
-        'contrib_pct': contrib_pct,
-        'market_pct': market_pct,
-        'fx_pct': fx_pct,
-        'interest_pct': interest_pct,
-        'dividends_pct': dividends_pct,
-        'deposits_pct': deposits_pct,
-        'days': (end_row['Date'] - start_row['Date']).days
+        'n26_dividends':     n26_dividends,
+        'shares_dividends':  shares_dividends,
+        'total_dividends':   total_dividends,
+        'fx_impact':         fx_impact,
+        'has_zero_rows':     has_zero_rows,
+        'market_pct':        _pct(market_gains),
+        'contrib_pct':       _pct(total_contributions),
+        'interest_pct':      _pct(total_cash_interest),
+        'dividends_pct':     _pct(total_dividends),
+        'fx_pct':            _pct(fx_impact),
+        'days':              (end_row['Date'] - start_row['Date']).days,
     }
 # ==================== ADDITION: CONTRIBUTION TRACKING ====================
 # Add these functions right after load_net_worth_history() and before the tabs
 
+@st.cache_data(ttl=300)
 @st.cache_data(ttl=300)
 def get_raiz_transactions():
     """Get Raiz transaction history for contribution tracking"""
@@ -1110,15 +1068,18 @@ def calculate_period_contributions(start_date, end_date):
         breakdown['N26'] = 0.0
     
     # Raiz Contributions
+    # Raiz CSV uses 'INVEST' for regular deposits (not 'DEPOSIT').
+    # Amount is negative for buys (cash outflow), so use abs().
     try:
         raiz_df = get_raiz_transactions()
         if not raiz_df.empty and 'Transaction Type' in raiz_df.columns:
+            raiz_df['_txtype'] = raiz_df['Transaction Type'].str.upper().str.strip()
             raiz_period = raiz_df[
                 (raiz_df['Trade Date'].dt.date >= start_date) & 
                 (raiz_df['Trade Date'].dt.date <= end_date) &
-                (raiz_df['Transaction Type'].str.upper().str.strip() == 'DEPOSIT')
+                (raiz_df['_txtype'].isin(['INVEST', 'DEPOSIT']))
             ]
-            raiz_total = raiz_period['Amount'].sum()
+            raiz_total = raiz_period['Amount'].abs().sum()
             breakdown['Raiz'] = raiz_total
             total += raiz_total
     except:
@@ -1495,134 +1456,92 @@ with tab0:
                     )
                 
                 st.divider()
-                
-                # Attribution breakdown - Three columns
-                # Attribution breakdown - Now with 5 components
+
+                # ── Attribution tiles ─────────────────────────────────────
                 st.markdown("#### 📊 Change Attribution")
-                
-                # Create five columns for all components
-                col_contrib, col_market, col_interest, col_dividends, col_fx = st.columns(5)
-                
-                with col_contrib:
-                    contrib_color = "#27ae60" if analysis['total_contributions'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 0.9rem; font-weight: 600;">💰 Contributions</div>
-                            <div style="font-size: 1.2rem; color: {contrib_color}; font-weight: bold;">
-                                ${analysis['total_contributions']:+,.0f}
-                            </div>
-                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['contrib_pct']):.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col_market:
-                    market_color = "#27ae60" if analysis['market_gains'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 0.9rem; font-weight: 600;">📈 Market Gains</div>
-                            <div style="font-size: 1.2rem; color: {market_color}; font-weight: bold;">
-                                ${analysis['market_gains']:+,.0f}
-                            </div>
-                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['market_pct']):.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Portfolio breakdown expander
-                    if analysis.get('has_portfolio_data', False) and analysis['portfolio_gains']:
-                        with st.expander("📋 By portfolio"):
-                            for portfolio, gain in analysis['portfolio_gains'].items():
-                                if gain != 0:
-                                    gain_color = "#27ae60" if gain >= 0 else "#e74c3c"
-                                    st.markdown(f"**{portfolio}**: <span style='color:{gain_color}'>{gain:+,.0f}</span>", unsafe_allow_html=True)
-                
-                with col_interest:
-                    interest_color = "#27ae60" if analysis['total_cash_interest'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 0.9rem; font-weight: 600;">🏦 Cash Interest</div>
-                            <div style="font-size: 1.2rem; color: {interest_color}; font-weight: bold;">
-                                ${analysis['total_cash_interest']:+,.0f}
-                            </div>
-                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['interest_pct']):.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col_dividends:
-                    dividends_color = "#27ae60" if analysis['total_dividends'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 0.9rem; font-weight: 600;">💸 Dividends</div>
-                            <div style="font-size: 1.2rem; color: {dividends_color}; font-weight: bold;">
-                                ${analysis['total_dividends']:+,.0f}
-                            </div>
-                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['dividends_pct']):.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col_fx:
-                    fx_color = "#27ae60" if analysis['fx_impact'] >= 0 else "#e74c3c"
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 10px;">
-                            <div style="font-size: 0.9rem; font-weight: 600;">💱 FX Impact</div>
-                            <div style="font-size: 1.2rem; color: {fx_color}; font-weight: bold;">
-                                ${analysis['fx_impact']:+,.0f}
-                            </div>
-                            <div style="font-size: 0.7rem; color: #666;">{abs(analysis['fx_pct']):.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Waterfall chart for visual representation
-                st.markdown("#### 📊 Visual Breakdown")
-                
-                # Prepare data for waterfall chart
-                waterfall_data = []
-                if analysis['total_contributions'] != 0:
-                    waterfall_data.append({'Category': 'Contributions', 'Value': analysis['total_contributions']})
-                if analysis['market_gains'] != 0:
-                    waterfall_data.append({'Category': 'Market Gains', 'Value': analysis['market_gains']})
-                if analysis['total_cash_interest'] != 0:
-                    waterfall_data.append({'Category': 'Cash Interest', 'Value': analysis['total_cash_interest']})
-                if analysis['total_dividends'] != 0:
-                    waterfall_data.append({'Category': 'Dividends', 'Value': analysis['total_dividends']})
-                if analysis['fx_impact'] != 0:
-                    waterfall_data.append({'Category': 'FX Impact', 'Value': analysis['fx_impact']})
-                
-                if waterfall_data:
-                    fig_waterfall = go.Figure()
-                    
-                    # Add bars
-                    colors = ['#27ae60' if x['Value'] >= 0 else '#e74c3c' for x in waterfall_data]
-                    fig_waterfall.add_trace(go.Bar(
-                        x=[x['Category'] for x in waterfall_data],
-                        y=[x['Value'] for x in waterfall_data],
-                        marker_color=colors,
-                        text=[f"${x['Value']:+,.2f}" for x in waterfall_data],
-                        textposition='outside',
-                    ))
-                    
-                    # Add a line from start to end
-                    fig_waterfall.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
-                    
-                    fig_waterfall.update_layout(
-                        title=f"From ${analysis['start_value']:,.2f} to ${analysis['end_value']:,.2f}",
-                        yaxis=dict(title="Amount (AUD)", tickprefix="$"),
-                        height=350,
-                        showlegend=False
+
+                # Warn if period contains old zero-attribution rows
+                if analysis.get('has_zero_rows'):
+                    st.warning(
+                        "⚠️ This period includes snapshots saved before attribution tracking was "
+                        "introduced. Those rows contribute to the net worth total but not to the "
+                        "component breakdown — clear columns C–G and P–T in those old rows to fix."
                     )
-                    st.plotly_chart(fig_waterfall, use_container_width=True)
+
+                def _tile(label, value, pct):
+                    c = "#27ae60" if value >= 0 else "#e74c3c"
+                    return (f'<div style="text-align:center;padding:10px;background:#f8f9fa;'
+                            f'border-radius:10px;height:90px;">'
+                            f'<div style="font-size:0.85rem;font-weight:600;">{label}</div>'
+                            f'<div style="font-size:1.15rem;color:{c};font-weight:bold;">${value:+,.0f}</div>'
+                            f'<div style="font-size:0.7rem;color:#888;">{abs(pct):.0f}% of change</div>'
+                            f'</div>')
+
+                t1, t2, t3, t4, t5 = st.columns(5)
+                t1.markdown(_tile("📈 Market Gains",  analysis['market_gains'],       analysis['market_pct']),    unsafe_allow_html=True)
+                t2.markdown(_tile("💰 Contributions", analysis['total_contributions'], analysis['contrib_pct']),   unsafe_allow_html=True)
+                t3.markdown(_tile("🏦 Cash Interest", analysis['total_cash_interest'], analysis['interest_pct']),  unsafe_allow_html=True)
+                t4.markdown(_tile("💸 Dividends",     analysis['total_dividends'],     analysis['dividends_pct']), unsafe_allow_html=True)
+                t5.markdown(_tile("💱 FX Impact",     analysis['fx_impact'],           analysis['fx_pct']),        unsafe_allow_html=True)
+
+                # Interest/dividend detail expander
+                if analysis['total_cash_interest'] != 0 or analysis['total_dividends'] != 0:
+                    with st.expander("📋 Interest & Dividend detail"):
+                        st.markdown(
+                            f"**AUD interest:** ${analysis['aud_cash_interest']:+,.2f} &nbsp;|&nbsp; "
+                            f"**EUR interest:** ${analysis['eur_cash_interest']:+,.2f} &nbsp;|&nbsp; "
+                            f"**N26 dividends:** ${analysis['n26_dividends']:+,.2f} &nbsp;|&nbsp; "
+                            f"**Shares dividends:** ${analysis['shares_dividends']:+,.2f}"
+                        )
+
+                st.divider()
+
+                # ── Proper waterfall chart ────────────────────────────────
+                st.markdown("#### 📊 Visual Breakdown — Waterfall")
+                components = [
+                    ("Market Gains",    analysis['market_gains']),
+                    ("Contributions",   analysis['total_contributions']),
+                    ("Cash Interest",   analysis['total_cash_interest']),
+                    ("Dividends",       analysis['total_dividends']),
+                    ("FX Impact",       analysis['fx_impact']),
+                ]
+                # Build a true Plotly waterfall
+                wf_labels  = ["Start"] + [c[0] for c in components] + ["End"]
+                wf_values  = [analysis['start_value']] + [c[1] for c in components] + [analysis['end_value']]
+                wf_measure = ["absolute"] + ["relative"] * len(components) + ["total"]
+                wf_colors  = ["#2980b9"] + ["#27ae60" if v >= 0 else "#e74c3c" for _, v in components] + ["#2980b9"]
+
+                fig_wf = go.Figure(go.Waterfall(
+                    orientation="v",
+                    measure=wf_measure,
+                    x=wf_labels,
+                    y=wf_values,
+                    text=[f"${v:,.0f}" for v in wf_values],
+                    textposition="outside",
+                    connector=dict(line=dict(color="rgba(150,150,150,0.4)", width=1, dash="dot")),
+                    increasing=dict(marker_color="#27ae60"),
+                    decreasing=dict(marker_color="#e74c3c"),
+                    totals=dict(marker_color="#2980b9"),
+                ))
+                fig_wf.update_layout(
+                    title=f"${analysis['start_value']:,.0f} → ${analysis['end_value']:,.0f}  "
+                          f"({'+'if analysis['total_change']>=0 else ''}{analysis['total_change']:,.0f})",
+                    yaxis=dict(title="AUD $", tickprefix="$"),
+                    height=420, showlegend=False,
+                    margin=dict(t=50, b=20)
+                )
+                st.plotly_chart(fig_wf, use_container_width=True)
+
+                st.divider()
+
+                # ── Cumulative view over the selected period ──────────────
+                st.markdown("#### 📈 Cumulative Change Over Period")
                     
-                    st.divider()
-                      
-                    # Cumulative view over the selected period
-                    st.markdown("#### 📈 Cumulative Change Over Period")
-                    
-                    # Filter data for the selected period
-                    period_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-                    df_period_data = df_history[period_mask].copy()
-                    
-                    if len(df_period_data) > 1 and 'Contributions_AUD' in df_period_data.columns:
+                # Filter data for the selected period
+                period_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
+                df_period_data = df_history[period_mask].copy()
+
+                if len(df_period_data) > 1 and 'Contributions_AUD' in df_period_data.columns:
                         # Calculate cumulative contributions and gains
                         df_period_data = df_period_data.sort_values('Date')
                         df_period_data['Cumulative_Contributions'] = df_period_data['Contributions_AUD'].cumsum()
@@ -1706,13 +1625,13 @@ with tab0:
                 st.warning("Not enough data points in the selected period. Please select a wider range or save more snapshots.")
     else:
         st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")    
-    # Save Snapshot button — clears only history cache so graphs update
-    # without a full page reload (which would re-prompt password)
+    # Save Snapshot button — st.rerun() works correctly because
+    # password_correct is stored in session_state which survives reruns
     if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
         ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
         if ok:
             load_net_worth_history.clear()
-            st.success("✅ Snapshot saved — scroll up, graphs now reflect the new data.")
+            st.rerun()
         else:
             st.error(f"Could not save: {err}")
 
