@@ -653,7 +653,7 @@ def save_net_worth_snapshot(total, force=False):
         # ── Read existing sheet ───────────────────────────────────────────
         result = service.spreadsheets().values().get(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:T"
+            range="Net_Worth!A:U"
         ).execute()
         existing = result.get('values', [])
         if not existing:
@@ -661,7 +661,7 @@ def save_net_worth_snapshot(total, force=False):
                          'Starting_Balance_AUD','Contribution_Breakdown','N26_AUD','Raiz_AUD','Vanguard_AUD',
                          'Shares_AUD','Commodities_AUD','Super_AUD','Cash_AUD','EUR_Cash_AUD',
                          'EUR_Cash_Deposits_AUD','AUD_Cash_Interest_AUD','EUR_Cash_Interest_AUD',
-                         'N26_Dividends_Received_AUD','Shares_Dividends_Received_AUD']]
+                         'N26_Dividends_Received_AUD','Shares_Dividends_Received_AUD','N26_EUR_Value']]
 
         today = date.today()
         if not force and len(existing) > 1:
@@ -829,6 +829,7 @@ def save_net_worth_snapshot(total, force=False):
             str(round(eur_cash_interest,  2)),  # R EUR Interest
             str(round(n26_dividends,      2)),  # S N26 Dividends
             str(round(shares_dividends,   2)),  # T Shares Dividends
+            str(round(current_market_value_eur, 2)),  # U N26_EUR_Value (for FX decomposition)
         ]
         existing.append(new_row)
         service.spreadsheets().values().update(
@@ -885,9 +886,9 @@ def load_net_worth_history():
             else:
                 df_nw[col] = 0.0
         
-        # Load new tracking columns (P through T)
+        # Load new tracking columns (P through U)
         tracking_columns = ['EUR_Cash_Deposits_AUD', 'AUD_Cash_Interest_AUD', 'EUR_Cash_Interest_AUD', 
-                           'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD']
+                           'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD', 'N26_EUR_Value']
         for col in tracking_columns:
             if col in df_nw.columns:
                 df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
@@ -933,6 +934,49 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     total_cash_interest = aud_cash_interest + eur_cash_interest
     total_dividends     = n26_dividends + shares_dividends
 
+    # ── Per-platform market gain breakdown ─────────────────────────────────────
+    # Each platform: end_value - start_value from the snapshot columns.
+    # For N26 specifically we split: price gain (EUR) vs FX gain.
+    # FX gain on N26 = start_EUR_value * (fx_end - fx_start)
+    # Price gain on N26 = total_N26_AUD_change - FX_gain
+
+    def _snap(col, row):
+        return float(row[col]) if col in row.index and pd.notna(row[col]) else 0.0
+
+    platform_gains = {}
+    for col, label in [
+        ('Raiz_AUD',       '🌱 Raiz'),
+        ('Vanguard_AUD',   '📈 Vanguard'),
+        ('Shares_AUD',     '🇦🇺 ASX Shares'),
+        ('Commodities_AUD','🪙 Commodities'),
+        ('Super_AUD',      '🏛️ Super'),
+    ]:
+        gain = _snap(col, end_row) - _snap(col, start_row)
+        platform_gains[label] = gain
+
+    # N26: decompose into price gain vs FX gain
+    n26_start_aud = _snap('N26_AUD', start_row)
+    n26_end_aud   = _snap('N26_AUD', end_row)
+    n26_total_change_aud = n26_end_aud - n26_start_aud
+
+    n26_start_eur = _snap('N26_EUR_Value', start_row)
+    n26_end_eur   = _snap('N26_EUR_Value', end_row)
+
+    if n26_start_eur > 0 and n26_end_eur > 0:
+        # Reconstruct FX rates from stored values
+        fx_start = n26_start_aud / n26_start_eur if n26_start_eur != 0 else 0
+        fx_end   = n26_end_aud   / n26_end_eur   if n26_end_eur   != 0 else 0
+        # FX impact on N26 = start EUR exposure * FX rate change
+        n26_fx_gain   = n26_start_eur * (fx_end - fx_start)
+        # Price gain = change in EUR value * average FX rate
+        n26_eur_change = n26_end_eur - n26_start_eur
+        n26_price_gain = n26_eur_change * ((fx_start + fx_end) / 2)
+        platform_gains['🇪🇺 N26 (price, net of FX)'] = n26_price_gain
+        platform_gains['💱 N26 FX effect'] = n26_fx_gain
+    else:
+        # Fallback: no EUR data available, show total AUD change
+        platform_gains['🇪🇺 N26'] = n26_total_change_aud
+
     def _pct(v):
         return (v / abs(total_change) * 100) if total_change != 0 else 0
 
@@ -968,6 +1012,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'dividends_pct':     _pct(total_dividends),
         'fx_pct':            _pct(fx_impact),
         'days':              (end_row['Date'] - start_row['Date']).days,
+        'platform_gains':    platform_gains,
     }
 # ==================== ADDITION: CONTRIBUTION TRACKING ====================
 # Add these functions right after load_net_worth_history() and before the tabs
@@ -1483,6 +1528,44 @@ with tab0:
                 t3.markdown(_tile("🏦 Cash Interest", analysis['total_cash_interest'], analysis['interest_pct']),  unsafe_allow_html=True)
                 t4.markdown(_tile("💸 Dividends",     analysis['total_dividends'],     analysis['dividends_pct']), unsafe_allow_html=True)
                 t5.markdown(_tile("💱 FX Impact",     analysis['fx_impact'],           analysis['fx_pct']),        unsafe_allow_html=True)
+
+                # ── Per-platform market gain breakdown ─────────────────────
+                with st.expander("📋 Market Gains — by platform"):
+                    pg = analysis.get('platform_gains', {})
+                    if pg:
+                        total_pg = sum(pg.values())
+                        rows_pg = []
+                        for plat, gain in sorted(pg.items(), key=lambda x: abs(x[1]), reverse=True):
+                            pct_pg = (gain / abs(analysis['market_gains']) * 100) if analysis['market_gains'] != 0 else 0
+                            rows_pg.append({'Platform': plat, 'Gain (AUD)': gain, '% of Market Gain': pct_pg})
+                        df_pg = pd.DataFrame(rows_pg)
+                        st.dataframe(
+                            df_pg.style.format({'Gain (AUD)': '${:+,.0f}', '% of Market Gain': '{:+.1f}%'})
+                            .map(lambda v: 'color:#27ae60' if isinstance(v,(int,float)) and v > 0
+                                 else ('color:#e74c3c' if isinstance(v,(int,float)) and v < 0 else ''),
+                                 subset=['Gain (AUD)','% of Market Gain']),
+                            use_container_width=True, hide_index=True
+                        )
+                        # Mini bar chart
+                        df_pg_plot = df_pg[df_pg['Gain (AUD)'].abs() > 0].copy()
+                        if not df_pg_plot.empty:
+                            fig_pg = px.bar(
+                                df_pg_plot, x='Platform', y='Gain (AUD)',
+                                color='Gain (AUD)',
+                                color_continuous_scale=['#e74c3c','#95a5a6','#27ae60'],
+                                color_continuous_midpoint=0,
+                                text=df_pg_plot['Gain (AUD)'].apply(lambda v: f'${v:+,.0f}'),
+                            )
+                            fig_pg.update_traces(textposition='outside')
+                            fig_pg.add_hline(y=0, line_dash='dash', line_color='grey', opacity=0.4)
+                            fig_pg.update_layout(
+                                height=320, showlegend=False,
+                                yaxis_tickprefix='$', coloraxis_showscale=False,
+                                margin=dict(t=20, b=10)
+                            )
+                            st.plotly_chart(fig_pg, use_container_width=True)
+                    else:
+                        st.caption("Platform breakdown available after next snapshot save.")
 
                 # Interest/dividend detail expander
                 if analysis['total_cash_interest'] != 0 or analysis['total_dividends'] != 0:
