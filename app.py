@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -1373,389 +1372,378 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
 # TAB 0 — DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 with tab0:
+
+    # ── Always pull fresh values ──────────────────────────────────────────────
+    # These are already computed at module level from each platform's own cached
+    # function. We just assemble the total here — no re-fetching.
+    n26_aud     = current_market_value_eur * fx_now
+    raiz_aud    = raiz_total_aud
+    vdal_aud    = vanguard_total_aud
+    shares_aud  = shares_total_aud
+    metals_aud  = commodities_total_aud
+    super_aud   = super_total_aud
+    cash_aud    = cash_total_aud
+    total_nw    = n26_aud + raiz_aud + vdal_aud + shares_aud + metals_aud + super_aud + cash_aud
+    total_nw_eur = total_nw / fx_now if fx_now else 0
+
+    # ── SECTION 1: Total Net Worth ────────────────────────────────────────────
     st.header("🌐 Net Worth Dashboard")
-    european_aud = current_market_value_eur * fx_now
-    raiz_vanguard_aud = raiz_total_aud + vanguard_total_aud + shares_total_aud
-    total_net_worth_aud = european_aud + raiz_vanguard_aud + commodities_total_aud + super_total_aud + cash_total_aud
-    total_net_worth_eur = total_net_worth_aud / fx_now if fx_now else 0
-
-    st.markdown("### Total Net Worth")
-    c1, c2 = st.columns(2)
-    c1.metric("Total (AUD)", f"${total_net_worth_aud:,.2f}")
-    c2.metric("Total (EUR)", f"€{total_net_worth_eur:,.2f}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Net Worth (AUD)", f"${total_nw:,.2f}")
+    c2.metric("Total Net Worth (EUR)", f"€{total_nw_eur:,.2f}")
+    c3.metric("EUR/AUD Rate", f"{fx_now:.4f}", help="Live rate from Yahoo Finance")
     st.divider()
 
-    st.markdown("### Breakdown")
-    b1, b2, b3, b4, b5 = st.columns(5)
-    b1.metric("🇪🇺 N26 European", f"${european_aud:,.2f}", f"€{current_market_value_eur:,.2f}")
-    b2.metric("🌱 Raiz, Vanguard & Shares", f"${raiz_vanguard_aud:,.2f}",
-              f"Raiz ${raiz_total_aud:,.0f} + VDAL ${vanguard_total_aud:,.0f} + Shares ${shares_total_aud:,.0f}")
-    b3.metric("🪙 Commodities", f"${commodities_total_aud:,.2f}", "Metals (XAU/XAG/XPT)")
-    b4.metric("🏛️ Super", f"${super_total_aud:,.2f}", "Mercer SmartPath")
-    b5.metric("🏦 Cash & Savings", f"${cash_total_aud:,.2f}")
+    # ── SECTION 2: Platform Breakdown ─────────────────────────────────────────
+    st.markdown("### Platform Breakdown")
+    p1, p2, p3, p4, p5, p6, p7 = st.columns(7)
+    p1.metric("🇪🇺 N26",        f"${n26_aud:,.0f}",   f"€{current_market_value_eur:,.0f}")
+    p2.metric("🌱 Raiz",        f"${raiz_aud:,.0f}")
+    p3.metric("📈 Vanguard",    f"${vdal_aud:,.0f}")
+    p4.metric("🇦🇺 Shares",     f"${shares_aud:,.0f}")
+    p5.metric("🪙 Metals",      f"${metals_aud:,.0f}")
+    p6.metric("🏛️ Super",       f"${super_aud:,.0f}")
+    p7.metric("🏦 Cash",        f"${cash_aud:,.0f}")
     st.divider()
 
+    # ── SECTION 3: Allocation Charts ──────────────────────────────────────────
     st.markdown("### Asset Allocation")
-    col_pie, col_bar = st.columns(2)
     df_alloc = pd.DataFrame([
-        {"Category": "🇪🇺 N26 European", "Value (AUD)": european_aud},
-        {"Category": "🌱 Raiz, Vanguard & Shares", "Value (AUD)": raiz_vanguard_aud},
-        {"Category": "🪙 Commodities", "Value (AUD)": commodities_total_aud},
-        {"Category": "🏛️ Super", "Value (AUD)": super_total_aud},
-        {"Category": "🏦 Cash & Savings", "Value (AUD)": cash_total_aud},
+        {"Platform": "🇪🇺 N26 European",    "Value": n26_aud},
+        {"Platform": "🌱 Raiz ETFs",         "Value": raiz_aud},
+        {"Platform": "📈 Vanguard VDAL",     "Value": vdal_aud},
+        {"Platform": "🇦🇺 ASX Shares",       "Value": shares_aud},
+        {"Platform": "🪙 Precious Metals",   "Value": metals_aud},
+        {"Platform": "🏛️ Super",             "Value": super_aud},
+        {"Platform": "🏦 Cash & Savings",    "Value": cash_aud},
     ])
-    colours = ["#2980b9", "#27ae60", "#f39c12", "#8e44ad", "#e67e22"]
+    COLOURS = ["#2980b9","#27ae60","#2ecc71","#1abc9c","#f39c12","#8e44ad","#e67e22"]
+    col_pie, col_bar = st.columns(2)
     with col_pie:
-        fig_alloc_pie = px.pie(df_alloc, values="Value (AUD)", names="Category", hole=0.45,
-                               color_discrete_sequence=colours)
-        fig_alloc_pie.update_layout(height=350, margin=dict(t=20, b=20))
-        st.plotly_chart(fig_alloc_pie, use_container_width=True)
+        fig_pie = px.pie(df_alloc, values="Value", names="Platform", hole=0.45,
+                         color_discrete_sequence=COLOURS)
+        fig_pie.update_layout(height=350, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_pie, use_container_width=True)
     with col_bar:
-        fig_alloc_bar = px.bar(df_alloc, x="Category", y="Value (AUD)", color="Category",
-                               color_discrete_sequence=colours,
-                               labels={"Value (AUD)": "AUD $"})
-        fig_alloc_bar.update_layout(height=350, showlegend=False, yaxis_tickprefix="$", margin=dict(t=20, b=20))
-        st.plotly_chart(fig_alloc_bar, use_container_width=True)
+        fig_bar = px.bar(df_alloc, x="Platform", y="Value", color="Platform",
+                         color_discrete_sequence=COLOURS)
+        fig_bar.update_layout(height=350, showlegend=False,
+                              yaxis_tickprefix="$", margin=dict(t=10, b=10))
+        st.plotly_chart(fig_bar, use_container_width=True)
     st.divider()
 
+    # ── SECTION 4: Net Worth History ──────────────────────────────────────────
     st.markdown("### Net Worth History")
-    today = date.today()
-    import calendar
-    last_day = calendar.monthrange(today.year, today.month)[1]
-    if today.day == last_day:
-        ok, err = save_net_worth_snapshot(total_net_worth_aud, force=False)
-        if ok:
-            st.success(f"✅ Monthly snapshot saved: ${total_net_worth_aud:,.2f} AUD")
-    df_history = load_net_worth_history()
-    if not df_history.empty:
-        fig_history = go.Figure()
-        fig_history.add_trace(go.Scatter(
-            x=df_history['Date'], y=df_history['Total_AUD'],
+
+    # Auto-save on last day of month (silent, no force)
+    _today = date.today()
+    import calendar as _cal
+    if _today.day == _cal.monthrange(_today.year, _today.month)[1]:
+        _ok, _err = save_net_worth_snapshot(total_nw, force=False)
+        if _ok:
+            st.success(f"✅ Monthly snapshot auto-saved: ${total_nw:,.2f}")
+
+    # Load history — always fresh on this tab
+    load_net_worth_history.clear()
+    df_hist = load_net_worth_history()
+
+    if df_hist.empty:
+        st.info("No snapshots yet. Click 'Save Snapshot' below to start tracking.")
+    else:
+        # History line chart
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(
+            x=df_hist['Date'], y=df_hist['Total_AUD'],
             mode='lines+markers+text',
-            name='Net Worth (AUD)',
             line=dict(color='#2980b9', width=2),
             marker=dict(size=10, color='#2980b9'),
             fill='tozeroy', fillcolor='rgba(41,128,185,0.08)',
-            text=[f"${v:,.0f}" for v in df_history['Total_AUD']],
+            text=[f"${v:,.0f}" for v in df_hist['Total_AUD']],
             textposition='top center',
             textfont=dict(size=11, color='#2980b9'),
-            hovertemplate='%{x|%Y-%m-%d}<br><b>$%{y:,.2f} AUD</b><extra></extra>'
+            hovertemplate='%{x|%Y-%m-%d}<br><b>$%{y:,.2f}</b><extra></extra>'
         ))
-        # Delta annotation between first and last
-        if len(df_history) > 1:
-            delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
-            delta_pct = delta / df_history['Total_AUD'].iloc[0] * 100
-            delta_colour = "#27ae60" if delta >= 0 else "#e74c3c"
-            sign = "+" if delta >= 0 else ""
-            fig_history.add_annotation(
-                x=df_history['Date'].iloc[-1], y=df_history['Total_AUD'].iloc[-1],
-                text=f"  {sign}${delta:,.0f} ({sign}{delta_pct:.2f}%) since {df_history['Date'].iloc[0].strftime('%d %b %Y')}",
+        if len(df_hist) > 1:
+            _delta    = df_hist['Total_AUD'].iloc[-1] - df_hist['Total_AUD'].iloc[0]
+            _delta_pct = _delta / df_hist['Total_AUD'].iloc[0] * 100
+            _col      = "#27ae60" if _delta >= 0 else "#e74c3c"
+            _sign     = "+" if _delta >= 0 else ""
+            fig_hist.add_annotation(
+                x=df_hist['Date'].iloc[-1], y=df_hist['Total_AUD'].iloc[-1],
+                text=f"  {_sign}${_delta:,.0f} ({_sign}{_delta_pct:.1f}%) "
+                     f"since {df_hist['Date'].iloc[0].strftime('%d %b %Y')}",
                 showarrow=False, xanchor='left', yanchor='middle',
-                font=dict(size=12, color=delta_colour)
+                font=dict(size=12, color=_col)
             )
-        fig_history.update_layout(
-            height=400, hovermode="x unified",
-            yaxis=dict(title="AUD $", tickprefix="$"),
-            margin=dict(t=30, b=30, r=200))
-        st.plotly_chart(fig_history, use_container_width=True)
-        # Summary stats
-        # Summary stats with attribution (replace the existing h1,h2,h3 section)
-    if len(df_history) > 1:
-        h1, h2, h3, h4 = st.columns(4)
-        h1.metric("First Recorded", f"${df_history['Total_AUD'].iloc[0]:,.2f}",
-                  df_history['Date'].iloc[0].strftime('%d %b %Y'))
-        h2.metric("Latest", f"${df_history['Total_AUD'].iloc[-1]:,.2f}",
-                  df_history['Date'].iloc[-1].strftime('%d %b %Y'))
-        delta = df_history['Total_AUD'].iloc[-1] - df_history['Total_AUD'].iloc[0]
-        h3.metric("Total Change", f"${delta:+,.2f}",
-                  f"{delta/df_history['Total_AUD'].iloc[0]*100:+.2f}%",
-                  delta_color="normal" if delta >= 0 else "inverse")
-        
-        # Show contribution attribution if available
-        if 'Contributions_AUD' in df_history.columns and len(df_history) > 1:
-            total_contributions = df_history['Contributions_AUD'].sum()
-            total_gains = df_history['Market_Gains_AUD'].sum() if 'Market_Gains_AUD' in df_history.columns else 0
-            total_fx = df_history['FX_Impact_AUD'].sum() if 'FX_Impact_AUD' in df_history.columns else 0
-            
-            h4.metric("Contributions", f"${total_contributions:+,.2f}",
-                      f"Market: ${total_gains:+,.2f} / FX: ${total_fx:+,.2f}")
+        fig_hist.update_layout(height=380, hovermode="x unified",
+                               yaxis=dict(title="AUD $", tickprefix="$"),
+                               margin=dict(t=20, b=20, r=220))
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Summary stats row
+        if len(df_hist) > 1:
+            _first = df_hist['Total_AUD'].iloc[0]
+            _last  = df_hist['Total_AUD'].iloc[-1]
+            _chg   = _last - _first
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("First Recorded",   f"${_first:,.0f}", df_hist['Date'].iloc[0].strftime('%d %b %Y'))
+            s2.metric("Latest Snapshot",  f"${_last:,.0f}",  df_hist['Date'].iloc[-1].strftime('%d %b %Y'))
+            s3.metric("Total Change",     f"${_chg:+,.0f}",  f"{_chg/_first*100:+.1f}%",
+                      delta_color="normal" if _chg >= 0 else "inverse")
+            # Cumulative contributions if available
+            if 'Contributions_AUD' in df_hist.columns:
+                _contrib = df_hist['Contributions_AUD'].sum()
+                _gains   = df_hist['Market_Gains_AUD'].sum() if 'Market_Gains_AUD' in df_hist.columns else 0
+                s4.metric("Total Contributions", f"${_contrib:+,.0f}",
+                          f"Market gains: ${_gains:+,.0f}")
+
     st.divider()
-    
-    # ==================== PERIOD ANALYSIS SECTION ====================
+
+    # ── SECTION 5: Period Analysis ────────────────────────────────────────────
     st.markdown("### 🔍 Period Analysis — What Drove the Change?")
-    st.caption("Select a date range to analyze how contributions, market performance, and currency movements affected your net worth.")
-    
-    if not df_history.empty and len(df_history) > 1:
-        # Date range selector
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            min_date = df_history['Date'].min().date()
-            max_date = df_history['Date'].max().date()
-            start_date = st.date_input(
-                "Start Date",
-                value=df_history['Date'].iloc[0].date(),
-                min_value=min_date,
-                max_value=max_date,
-                key="analysis_start"
-            )
-        with col_date2:
-            end_date = st.date_input(
-                "End Date",
-                value=df_history['Date'].iloc[-1].date(),
-                min_value=min_date,
-                max_value=max_date,
-                key="analysis_end"
-            )
-        
-        # Ensure start_date <= end_date
-        if start_date > end_date:
-            st.error("Start date must be before end date")
+
+    if df_hist.empty or len(df_hist) < 2:
+        st.info("Save at least two snapshots to enable period analysis.")
+    else:
+        _min_d = df_hist['Date'].min().date()
+        _max_d = df_hist['Date'].max().date()
+
+        # Auto-reset date range when new snapshot detected
+        if st.session_state.get('_dash_max_date') != _max_d:
+            st.session_state['_dash_max_date']   = _max_d
+            st.session_state['_dash_start_date'] = _min_d
+            st.session_state['_dash_end_date']   = _max_d
+
+        dc1, dc2, dc3 = st.columns([2, 2, 1])
+        with dc1:
+            _sel_start = st.date_input("From", min_value=_min_d, max_value=_max_d,
+                                       key="_dash_start_date")
+        with dc2:
+            _sel_end = st.date_input("To", min_value=_min_d, max_value=_max_d,
+                                     key="_dash_end_date")
+        with dc3:
+            st.markdown("<div style='margin-top:26px'>", unsafe_allow_html=True)
+            if st.button("🔄 Refresh", key="_dash_refresh"):
+                load_net_worth_history.clear()
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        if _sel_start >= _sel_end:
+            st.warning("Start date must be before end date.")
         else:
-            # Get analysis
-            analysis = analyze_net_worth_change(df_history, start_date, end_date)
-            
-            if analysis:
-                # Summary metrics
-                st.markdown(f"#### 📅 {analysis['start_date'].strftime('%d %b %Y')} → {analysis['end_date'].strftime('%d %b %Y')} ({analysis['days']} days)")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric(
-                        "Starting Net Worth", 
-                        f"${analysis['start_value']:,.2f}",
-                        help=f"Value on {analysis['start_date'].strftime('%d %b %Y')}"
-                    )
-                with col2:
-                    st.metric(
-                        "Ending Net Worth", 
-                        f"${analysis['end_value']:,.2f}",
-                        delta=f"${analysis['total_change']:+,.2f} ({analysis['total_change_pct']:+.2f}%)",
-                        delta_color="normal" if analysis['total_change'] >= 0 else "inverse"
-                    )
-                with col3:
-                    st.metric(
-                        "Period Length", 
-                        f"{analysis['days']} days",
-                        f"{(analysis['days']/365):.2f} years"
-                    )
-                
-                st.divider()
+            analysis = analyze_net_worth_change(df_hist, _sel_start, _sel_end)
 
-                # ── Attribution tiles ─────────────────────────────────────
-                st.markdown("#### 📊 Change Attribution")
-
-                # Warn if period contains old zero-attribution rows
+            if not analysis:
+                st.warning("Not enough data points in this range — try a wider date range.")
+            else:
+                # Warn if old zero-attribution rows are in range
                 if analysis.get('has_zero_rows'):
                     st.warning(
-                        "⚠️ This period includes snapshots saved before attribution tracking was "
-                        "introduced. Those rows contribute to the net worth total but not to the "
-                        "component breakdown — clear columns C–G and P–T in those old rows to fix."
+                        "⚠️ Some snapshots in this range have no attribution data "
+                        "(saved before tracking was introduced). "
+                        "Clear columns C–G and P–T in those rows to remove this warning."
                     )
 
-                def _tile(label, value, pct):
+                # ── 5a. Summary row ───────────────────────────────────────
+                st.markdown(
+                    f"#### {analysis['start_date'].strftime('%d %b %Y')} → "
+                    f"{analysis['end_date'].strftime('%d %b %Y')}  "
+                    f"({analysis['days']} days)"
+                )
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Starting Net Worth", f"${analysis['start_value']:,.2f}")
+                m2.metric("Ending Net Worth",   f"${analysis['end_value']:,.2f}",
+                          delta=f"${analysis['total_change']:+,.0f} "
+                                f"({analysis['total_change_pct']:+.2f}%)",
+                          delta_color="normal" if analysis['total_change'] >= 0 else "inverse")
+                m3.metric("Period", f"{analysis['days']} days",
+                          f"{analysis['days']/365:.2f} years")
+                st.divider()
+
+                # ── 5b. Attribution tiles ─────────────────────────────────
+                st.markdown("#### 📊 Change Attribution")
+                st.caption(
+                    "These five components sum exactly to the total change. "
+                    "Contributions = everything not explained by market moves, "
+                    "interest, dividends or FX (i.e. new money deposited)."
+                )
+
+                def _tile(icon, label, value, pct):
                     c = "#27ae60" if value >= 0 else "#e74c3c"
-                    return (f'<div style="text-align:center;padding:10px;background:#f8f9fa;'
-                            f'border-radius:10px;height:90px;">'
-                            f'<div style="font-size:0.85rem;font-weight:600;">{label}</div>'
-                            f'<div style="font-size:1.15rem;color:{c};font-weight:bold;">${value:+,.0f}</div>'
-                            f'<div style="font-size:0.7rem;color:#888;">{abs(pct):.0f}% of change</div>'
-                            f'</div>')
+                    return (
+                        f'<div style="text-align:center;padding:12px 6px;'
+                        f'background:#f8f9fa;border-radius:10px;min-height:95px;">'
+                        f'<div style="font-size:1.4rem">{icon}</div>'
+                        f'<div style="font-size:0.8rem;font-weight:600;margin:2px 0">{label}</div>'
+                        f'<div style="font-size:1.1rem;color:{c};font-weight:bold">${value:+,.0f}</div>'
+                        f'<div style="font-size:0.7rem;color:#888">{abs(pct):.0f}% of change</div>'
+                        f'</div>'
+                    )
 
                 t1, t2, t3, t4, t5 = st.columns(5)
-                t1.markdown(_tile("📈 Market Gains",  analysis['market_gains'],       analysis['market_pct']),    unsafe_allow_html=True)
-                t2.markdown(_tile("💰 Contributions", analysis['total_contributions'], analysis['contrib_pct']),   unsafe_allow_html=True)
-                t3.markdown(_tile("🏦 Cash Interest", analysis['total_cash_interest'], analysis['interest_pct']),  unsafe_allow_html=True)
-                t4.markdown(_tile("💸 Dividends",     analysis['total_dividends'],     analysis['dividends_pct']), unsafe_allow_html=True)
-                t5.markdown(_tile("💱 FX Impact",     analysis['fx_impact'],           analysis['fx_pct']),        unsafe_allow_html=True)
+                t1.markdown(_tile("📈","Market Gains",    analysis['market_gains'],         analysis['market_pct']),    unsafe_allow_html=True)
+                t2.markdown(_tile("💰","Contributions",   analysis['total_contributions'],   analysis['contrib_pct']),   unsafe_allow_html=True)
+                t3.markdown(_tile("🏦","Cash Interest",   analysis['total_cash_interest'],   analysis['interest_pct']),  unsafe_allow_html=True)
+                t4.markdown(_tile("💸","Dividends",       analysis['total_dividends'],       analysis['dividends_pct']), unsafe_allow_html=True)
+                t5.markdown(_tile("💱","FX Impact",       analysis['fx_impact'],             analysis['fx_pct']),        unsafe_allow_html=True)
 
-                # ── Per-platform market gain breakdown ─────────────────────
-                with st.expander("📋 Market Gains — by platform"):
+                # ── 5c. Platform breakdown under Market Gains ─────────────
+                with st.expander("📋 Market Gains — by platform (net of FX)"):
                     pg = analysis.get('platform_gains', {})
                     if pg:
-                        total_pg = sum(pg.values())
-                        rows_pg = []
-                        for plat, gain in sorted(pg.items(), key=lambda x: abs(x[1]), reverse=True):
-                            pct_pg = (gain / abs(analysis['market_gains']) * 100) if analysis['market_gains'] != 0 else 0
-                            rows_pg.append({'Platform': plat, 'Gain (AUD)': gain, '% of Market Gain': pct_pg})
-                        df_pg = pd.DataFrame(rows_pg)
+                        _rows = [
+                            {"Platform": k, "Gain (AUD)": v,
+                             "% of Mkt Gain": (v/analysis['market_gains']*100
+                                               if analysis['market_gains'] != 0 else 0)}
+                            for k, v in sorted(pg.items(), key=lambda x: abs(x[1]), reverse=True)
+                        ]
+                        _df_pg = pd.DataFrame(_rows)
                         st.dataframe(
-                            df_pg.style.format({'Gain (AUD)': '${:+,.0f}', '% of Market Gain': '{:+.1f}%'})
-                            .map(lambda v: 'color:#27ae60' if isinstance(v,(int,float)) and v > 0
-                                 else ('color:#e74c3c' if isinstance(v,(int,float)) and v < 0 else ''),
-                                 subset=['Gain (AUD)','% of Market Gain']),
+                            _df_pg.style
+                            .format({"Gain (AUD)": "${:+,.0f}", "% of Mkt Gain": "{:+.1f}%"})
+                            .map(lambda v: "color:#27ae60" if isinstance(v,(int,float)) and v>0
+                                 else ("color:#e74c3c" if isinstance(v,(int,float)) and v<0 else ""),
+                                 subset=["Gain (AUD)","% of Mkt Gain"]),
                             use_container_width=True, hide_index=True
                         )
-                        # Mini bar chart
-                        df_pg_plot = df_pg[df_pg['Gain (AUD)'].abs() > 0].copy()
-                        if not df_pg_plot.empty:
-                            fig_pg = px.bar(
-                                df_pg_plot, x='Platform', y='Gain (AUD)',
-                                color='Gain (AUD)',
-                                color_continuous_scale=['#e74c3c','#95a5a6','#27ae60'],
+                        _df_plot = _df_pg[_df_pg["Gain (AUD)"].abs() > 0]
+                        if not _df_plot.empty:
+                            _fig_pg = px.bar(
+                                _df_plot, x="Platform", y="Gain (AUD)",
+                                color="Gain (AUD)",
+                                color_continuous_scale=["#e74c3c","#95a5a6","#27ae60"],
                                 color_continuous_midpoint=0,
-                                text=df_pg_plot['Gain (AUD)'].apply(lambda v: f'${v:+,.0f}'),
+                                text=_df_plot["Gain (AUD)"].apply(lambda v: f"${v:+,.0f}")
                             )
-                            fig_pg.update_traces(textposition='outside')
-                            fig_pg.add_hline(y=0, line_dash='dash', line_color='grey', opacity=0.4)
-                            fig_pg.update_layout(
-                                height=320, showlegend=False,
-                                yaxis_tickprefix='$', coloraxis_showscale=False,
-                                margin=dict(t=20, b=10)
-                            )
-                            st.plotly_chart(fig_pg, use_container_width=True)
+                            _fig_pg.update_traces(textposition="outside")
+                            _fig_pg.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.4)
+                            _fig_pg.update_layout(height=300, showlegend=False,
+                                                  coloraxis_showscale=False,
+                                                  yaxis_tickprefix="$",
+                                                  margin=dict(t=10,b=10))
+                            st.plotly_chart(_fig_pg, use_container_width=True)
                     else:
-                        st.caption("Platform breakdown available after next snapshot save.")
+                        st.caption("Platform breakdown available after next snapshot.")
 
-                # Interest/dividend detail expander
-                if analysis['total_cash_interest'] != 0 or analysis['total_dividends'] != 0:
-                    with st.expander("📋 Interest & Dividend detail"):
-                        st.markdown(
-                            f"**AUD interest:** ${analysis['aud_cash_interest']:+,.2f} &nbsp;|&nbsp; "
-                            f"**EUR interest:** ${analysis['eur_cash_interest']:+,.2f} &nbsp;|&nbsp; "
-                            f"**N26 dividends:** ${analysis['n26_dividends']:+,.2f} &nbsp;|&nbsp; "
-                            f"**Shares dividends:** ${analysis['shares_dividends']:+,.2f}"
-                        )
+                # Interest/dividend detail
+                with st.expander("📋 Interest & Dividend detail"):
+                    _id1, _id2, _id3, _id4 = st.columns(4)
+                    _id1.metric("AUD Cash Interest", f"${analysis['aud_cash_interest']:+,.2f}")
+                    _id2.metric("EUR Cash Interest", f"${analysis['eur_cash_interest']:+,.2f}")
+                    _id3.metric("N26 Dividends",     f"${analysis['n26_dividends']:+,.2f}")
+                    _id4.metric("Shares Dividends",  f"${analysis['shares_dividends']:+,.2f}")
 
                 st.divider()
 
-                # ── Proper waterfall chart ────────────────────────────────
-                st.markdown("#### 📊 Visual Breakdown — Waterfall")
-                components = [
+                # ── 5d. Waterfall chart ───────────────────────────────────
+                st.markdown("#### 📊 Visual Breakdown")
+                _wf_components = [
                     ("Market Gains",    analysis['market_gains']),
                     ("Contributions",   analysis['total_contributions']),
                     ("Cash Interest",   analysis['total_cash_interest']),
                     ("Dividends",       analysis['total_dividends']),
                     ("FX Impact",       analysis['fx_impact']),
                 ]
-                # Build a true Plotly waterfall
-                wf_labels  = ["Start"] + [c[0] for c in components] + ["End"]
-                wf_values  = [analysis['start_value']] + [c[1] for c in components] + [analysis['end_value']]
-                wf_measure = ["absolute"] + ["relative"] * len(components) + ["total"]
-                wf_colors  = ["#2980b9"] + ["#27ae60" if v >= 0 else "#e74c3c" for _, v in components] + ["#2980b9"]
-
-                fig_wf = go.Figure(go.Waterfall(
+                _wf_labels  = ["Start"] + [c[0] for c in _wf_components] + ["End"]
+                _wf_values  = ([analysis['start_value']]
+                               + [c[1] for c in _wf_components]
+                               + [analysis['end_value']])
+                _wf_measure = ["absolute"] + ["relative"]*len(_wf_components) + ["total"]
+                _fig_wf = go.Figure(go.Waterfall(
                     orientation="v",
-                    measure=wf_measure,
-                    x=wf_labels,
-                    y=wf_values,
-                    text=[f"${v:,.0f}" for v in wf_values],
+                    measure=_wf_measure,
+                    x=_wf_labels,
+                    y=_wf_values,
+                    text=[f"${v:,.0f}" for v in _wf_values],
                     textposition="outside",
-                    connector=dict(line=dict(color="rgba(150,150,150,0.4)", width=1, dash="dot")),
+                    connector=dict(line=dict(color="rgba(150,150,150,0.3)", width=1, dash="dot")),
                     increasing=dict(marker_color="#27ae60"),
                     decreasing=dict(marker_color="#e74c3c"),
                     totals=dict(marker_color="#2980b9"),
                 ))
-                fig_wf.update_layout(
-                    title=f"${analysis['start_value']:,.0f} → ${analysis['end_value']:,.0f}  "
-                          f"({'+'if analysis['total_change']>=0 else ''}{analysis['total_change']:,.0f})",
+                _fig_wf.update_layout(
+                    title=(f"${analysis['start_value']:,.0f} → ${analysis['end_value']:,.0f}  "
+                           f"({'+'if analysis['total_change']>=0 else ''}"
+                           f"{analysis['total_change']:,.0f})"),
                     yaxis=dict(title="AUD $", tickprefix="$"),
                     height=420, showlegend=False,
                     margin=dict(t=50, b=20)
                 )
-                st.plotly_chart(fig_wf, use_container_width=True)
+                st.plotly_chart(_fig_wf, use_container_width=True)
 
-                st.divider()
-
-                # ── Cumulative view over the selected period ──────────────
+                # ── 5e. Cumulative stacked view ───────────────────────────
                 st.markdown("#### 📈 Cumulative Change Over Period")
-                    
-                # Filter data for the selected period
-                period_mask = (df_history['Date'].dt.date >= start_date) & (df_history['Date'].dt.date <= end_date)
-                df_period_data = df_history[period_mask].copy()
+                _mask_p = ((df_hist['Date'].dt.date >= _sel_start) &
+                           (df_hist['Date'].dt.date <= _sel_end))
+                _df_p = df_hist[_mask_p].sort_values('Date').copy()
+                if len(_df_p) > 1 and 'Contributions_AUD' in _df_p.columns:
+                    _df_p['Cum_Contributions'] = _df_p['Contributions_AUD'].cumsum()
+                    _df_p['Cum_Market']        = _df_p['Market_Gains_AUD'].cumsum() if 'Market_Gains_AUD' in _df_p.columns else 0
+                    _df_p['Cum_Interest']      = (_df_p.get('AUD_Cash_Interest_AUD', 0) + _df_p.get('EUR_Cash_Interest_AUD', 0)).cumsum()
+                    _fig_cum = go.Figure()
+                    _base = float(_df_p.iloc[0]['Total_AUD'])
+                    _fig_cum.add_trace(go.Scatter(
+                        x=_df_p['Date'],
+                        y=_base + _df_p['Cum_Contributions'],
+                        name='Base + Contributions', mode='lines',
+                        line=dict(color='#27ae60', width=1.5),
+                        fill=None,
+                    ))
+                    _fig_cum.add_trace(go.Scatter(
+                        x=_df_p['Date'], y=_df_p['Total_AUD'],
+                        name='Actual Net Worth', mode='lines',
+                        line=dict(color='#2980b9', width=2.5),
+                        fill='tonexty', fillcolor='rgba(41,128,185,0.15)',
+                        hovertemplate='Actual: $%{y:,.0f}<extra></extra>'
+                    ))
+                    _fig_cum.update_layout(
+                        height=320, hovermode='x unified',
+                        yaxis=dict(tickprefix="$"),
+                        legend=dict(orientation="h", y=1.05),
+                        margin=dict(t=30, b=10)
+                    )
+                    st.plotly_chart(_fig_cum, use_container_width=True)
 
-                if len(df_period_data) > 1 and 'Contributions_AUD' in df_period_data.columns:
-                        # Calculate cumulative contributions and gains
-                        df_period_data = df_period_data.sort_values('Date')
-                        df_period_data['Cumulative_Contributions'] = df_period_data['Contributions_AUD'].cumsum()
-                        df_period_data['Cumulative_Market_Gains'] = df_period_data['Market_Gains_AUD'].cumsum()
-                        df_period_data['Cumulative_FX'] = df_period_data['FX_Impact_AUD'].cumsum()
-                        
-                        fig_cumulative = go.Figure()
-                        
-                        # Starting point
-                        start_value_cum = df_period_data.iloc[0]['Total_AUD']
-                        
-                        # Add stacked area
-                        fig_cumulative.add_trace(go.Scatter(
-                            x=df_period_data['Date'],
-                            y=start_value_cum + df_period_data['Cumulative_Contributions'],
-                            mode='lines',
-                            name='Starting + Contributions',
-                            line=dict(width=0.5, color='#27ae60'),
-                            fill=None,
-                            stackgroup='one',
-                            hovertemplate='Base + Contributions: $%{y:,.0f}<extra></extra>'
-                        ))
-                        
-                        fig_cumulative.add_trace(go.Scatter(
-                            x=df_period_data['Date'],
-                            y=df_period_data['Total_AUD'],
-                            mode='lines',
-                            name='Actual Net Worth',
-                            line=dict(color='#2980b9', width=2.5),
-                            fill='tonexty',
-                            fillcolor='rgba(41,128,185,0.2)',
-                            hovertemplate='Actual: $%{y:,.0f}<extra></extra>'
-                        ))
-                        
-                        fig_cumulative.update_layout(
-                            title="Cumulative Impact: How Each Component Built Up",
-                            xaxis_title="Date",
-                            yaxis_title="Net Worth (AUD)",
-                            yaxis_tickprefix="$",
-                            height=350,
-                            hovermode='x unified',
-                            legend=dict(orientation="h", y=1.05)
-                        )
-                        
-                        st.plotly_chart(fig_cumulative, use_container_width=True)
-                        
-                        # Best/worst periods
-                        st.markdown("#### 🏆 Best & Worst Periods")
-                        col_best, col_worst = st.columns(2)
-                        
-                        # Find best month
-                        df_history_copy = df_history.copy()
-                        df_history_copy['Monthly_Change'] = df_history_copy['Total_AUD'].diff()
-                        df_history_copy['Monthly_Change_Pct'] = df_history_copy['Total_AUD'].pct_change() * 100
-                        
-                        best_month = df_history_copy.loc[df_history_copy['Monthly_Change'].idxmax()] if not df_history_copy['Monthly_Change'].isna().all() else None
-                        worst_month = df_history_copy.loc[df_history_copy['Monthly_Change'].idxmin()] if not df_history_copy['Monthly_Change'].isna().all() else None
-                        
-                        with col_best:
-                            if best_month is not None and pd.notna(best_month['Monthly_Change']):
-                                st.metric(
-                                    "📈 Best Month",
-                                    f"${best_month['Monthly_Change']:+,.2f}",
-                                    f"{best_month['Monthly_Change_Pct']:+.1f}%",
-                                    help=f"Month ending {best_month['Date'].strftime('%b %Y')}"
-                                )
-                                if 'Contributions_AUD' in best_month.index:
-                                    st.caption(f"Contributions: ${best_month['Contributions_AUD']:,.0f} | Market: ${best_month['Market_Gains_AUD']:,.0f}")
-                        
-                        with col_worst:
-                            if worst_month is not None and pd.notna(worst_month['Monthly_Change']):
-                                st.metric(
-                                    "📉 Worst Month",
-                                    f"${worst_month['Monthly_Change']:+,.2f}",
-                                    f"{worst_month['Monthly_Change_Pct']:+.1f}%",
-                                    help=f"Month ending {worst_month['Date'].strftime('%b %Y')}"
-                                )
-                                if 'Contributions_AUD' in worst_month.index:
-                                    st.caption(f"Contributions: ${worst_month['Contributions_AUD']:,.0f} | Market: ${worst_month['Market_Gains_AUD']:,.0f}")
+                # ── 5f. Best / Worst months ───────────────────────────────
+                if len(df_hist) > 2:
+                    st.markdown("#### 🏆 Best & Worst Months (all history)")
+                    _df_hw = df_hist.copy()
+                    _df_hw['Monthly_Change'] = _df_hw['Total_AUD'].diff()
+                    _df_hw['Monthly_Pct']    = _df_hw['Total_AUD'].pct_change() * 100
+                    _bm = _df_hw.loc[_df_hw['Monthly_Change'].idxmax()]
+                    _wm = _df_hw.loc[_df_hw['Monthly_Change'].idxmin()]
+                    _hw1, _hw2 = st.columns(2)
+                    with _hw1:
+                        st.metric("📈 Best Month",
+                                  f"${_bm['Monthly_Change']:+,.0f}",
+                                  f"{_bm['Monthly_Pct']:+.1f}%",
+                                  help=f"Month ending {_bm['Date'].strftime('%b %Y')}")
+                    with _hw2:
+                        st.metric("📉 Worst Month",
+                                  f"${_wm['Monthly_Change']:+,.0f}",
+                                  f"{_wm['Monthly_Pct']:+.1f}%",
+                                  help=f"Month ending {_wm['Date'].strftime('%b %Y')}")
+
+    st.divider()
+
+    # ── SECTION 6: Save Snapshot ──────────────────────────────────────────────
+    _sc1, _sc2 = st.columns([1, 3])
+    with _sc1:
+        if st.button("💾 Save Snapshot Now", type="primary", key="dash_save_btn"):
+            _ok, _err = save_net_worth_snapshot(total_nw, force=True)
+            if _ok:
+                load_net_worth_history.clear()
+                st.rerun()
             else:
-                st.warning("Not enough data points in the selected period. Please select a wider range or save more snapshots.")
-    else:
-        st.info("📊 Save at least two monthly snapshots to see period analysis. Click 'Save Snapshot Now' below.")    
-    # Save Snapshot button — st.rerun() works correctly because
-    # password_correct is stored in session_state which survives reruns
-    if st.button("💾 Save Snapshot Now", key="dashboard_snapshot_btn"):
-        ok, err = save_net_worth_snapshot(total_net_worth_aud, force=True)
-        if ok:
-            load_net_worth_history.clear()
-            st.rerun()
-        else:
-            st.error(f"Could not save: {err}")
+                st.error(f"Save failed: {_err}")
+    with _sc2:
+        st.caption(
+            f"Saves current values: N26 ${n26_aud:,.0f} · "
+            f"Raiz ${raiz_aud:,.0f} · Vanguard ${vdal_aud:,.0f} · "
+            f"Shares ${shares_aud:,.0f} · Metals ${metals_aud:,.0f} · "
+            f"Super ${super_aud:,.0f} · Cash ${cash_aud:,.0f} · "
+            f"**Total ${total_nw:,.0f}**"
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — N26 PERFORMANCE
