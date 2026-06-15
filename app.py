@@ -3132,7 +3132,7 @@ with tab9:
         st.metric("Super", f"${super_total_aud:,.2f}")
     with col_p3:
         st.metric("Cash Total", f"${cash_total_aud:,.2f}")
-        st.metric("Total Net Worth", f"${total_net_worth_aud:,.2f}")
+        st.metric("Total Net Worth", f"${total_nw:,.2f}")
     
     st.divider()
     
@@ -3473,7 +3473,7 @@ with tab10:
     # ── PROJECTION ENGINE ──────────────────────────────────────────────────────
     st.markdown("### 📊 5-Year Net Worth Projection")
 
-    start_nw = total_net_worth_aud
+    start_nw = total_nw
 
     def annual_to_monthly(pct):
         return (1 + pct/100) ** (1/12) - 1
@@ -4070,7 +4070,7 @@ with tab10:
         st.divider()
         st.markdown("#### 💰 Impact on Total 5-Year Net Worth")
         
-        current_proj_end = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_net_worth_aud
+        current_proj_end = df_proj.iloc[-1]['Projected NW'] if not df_proj.empty else total_nw
         new_proj_end = current_proj_end + advantage
         
         col_imp1, col_imp2, col_imp3 = st.columns(3)
