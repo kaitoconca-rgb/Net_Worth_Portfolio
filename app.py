@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -190,77 +191,115 @@ df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
 
 # ── RAIZ TOTAL (hoisted for dashboard) ───────────────────────────────────────
 @st.cache_data(ttl=300)
-def get_raiz_total_for_dashboard():
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaIoBaseDownload
-        import io
-        gs = st.secrets["gdrive"]
-        creds_dict = {
-            "type": gs.get("type", "service_account"),
-            "project_id": gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key": gs["private_key"],
-            "client_email": gs["client_email"],
-            "client_id": gs.get("client_id", ""),
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
-        service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
-        ).execute()
-        files = results.get("files", [])
-        if not files:
-            return 0.0
-        request = service.files().get_media(fileId=files[0]["id"])
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        buffer.seek(0)
-        df = pd.read_csv(buffer)
-        df.columns = [c.strip() for c in df.columns]
-        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
-        df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
-        df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
-        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
-        IVV_SPLIT_DATE = pd.Timestamp('2022-12-09')
-        IVV_SPLIT_FACTOR = 15.317277
-        ivv_pre = (df['Instrument Code'] == 'IVV') & (df['Trade Date'] < IVV_SPLIT_DATE)
-        df.loc[ivv_pre, 'Quantity'] = df.loc[ivv_pre, 'Quantity'] * IVV_SPLIT_FACTOR
-        df.loc[ivv_pre, 'Price'] = df.loc[ivv_pre, 'Price'] / IVV_SPLIT_FACTOR
-        df.loc[df['Transaction Type'] == 'SELL', 'Quantity'] = -df['Quantity'].abs()
-        RAIZ_TICKERS = {
-            'AAA': 'AAA.AX', 'STW': 'STW.AX', 'IAA': 'IAA.AX',
-            'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
-        }
-        holdings = df.groupby('Instrument Code')['Quantity'].sum().reset_index()
-        holdings = holdings[holdings['Quantity'].abs() > 0.0001]
-        total = 0.0
-        for _, row in holdings.iterrows():
-            code = row['Instrument Code']
-            ticker = RAIZ_TICKERS.get(code)
-            price = None
-            if ticker:
+def _load_raiz_csv_raw():
+    """
+    Download the Raiz CSV from Google Drive and return a cleaned DataFrame.
+    Single source of truth — used by both the dashboard total and Tab 5.
+    """
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    import io
+    gs = st.secrets["gdrive"]
+    creds = service_account.Credentials.from_service_account_info({
+        "type": gs.get("type", "service_account"),
+        "project_id": gs["project_id"],
+        "private_key_id": gs["private_key_id"],
+        "private_key": gs["private_key"],
+        "client_email": gs["client_email"],
+        "client_id": gs.get("client_id", ""),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    folder_id = st.secrets["gdrive"]["raiz_folder_id"]
+    results = service.files().list(
+        q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
+        orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
+    ).execute()
+    files = results.get("files", [])
+    if not files:
+        return pd.DataFrame(), ""
+    latest = files[0]
+    request = service.files().get_media(fileId=latest["id"])
+    buf = io.BytesIO()
+    dl = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+    buf.seek(0)
+    df = pd.read_csv(buf)
+    df.columns = [c.strip() for c in df.columns]
+    df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
+    df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
+    df['Price']    = pd.to_numeric(df['Price'],    errors='coerce')
+    df['Amount']   = pd.to_numeric(df['Amount'],   errors='coerce')
+    # IVV stock split adjustment
+    IVV_SPLIT_DATE   = pd.Timestamp('2022-12-09')
+    IVV_SPLIT_FACTOR = 15.317277
+    ivv_pre = (df['Instrument Code'] == 'IVV') & (df['Trade Date'] < IVV_SPLIT_DATE)
+    df.loc[ivv_pre, 'Quantity'] = df.loc[ivv_pre, 'Quantity'] * IVV_SPLIT_FACTOR
+    df.loc[ivv_pre, 'Price']    = df.loc[ivv_pre, 'Price']    / IVV_SPLIT_FACTOR
+    df.loc[df['Transaction Type'] == 'SELL', 'Quantity'] = -df['Quantity'].abs()
+    label = f"{latest['name']} • {latest['modifiedTime'][:10]}"
+    return df, label
+
+@st.cache_data(ttl=300)
+def _get_raiz_live_prices_shared(codes_tuple):
+    """
+    Fetch live ASX prices for Raiz ETFs. Shared between dashboard and Tab 5.
+    Uses yf.download (5d period) as primary — more reliable than fast_info.
+    Falls back to fast_info, then to None.
+    """
+    RAIZ_TICKERS = {
+        'AAA': 'AAA.AX', 'STW': 'STW.AX', 'IAA': 'IAA.AX',
+        'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
+    }
+    prices = {}
+    for code in codes_tuple:
+        ticker = RAIZ_TICKERS.get(code)
+        price = None
+        if ticker:
+            # Primary: yf.download (most reliable for ASX)
+            try:
+                h = yf.download(ticker, period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    price = float(h.iloc[-1])
+            except:
+                pass
+            # Fallback: fast_info
+            if not price:
                 try:
-                    t = yf.Ticker(ticker)
-                    p = t.fast_info.get('last_price', None)
-                    if p and float(p) > 0:
-                        price = float(p)
+                    price = float(yf.Ticker(ticker).fast_info['last_price'])
+                    if price <= 0:
+                        price = None
                 except:
                     pass
+        prices[code] = price
+    return prices
+
+def get_raiz_total_for_dashboard():
+    """Compute current Raiz portfolio value using shared cached CSV and prices."""
+    try:
+        df, _ = _load_raiz_csv_raw()
+        if df.empty:
+            return 0.0
+        holdings = df.groupby('Instrument Code')['Quantity'].sum().reset_index()
+        holdings = holdings[holdings['Quantity'].abs() > 0.0001]
+        codes = tuple(holdings['Instrument Code'].unique())
+        prices = _get_raiz_live_prices_shared(codes)
+        total = 0.0
+        for _, row in holdings.iterrows():
+            code  = row['Instrument Code']
+            price = prices.get(code)
             if not price:
+                # Fallback to most recent CSV price
                 recent = df[df['Instrument Code'] == code].sort_values('Trade Date', ascending=False)
                 price = float(recent.iloc[0]['Price']) if not recent.empty else 0.0
             total += row['Quantity'] * price
         return total
-    except:
+    except Exception:
         return 0.0
 
 raiz_total_aud = get_raiz_total_for_dashboard()
@@ -2279,41 +2318,13 @@ with tab5:
         "IEU": "iShares Europe", "IAF": "iShares Bond", "RCB": "Russell Corp Bond", "IVV": "iShares S&P 500",
     }
 
-    @st.cache_data(ttl=300)
+    # Use shared cached loader — same data as Dashboard, no duplicate download
     def load_raiz_csv():
         try:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            from googleapiclient.http import MediaIoBaseDownload
-            import io
-            gs = st.secrets["gdrive"]
-            creds_dict = {
-                "type": gs.get("type", "service_account"), "project_id": gs["project_id"],
-                "private_key_id": gs["private_key_id"], "private_key": gs["private_key"],
-                "client_email": gs["client_email"], "client_id": gs.get("client_id", ""),
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-            creds = service_account.Credentials.from_service_account_info(
-                creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
-            service = build("drive", "v3", credentials=creds, cache_discovery=False)
-            folder_id = st.secrets["gdrive"]["raiz_folder_id"]
-            results = service.files().list(
-                q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-                orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
-            ).execute()
-            files = results.get("files", [])
-            if not files:
+            df, label = _load_raiz_csv_raw()
+            if df.empty:
                 return None, None, "No CSV files found"
-            latest = files[0]
-            request = service.files().get_media(fileId=latest["id"])
-            buffer = io.BytesIO()
-            downloader = MediaIoBaseDownload(buffer, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            buffer.seek(0)
-            df = pd.read_csv(buffer)
-            return df, f"{latest['name']} • {latest['modifiedTime'][:10]}", None
+            return df, label, None
         except Exception as e:
             return None, None, str(e)
 
@@ -2359,33 +2370,8 @@ with tab5:
             'IEU': 'IEU.AX', 'IAF': 'IAF.AX', 'RCB': 'RCB.AX', 'IVV': 'IVV.AX'
         }
 
-        @st.cache_data(ttl=300)
-        def get_raiz_live_prices(codes_tuple):
-            prices = {}
-            for code in codes_tuple:
-                ticker = RAIZ_TICKER_MAP.get(code)
-                if not ticker:
-                    prices[code] = None
-                    continue
-                try:
-                    t = yf.Ticker(ticker)
-                    p = t.fast_info.get('last_price', None)
-                    if p and float(p) > 0:
-                        prices[code] = float(p)
-                        continue
-                except: pass
-                try:
-                    h = yf.download(ticker, period='5d', progress=False)['Close']
-                    if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
-                    h = h.dropna()
-                    if not h.empty:
-                        prices[code] = float(h.iloc[-1])
-                        continue
-                except: pass
-                prices[code] = None
-            return prices
-
-        live_prices_raiz = get_raiz_live_prices(tuple(holdings_raiz['Instrument Code'].unique()))
+        # Use shared price fetcher — same cache as Dashboard
+        live_prices_raiz = _get_raiz_live_prices_shared(tuple(holdings_raiz['Instrument Code'].unique()))
 
         def get_most_recent_csv_price(code):
             p = live_prices_raiz.get(code)
