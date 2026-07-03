@@ -791,34 +791,55 @@ def save_net_worth_snapshot(total, force=False):
                 eur_cash_interest = avg_eur_aud * (eur_rate / 100) * (days_in_period / 365)
 
             # ── 2. DIVIDENDS — read from Dividends sheet ──────────────────
+            # Uses a "Processed" flag (column E) instead of a date window,
+            # so backfilled dividends dated on/before an earlier snapshot
+            # still get counted exactly once, whenever they're entered.
             try:
-                df_div = _sheets_read(PORTFOLIO_SHEET_ID, "Dividends!A:D")
-                if not df_div.empty:
-                    df_div.columns = [c.strip() for c in df_div.columns]
-                    df_div['Date']   = pd.to_datetime(df_div['Date'], dayfirst=True)
-                    df_div['Amount'] = pd.to_numeric(df_div['Amount'], errors='coerce').fillna(0)
-                    df_div['Currency'] = df_div['Currency'].str.upper().str.strip()
-                    period_divs = df_div[
-                        (df_div['Date'].dt.date > prev_date) &
-                        (df_div['Date'].dt.date <= today)
-                    ]
-                    for _, div in period_divs.iterrows():
-                        amt = div['Amount']
-                        cur = div['Currency']
-                        if cur.startswith('EUR'):
-                            amt_aud = amt * get_fx_at(div['Date'])
-                        elif cur.startswith('USD'):
+                div_result = service.spreadsheets().values().get(
+                    spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
+                    range="Dividends!A:E"
+                ).execute()
+                div_rows = div_result.get('values', [])
+                if div_rows and len(div_rows) > 1:
+                    div_header = div_rows[0]
+                    if len(div_header) < 5:
+                        div_header = div_header + ['Processed']
+                    updated_div_rows = [div_header]
+                    for row in div_rows[1:]:
+                        row = (row + [''] * 5)[:5]  # pad to 5 columns
+                        date_str, portfolio, amount_str, currency, processed = row
+                        if str(processed).strip().upper() != 'YES':
                             try:
-                                amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+                                amt = float(amount_str)
                             except:
-                                amt_aud = amt * 1.58
-                        else:
-                            amt_aud = amt  # AUD or unknown
-                        port = str(div.get('Portfolio','')).upper()
-                        if 'N26' in port:
-                            n26_dividends += amt_aud
-                        else:
-                            shares_dividends += amt_aud
+                                amt = 0.0
+                            cur = str(currency).upper().strip()
+                            try:
+                                div_date = pd.to_datetime(date_str, dayfirst=True)
+                            except:
+                                div_date = None
+                            if cur.startswith('EUR'):
+                                amt_aud = amt * (get_fx_at(div_date) if div_date is not None else fx_now)
+                            elif cur.startswith('USD'):
+                                try:
+                                    amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+                                except:
+                                    amt_aud = amt * 1.58
+                            else:
+                                amt_aud = amt  # AUD or unknown
+                            port = str(portfolio).upper()
+                            if 'N26' in port:
+                                n26_dividends += amt_aud
+                            else:
+                                shares_dividends += amt_aud
+                            row[4] = 'YES'
+                        updated_div_rows.append(row)
+                    service.spreadsheets().values().update(
+                        spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
+                        range="Dividends!A1",
+                        valueInputOption="RAW",
+                        body={"values": updated_div_rows}
+                    ).execute()
             except:
                 pass
 
