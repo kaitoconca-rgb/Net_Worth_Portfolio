@@ -1021,6 +1021,32 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         gain = _snap(col, end_row) - _snap(col, start_row)
         platform_gains[label] = gain
 
+    # ── Cash balance change (AUD vs EUR, separate from interest) ───────────
+    cash_start_total = _snap('Cash_AUD', start_row)
+    cash_end_total    = _snap('Cash_AUD', end_row)
+    eur_cash_start    = _snap('EUR_Cash_AUD', start_row)
+    eur_cash_end      = _snap('EUR_Cash_AUD', end_row)
+    aud_cash_start    = cash_start_total - eur_cash_start
+    aud_cash_end      = cash_end_total - eur_cash_end
+
+    cash_breakdown = {
+        'aud_cash_start': aud_cash_start, 'aud_cash_end': aud_cash_end,
+        'aud_cash_change': aud_cash_end - aud_cash_start,
+        'eur_cash_start': eur_cash_start, 'eur_cash_end': eur_cash_end,
+        'eur_cash_change': eur_cash_end - eur_cash_start,
+        'total_cash_start': cash_start_total, 'total_cash_end': cash_end_total,
+        'total_cash_change': cash_end_total - cash_start_total,
+    }
+    # Where cash moved to, as recorded at save time (each row logs what left
+    # cash and went into investments during that period)
+    movement_notes = []
+    if 'Contribution_Breakdown' in df_period.columns:
+        for _, r in df_period.iloc[1:].iterrows():
+            note = str(r.get('Contribution_Breakdown', '')).strip()
+            if note:
+                movement_notes.append(f"{r['Date'].strftime('%d %b %Y')}: {note}")
+    cash_breakdown['movement_notes'] = movement_notes
+
     # N26: decompose into price gain vs FX gain
     n26_start_aud = _snap('N26_AUD', start_row)
     n26_end_aud   = _snap('N26_AUD', end_row)
@@ -1080,6 +1106,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'fx_pct':            _pct(fx_impact),
         'days':              (end_row['Date'] - start_row['Date']).days,
         'platform_gains':    platform_gains,
+        'cash_breakdown':    cash_breakdown,
     }
 # ==================== ADDITION: CONTRIBUTION TRACKING ====================
 # Add these functions right after load_net_worth_history() and before the tabs
@@ -1661,6 +1688,37 @@ with tab0:
                     _id2.metric("EUR Cash Interest", f"${analysis['eur_cash_interest']:+,.2f}")
                     _id3.metric("N26 Dividends",     f"${analysis['n26_dividends']:+,.2f}")
                     _id4.metric("Shares Dividends",  f"${analysis['shares_dividends']:+,.2f}")
+
+                # Cash balance change detail
+                with st.expander("💰 Cash Balance Change (AUD vs EUR)"):
+                    cb = analysis.get('cash_breakdown', {})
+                    if cb:
+                        cb1, cb2, cb3 = st.columns(3)
+                        cb1.metric("🇦🇺 AUD Cash", f"${cb['aud_cash_end']:,.0f}",
+                                   delta=f"${cb['aud_cash_change']:+,.0f}",
+                                   delta_color="normal" if cb['aud_cash_change'] >= 0 else "inverse",
+                                   help=f"Was ${cb['aud_cash_start']:,.0f}")
+                        cb2.metric("🇪🇺 EUR Cash (AUD equiv)", f"${cb['eur_cash_end']:,.0f}",
+                                   delta=f"${cb['eur_cash_change']:+,.0f}",
+                                   delta_color="normal" if cb['eur_cash_change'] >= 0 else "inverse",
+                                   help=f"Was ${cb['eur_cash_start']:,.0f}")
+                        cb3.metric("Total Cash", f"${cb['total_cash_end']:,.0f}",
+                                   delta=f"${cb['total_cash_change']:+,.0f}",
+                                   delta_color="normal" if cb['total_cash_change'] >= 0 else "inverse",
+                                   help=f"Was ${cb['total_cash_start']:,.0f}")
+                        st.caption(
+                            "This is the raw cash balance movement — includes interest earned, "
+                            "money added or withdrawn, and money moved into investments (e.g. "
+                            "EUR cash → N26 buys)."
+                        )
+                        if cb.get('movement_notes'):
+                            st.markdown("**Recorded transfers into investments during this period:**")
+                            for note in cb['movement_notes']:
+                                st.write(f"• {note}")
+                        else:
+                            st.caption("No recorded platform transfers in this period.")
+                    else:
+                        st.caption("Cash breakdown available after next snapshot.")
 
                 st.divider()
 
