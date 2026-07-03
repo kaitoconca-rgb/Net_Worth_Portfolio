@@ -710,6 +710,20 @@ def save_net_worth_snapshot(total, force=False):
             except:
                 pass
 
+        # Find the most recent row that is NOT dated today. If today's row
+        # already exists (e.g. from an earlier save this session), skip past
+        # it so the attribution window isn't collapsed to zero days.
+        baseline_idx = len(existing) - 1
+        while baseline_idx > 1:
+            try:
+                row_date = pd.to_datetime(existing[baseline_idx][0]).date()
+            except:
+                break
+            if row_date == today:
+                baseline_idx -= 1
+            else:
+                break
+
         # ── Initialise all attribution to zero ───────────────────────────
         starting_balance      = 0.0
         contributions         = 0.0
@@ -724,7 +738,7 @@ def save_net_worth_snapshot(total, force=False):
 
         if len(existing) > 1:
             # ── Previous row values ───────────────────────────────────────
-            prev = existing[-1]
+            prev = existing[baseline_idx]
             def _f(idx, default=0.0):
                 try: return float(prev[idx]) if len(prev) > idx and prev[idx] else default
                 except: return default
@@ -870,7 +884,21 @@ def save_net_worth_snapshot(total, force=False):
             str(round(shares_dividends,   2)),  # T Shares Dividends
             str(round(current_market_value_eur, 2)),  # U N26_EUR_Value (for FX decomposition)
         ]
-        existing.append(new_row)
+        # Overwrite today's row if one already exists, rather than stacking
+        # duplicate same-day snapshots (which would keep resetting the
+        # attribution baseline to "today" on every click).
+        if len(existing) > 1:
+            try:
+                last_row_date = pd.to_datetime(existing[-1][0]).date()
+            except:
+                last_row_date = None
+            if last_row_date == today:
+                existing[-1] = new_row
+            else:
+                existing.append(new_row)
+        else:
+            existing.append(new_row)
+
         service.spreadsheets().values().update(
             spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
             range="Net_Worth!A1",
