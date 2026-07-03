@@ -781,7 +781,7 @@ def save_net_worth_snapshot(total, force=False):
                 df_div = _sheets_read(PORTFOLIO_SHEET_ID, "Dividends!A:D")
                 if not df_div.empty:
                     df_div.columns = [c.strip() for c in df_div.columns]
-                    df_div['Date']   = pd.to_datetime(df_div['Date'])
+                    df_div['Date']   = pd.to_datetime(df_div['Date'], dayfirst=True)
                     df_div['Amount'] = pd.to_numeric(df_div['Amount'], errors='coerce').fillna(0)
                     df_div['Currency'] = df_div['Currency'].str.upper().str.strip()
                     period_divs = df_div[
@@ -791,9 +791,9 @@ def save_net_worth_snapshot(total, force=False):
                     for _, div in period_divs.iterrows():
                         amt = div['Amount']
                         cur = div['Currency']
-                        if cur == 'EUR':
+                        if cur.startswith('EUR'):
                             amt_aud = amt * get_fx_at(div['Date'])
-                        elif cur == 'USD':
+                        elif cur.startswith('USD'):
                             try:
                                 amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
                             except:
@@ -813,7 +813,8 @@ def save_net_worth_snapshot(total, force=False):
             # Exclude cash entirely; cash changes are contributions or interest
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_comm + prev_super
-            market_gains = curr_investments - prev_investments
+            period_contrib_total, breakdown_dict = calculate_period_contributions(prev_date, today)
+            market_gains = (curr_investments - prev_investments) - period_contrib_total
 
             # ── 4. FX IMPACT — N26 EUR portfolio revalued at new FX rate ──
             # If EUR/AUD rate changed, the AUD value of the EUR portfolio changes
@@ -823,10 +824,10 @@ def save_net_worth_snapshot(total, force=False):
             # if prev was close, or use EUR cash change as proxy.
             # Best available: change in EUR cash AUD value net of EUR deposits
             eur_cash_change_aud = eur_cash_aud - prev_eur_cash_aud
-            # EUR cash deposits = new money added to EUR accounts (use transaction data)
-            _, breakdown_dict = calculate_period_contributions(prev_date, today)
-            eur_deposits_from_tx = breakdown_dict.get('EUR_Cash', 0.0)
-            # FX impact on EUR cash = change that isn't explained by new deposits or interest
+            # EUR cash outflows funding N26 buys (money left EUR cash and went into N26 investment)
+            # breakdown_dict was already computed above alongside market_gains
+            eur_deposits_from_tx = -breakdown_dict.get('N26', 0.0)
+            # FX impact on EUR cash = change that isn't explained by known N26 buys or interest
             fx_impact = eur_cash_change_aud - eur_deposits_from_tx - eur_cash_interest
             eur_cash_deposits_aud = eur_deposits_from_tx
 
