@@ -1211,7 +1211,15 @@ def calculate_period_contributions(start_date, end_date):
     breakdown = {}
     total = 0.0
     
-    # N26 Contributions
+   # N26 Contributions
+    # NOTE: uses fx_now (today's rate) rather than the historical trade-date
+    # rate. This is deliberate: this figure only feeds Dashboard attribution
+    # (market gains / FX impact), which compares against cash-side balances
+    # that are also converted at fx_now. Using one consistent rate for both
+    # sides of a transfer makes them net to zero as they should, instead of
+    # leaking a rate-mismatch into Market Gains / FX Impact.
+    # This does NOT affect df_raw, Tabs 1-4, or any CGT/lot-level figures —
+    # those all continue to use the real historical FX rate via get_fx_at().
     try:
         n26_contrib = df_raw[
             (df_raw['Tipo'] == 'BUY') & 
@@ -1220,8 +1228,7 @@ def calculate_period_contributions(start_date, end_date):
         ].copy()
         n26_total = 0.0
         for _, row in n26_contrib.iterrows():
-            fx_rate = get_fx_at(row['Data'])
-            n26_total += row['Inv_EUR'] * fx_rate
+            n26_total += row['Inv_EUR'] * fx_now
         breakdown['N26'] = n26_total
         total += n26_total
     except:
