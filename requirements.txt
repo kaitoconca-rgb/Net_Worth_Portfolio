@@ -1,8 +1,9 @@
-streamlit
+﻿streamlit
 pandas
 yfinance
 plotly
-st-gsheets-connection
-google-api-python-client
+numpy
+sqlalchemy
+psycopg2-binary
 google-auth
-gspread
+google-api-python-client
