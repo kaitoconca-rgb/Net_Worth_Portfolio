@@ -894,20 +894,6 @@ def save_net_worth_snapshot(total, force=False):
     This ensures the waterfall always reconciles.
     """
     try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        gs = st.secrets["gdrive"]
-        creds = service_account.Credentials.from_service_account_info({
-            "type": "service_account",
-            "project_id": gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key": gs["private_key"],
-            "client_email": gs["client_email"],
-            "client_id": gs.get("client_id", ""),
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-
         # ── Current snapshot values ───────────────────────────────────────
         n26_aud       = current_market_value_eur * fx_now
         raiz_aud      = raiz_total_aud
@@ -923,41 +909,34 @@ def save_net_worth_snapshot(total, force=False):
         eur_cash_eur  = sum(bal.get(a, 0.0) for a in EUR_CASH_ACCOUNTS)
         eur_cash_aud  = eur_cash_eur * fx_now
 
-        # ── Read existing sheet ───────────────────────────────────────────
-        result = service.spreadsheets().values().get(
-            spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A:U"
-        ).execute()
-        existing = result.get('values', [])
-        if not existing:
-            existing = [['Date','Total_AUD','Contributions_AUD','Market_Gains_AUD','FX_Impact_AUD',
-                         'Starting_Balance_AUD','Contribution_Breakdown','N26_AUD','Raiz_AUD','Vanguard_AUD',
-                         'Shares_AUD','Commodities_AUD','Super_AUD','Cash_AUD','EUR_Cash_AUD',
-                         'EUR_Cash_Deposits_AUD','AUD_Cash_Interest_AUD','EUR_Cash_Interest_AUD',
-                         'N26_Dividends_Received_AUD','Shares_Dividends_Received_AUD','N26_EUR_Value']]
+        # ── Read existing history from Postgres ────────────────────────────
+        pg_conn = get_pg()
+        df_existing = pg_conn.query(
+            """
+            SELECT snapshot_date, total_aud, n26_aud, raiz_aud, vanguard_aud,
+                   shares_aud, commodities_aud, super_aud, cash_aud, eur_cash_aud
+            FROM net_worth_snapshots
+            ORDER BY snapshot_date
+            """,
+            ttl=0,
+        )
 
         today = date.today()
-        if not force and len(existing) > 1:
+        if not force and not df_existing.empty:
             try:
-                last_date = pd.to_datetime(existing[-1][0])
+                last_date = pd.to_datetime(df_existing.iloc[-1]['snapshot_date'])
                 if last_date.year == today.year and last_date.month == today.month:
                     return False, "Already saved this month"
             except:
                 pass
 
-        # Find the most recent row that is NOT dated today. If today's row
-        # already exists (e.g. from an earlier save this session), skip past
-        # it so the attribution window isn't collapsed to zero days.
-        baseline_idx = len(existing) - 1
-        while baseline_idx > 1:
-            try:
-                row_date = pd.to_datetime(existing[baseline_idx][0]).date()
-            except:
-                break
-            if row_date == today:
-                baseline_idx -= 1
-            else:
-                break
+        # Find the most recent row that is NOT dated today, so a same-day
+        # re-save doesn't collapse the attribution window to zero days.
+        baseline_row = None
+        if not df_existing.empty:
+            df_not_today = df_existing[pd.to_datetime(df_existing['snapshot_date']).dt.date != today]
+            if not df_not_today.empty:
+                baseline_row = df_not_today.iloc[-1]
 
         # ── Initialise all attribution to zero ───────────────────────────
         starting_balance      = 0.0
@@ -971,42 +950,40 @@ def save_net_worth_snapshot(total, force=False):
         shares_dividends      = 0.0
         contribution_breakdown = ""
 
-        if len(existing) > 1:
-            # ── Previous row values ───────────────────────────────────────
-            prev = existing[baseline_idx]
-            def _f(idx, default=0.0):
-                try: return float(prev[idx]) if len(prev) > idx and prev[idx] else default
+        if baseline_row is not None:
+            prev = baseline_row
+            def _f(val, default=0.0):
+                try: return float(val) if pd.notnull(val) else default
                 except: return default
 
-            prev_date         = pd.to_datetime(prev[0]).date()
-            prev_total        = _f(1)
+            prev_date         = pd.to_datetime(prev['snapshot_date']).date()
+            prev_total        = _f(prev['total_aud'])
             starting_balance  = prev_total
-            prev_n26          = _f(7);  prev_raiz    = _f(8);  prev_vanguard = _f(9)
-            prev_shares       = _f(10); prev_comm    = _f(11); prev_super    = _f(12)
-            prev_cash         = _f(13); prev_eur_cash_aud = _f(14)
+            prev_n26          = _f(prev['n26_aud']);  prev_raiz    = _f(prev['raiz_aud'])
+            prev_vanguard     = _f(prev['vanguard_aud']); prev_shares = _f(prev['shares_aud'])
+            prev_comm         = _f(prev['commodities_aud']); prev_super = _f(prev['super_aud'])
+            prev_cash         = _f(prev['cash_aud']); prev_eur_cash_aud = _f(prev['eur_cash_aud'])
             days_in_period    = (today - prev_date).days
 
             # ── 1. INTEREST — weighted average rate × average balance ─────
             # Only meaningful for periods ≥ 7 days (avoids test-save noise)
             if days_in_period >= 7:
-                # Load rates from Forecast sheet
                 aud_rate = 5.35  # % p.a. default
                 eur_rate = 2.00  # % p.a. default
                 try:
-                    df_fc = _sheets_read(PORTFOLIO_SHEET_ID, "Forecast!A:C")
+                    df_fc = pg_conn.query(
+                        "SELECT category, key, value FROM forecast_settings WHERE category = 'Interest'",
+                        ttl=0,
+                    )
                     if not df_fc.empty:
-                        df_fc.columns = [c.strip() for c in df_fc.columns]
-                        df_fc['Value'] = df_fc['Value'].apply(
-                            lambda v: pd.to_numeric(str(v).replace('%','').strip(), errors='coerce')).fillna(0)
-                        # Weighted average: rate × balance / total balance
                         aud_accs = ['CBA','Me Bank','Rabobank','Up']
                         eur_accs = ['Trade Republic','N26','BPM Cash','BPM Bonds']
                         def _weighted_rate(accs):
                             total_bal = rate_num = 0.0
                             for acc in accs:
                                 b = bal.get(acc, 0.0)
-                                r_row = df_fc[(df_fc['Category']=='Interest') & (df_fc['Key']==acc)]
-                                r = float(r_row['Value'].iloc[0]) if not r_row.empty else 0.0
+                                r_row = df_fc[df_fc['key'] == acc]
+                                r = float(r_row['value'].iloc[0]) if not r_row.empty else 0.0
                                 rate_num  += r * b
                                 total_bal += b
                             return (rate_num / total_bal) if total_bal > 0 else 0.0
@@ -1015,95 +992,62 @@ def save_net_worth_snapshot(total, force=False):
                 except:
                     pass
 
-                # AUD cash interest: average of prev and current AUD cash balance
-                aud_cash_only = cash_aud - eur_cash_aud   # strip EUR component from total
+                aud_cash_only = cash_aud - eur_cash_aud
                 prev_aud_cash = prev_cash - prev_eur_cash_aud
                 avg_aud = (prev_aud_cash + aud_cash_only) / 2
                 aud_cash_interest = avg_aud * (aud_rate / 100) * (days_in_period / 365)
 
-                # EUR cash interest: on EUR balances, converted to AUD
                 avg_eur_aud = (prev_eur_cash_aud + eur_cash_aud) / 2
                 eur_cash_interest = avg_eur_aud * (eur_rate / 100) * (days_in_period / 365)
 
-            # ── 2. DIVIDENDS — read from Dividends sheet ──────────────────
-            # Uses a "Processed" flag (column E) instead of a date window,
-            # so backfilled dividends dated on/before an earlier snapshot
-            # still get counted exactly once, whenever they're entered.
+            # ── 2. DIVIDENDS — read unprocessed rows from Postgres ─────────
+            processed_ids = []
             try:
-                div_result = service.spreadsheets().values().get(
-                    spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-                    range="Dividends!A:E"
-                ).execute()
-                div_rows = div_result.get('values', [])
-                if div_rows and len(div_rows) > 1:
-                    div_header = div_rows[0]
-                    if len(div_header) < 5:
-                        div_header = div_header + ['Processed']
-                    updated_div_rows = [div_header]
-                    for row in div_rows[1:]:
-                        row = (row + [''] * 5)[:5]  # pad to 5 columns
-                        date_str, portfolio, amount_str, currency, processed = row
-                        if str(processed).strip().upper() != 'YES':
+                df_div_unprocessed = pg_conn.query(
+                    """
+                    SELECT id, div_date, portfolio, amount, currency
+                    FROM dividends
+                    WHERE processed = false
+                    ORDER BY div_date
+                    """,
+                    ttl=0,
+                )
+                if not df_div_unprocessed.empty:
+                    for _, drow in df_div_unprocessed.iterrows():
+                        amt = float(drow['amount']) if pd.notnull(drow['amount']) else 0.0
+                        cur = str(drow['currency']).upper().strip()
+                        div_date_val = pd.to_datetime(drow['div_date'])
+                        if cur.startswith('EUR'):
+                            amt_aud = amt * get_fx_at(div_date_val)
+                        elif cur.startswith('USD'):
                             try:
-                                amt = float(amount_str)
+                                amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
                             except:
-                                amt = 0.0
-                            cur = str(currency).upper().strip()
-                            try:
-                                div_date = pd.to_datetime(date_str, dayfirst=True)
-                            except:
-                                div_date = None
-                            if cur.startswith('EUR'):
-                                amt_aud = amt * (get_fx_at(div_date) if div_date is not None else fx_now)
-                            elif cur.startswith('USD'):
-                                try:
-                                    amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
-                                except:
-                                    amt_aud = amt * 1.58
-                            else:
-                                amt_aud = amt  # AUD or unknown
-                            port = str(portfolio).upper()
-                            if 'N26' in port:
-                                n26_dividends += amt_aud
-                            else:
-                                shares_dividends += amt_aud
-                            row[4] = 'YES'
-                        updated_div_rows.append(row)
-                    service.spreadsheets().values().update(
-                        spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-                        range="Dividends!A1",
-                        valueInputOption="RAW",
-                        body={"values": updated_div_rows}
-                    ).execute()
+                                amt_aud = amt * 1.58
+                        else:
+                            amt_aud = amt
+                        port = str(drow['portfolio']).upper()
+                        if 'N26' in port:
+                            n26_dividends += amt_aud
+                        else:
+                            shares_dividends += amt_aud
+                        processed_ids.append(str(drow['id']))
             except:
-                pass
+                processed_ids = []
 
-            # ── 3. MARKET GAINS — investment portfolio price changes ───────
-            # = (current investment values) - (prev investment values)
-            # Exclude cash entirely; cash changes are contributions or interest
+            # ── 3. MARKET GAINS ─────────────────────────────────────────────
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
             prev_investments = prev_n26 + prev_raiz + prev_vanguard + prev_shares + prev_comm + prev_super
             period_contrib_total, breakdown_dict = calculate_period_contributions(prev_date, today)
             market_gains = (curr_investments - prev_investments) - period_contrib_total
 
-            # ── 4. FX IMPACT — N26 EUR portfolio revalued at new FX rate ──
-            # If EUR/AUD rate changed, the AUD value of the EUR portfolio changes
-            # even if the EUR price didn't move. We isolate this as FX impact.
-            # Approximation: prev_n26_eur * (fx_now - fx_prev)
-            # We don't store fx_prev, so estimate from prev_n26 / current_market_value_eur
-            # if prev was close, or use EUR cash change as proxy.
-            # Best available: change in EUR cash AUD value net of EUR deposits
+            # ── 4. FX IMPACT ─────────────────────────────────────────────
             eur_cash_change_aud = eur_cash_aud - prev_eur_cash_aud
-            # EUR cash outflows funding N26 buys (money left EUR cash and went into N26 investment)
-            # breakdown_dict was already computed above alongside market_gains
             eur_deposits_from_tx = -breakdown_dict.get('N26', 0.0)
-            # FX impact on EUR cash = change that isn't explained by known N26 buys or interest
             fx_impact = eur_cash_change_aud - eur_deposits_from_tx - eur_cash_interest
             eur_cash_deposits_aud = eur_deposits_from_tx
 
-            # ── 5. CONTRIBUTIONS — residual (closes the identity) ─────────
-            # total_change = market_gains + contributions + aud_interest
-            #              + eur_interest + dividends + fx_impact
+            # ── 5. CONTRIBUTIONS — residual ────────────────────────────────
             total_change = total - prev_total
             contributions = (total_change
                              - market_gains
@@ -1116,51 +1060,74 @@ def save_net_worth_snapshot(total, force=False):
                 f"{k}: ${v:,.0f}" for k, v in breakdown_dict.items() if v > 0
             )
 
-        # ── Write row ─────────────────────────────────────────────────────
-        new_row = [
-            today.strftime('%Y-%m-%d'),
-            str(round(total,              2)),  # B Total
-            str(round(contributions,      2)),  # C Contributions
-            str(round(market_gains,       2)),  # D Market Gains
-            str(round(fx_impact,          2)),  # E FX Impact
-            str(round(starting_balance,   2)),  # F Starting Balance
-            contribution_breakdown,              # G Breakdown text
-            str(round(n26_aud,            2)),  # H N26
-            str(round(raiz_aud,           2)),  # I Raiz
-            str(round(vanguard_aud,       2)),  # J Vanguard
-            str(round(shares_aud,         2)),  # K Shares
-            str(round(commodities_aud,    2)),  # L Commodities
-            str(round(super_aud,          2)),  # M Super
-            str(round(cash_aud,           2)),  # N Cash total
-            str(round(eur_cash_aud,       2)),  # O EUR Cash AUD
-            str(round(eur_cash_deposits_aud, 2)),  # P EUR Deposits
-            str(round(aud_cash_interest,  2)),  # Q AUD Interest
-            str(round(eur_cash_interest,  2)),  # R EUR Interest
-            str(round(n26_dividends,      2)),  # S N26 Dividends
-            str(round(shares_dividends,   2)),  # T Shares Dividends
-            str(round(current_market_value_eur, 2)),  # U N26_EUR_Value (for FX decomposition)
-        ]
-        # Overwrite today's row if one already exists, rather than stacking
-        # duplicate same-day snapshots (which would keep resetting the
-        # attribution baseline to "today" on every click).
-        if len(existing) > 1:
-            try:
-                last_row_date = pd.to_datetime(existing[-1][0]).date()
-            except:
-                last_row_date = None
-            if last_row_date == today:
-                existing[-1] = new_row
-            else:
-                existing.append(new_row)
-        else:
-            existing.append(new_row)
-
-        service.spreadsheets().values().update(
-            spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Net_Worth!A1",
-            valueInputOption="RAW",
-            body={"values": existing}
-        ).execute()
+        # ── Upsert snapshot row + mark dividends processed, atomically ────
+        with pg_conn.session as s:
+            if 'processed_ids' in dir() and processed_ids:
+                placeholders = ", ".join(f"'{i}'" for i in processed_ids)
+                s.execute(sql_text(
+                    f"UPDATE dividends SET processed = true WHERE id IN ({placeholders})"
+                ))
+            s.execute(
+                sql_text("""
+                    INSERT INTO net_worth_snapshots
+                        (snapshot_date, total_aud, contributions_aud, market_gains_aud, fx_impact_aud,
+                         starting_balance_aud, contribution_breakdown, n26_aud, raiz_aud, vanguard_aud,
+                         shares_aud, commodities_aud, super_aud, cash_aud, eur_cash_aud,
+                         eur_cash_deposits_aud, aud_cash_interest_aud, eur_cash_interest_aud,
+                         n26_dividends_aud, shares_dividends_aud, n26_eur_value)
+                    VALUES
+                        (:snapshot_date, :total_aud, :contributions_aud, :market_gains_aud, :fx_impact_aud,
+                         :starting_balance_aud, :contribution_breakdown, :n26_aud, :raiz_aud, :vanguard_aud,
+                         :shares_aud, :commodities_aud, :super_aud, :cash_aud, :eur_cash_aud,
+                         :eur_cash_deposits_aud, :aud_cash_interest_aud, :eur_cash_interest_aud,
+                         :n26_dividends_aud, :shares_dividends_aud, :n26_eur_value)
+                    ON CONFLICT (snapshot_date) DO UPDATE SET
+                        total_aud = EXCLUDED.total_aud,
+                        contributions_aud = EXCLUDED.contributions_aud,
+                        market_gains_aud = EXCLUDED.market_gains_aud,
+                        fx_impact_aud = EXCLUDED.fx_impact_aud,
+                        starting_balance_aud = EXCLUDED.starting_balance_aud,
+                        contribution_breakdown = EXCLUDED.contribution_breakdown,
+                        n26_aud = EXCLUDED.n26_aud,
+                        raiz_aud = EXCLUDED.raiz_aud,
+                        vanguard_aud = EXCLUDED.vanguard_aud,
+                        shares_aud = EXCLUDED.shares_aud,
+                        commodities_aud = EXCLUDED.commodities_aud,
+                        super_aud = EXCLUDED.super_aud,
+                        cash_aud = EXCLUDED.cash_aud,
+                        eur_cash_aud = EXCLUDED.eur_cash_aud,
+                        eur_cash_deposits_aud = EXCLUDED.eur_cash_deposits_aud,
+                        aud_cash_interest_aud = EXCLUDED.aud_cash_interest_aud,
+                        eur_cash_interest_aud = EXCLUDED.eur_cash_interest_aud,
+                        n26_dividends_aud = EXCLUDED.n26_dividends_aud,
+                        shares_dividends_aud = EXCLUDED.shares_dividends_aud,
+                        n26_eur_value = EXCLUDED.n26_eur_value
+                """),
+                {
+                    "snapshot_date": today,
+                    "total_aud": float(round(total, 2)),
+                    "contributions_aud": float(round(contributions, 2)),
+                    "market_gains_aud": float(round(market_gains, 2)),
+                    "fx_impact_aud": float(round(fx_impact, 2)),
+                    "starting_balance_aud": float(round(starting_balance, 2)),
+                    "contribution_breakdown": contribution_breakdown,
+                    "n26_aud": float(round(n26_aud, 2)),
+                    "raiz_aud": float(round(raiz_aud, 2)),
+                    "vanguard_aud": float(round(vanguard_aud, 2)),
+                    "shares_aud": float(round(shares_aud, 2)),
+                    "commodities_aud": float(round(commodities_aud, 2)),
+                    "super_aud": float(round(super_aud, 2)),
+                    "cash_aud": float(round(cash_aud, 2)),
+                    "eur_cash_aud": float(round(eur_cash_aud, 2)),
+                    "eur_cash_deposits_aud": float(round(eur_cash_deposits_aud, 2)),
+                    "aud_cash_interest_aud": float(round(aud_cash_interest, 2)),
+                    "eur_cash_interest_aud": float(round(eur_cash_interest, 2)),
+                    "n26_dividends_aud": float(round(n26_dividends, 2)),
+                    "shares_dividends_aud": float(round(shares_dividends, 2)),
+                    "n26_eur_value": float(round(current_market_value_eur, 2)),
+                }
+            )
+            s.commit()
         return True, None
     except Exception as e:
         import traceback
@@ -1168,56 +1135,43 @@ def save_net_worth_snapshot(total, force=False):
 @st.cache_data(ttl=60)
 def load_net_worth_history():
     try:
-        # Read columns A through T (20 columns)
-        df_nw = _sheets_read(PORTFOLIO_SHEET_ID, "Net_Worth!A:T")
+        conn = get_pg()
+        df_nw = conn.query(
+            """
+            SELECT
+                snapshot_date AS "Date",
+                total_aud AS "Total_AUD",
+                contributions_aud AS "Contributions_AUD",
+                market_gains_aud AS "Market_Gains_AUD",
+                fx_impact_aud AS "FX_Impact_AUD",
+                starting_balance_aud AS "Starting_Balance_AUD",
+                contribution_breakdown AS "Contribution_Breakdown",
+                n26_aud AS "N26_AUD",
+                raiz_aud AS "Raiz_AUD",
+                vanguard_aud AS "Vanguard_AUD",
+                shares_aud AS "Shares_AUD",
+                commodities_aud AS "Commodities_AUD",
+                super_aud AS "Super_AUD",
+                cash_aud AS "Cash_AUD",
+                eur_cash_aud AS "EUR_Cash_AUD",
+                eur_cash_deposits_aud AS "EUR_Cash_Deposits_AUD",
+                aud_cash_interest_aud AS "AUD_Cash_Interest_AUD",
+                eur_cash_interest_aud AS "EUR_Cash_Interest_AUD",
+                n26_dividends_aud AS "N26_Dividends_Received_AUD",
+                shares_dividends_aud AS "Shares_Dividends_Received_AUD",
+                n26_eur_value AS "N26_EUR_Value"
+            FROM net_worth_snapshots
+            ORDER BY snapshot_date
+            """,
+            ttl=0,
+        )
         if df_nw.empty:
             return pd.DataFrame(columns=['Date', 'Total_AUD'])
-        
-        df_nw.columns = [c.strip() for c in df_nw.columns]
         df_nw['Date'] = pd.to_datetime(df_nw['Date'])
-        df_nw['Total_AUD'] = pd.to_numeric(df_nw['Total_AUD'], errors='coerce')
-        
-        # Load attribution columns if they exist
-        if 'Contributions_AUD' in df_nw.columns:
-            df_nw['Contributions_AUD'] = pd.to_numeric(df_nw['Contributions_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Contributions_AUD'] = 0.0
-            
-        if 'Market_Gains_AUD' in df_nw.columns:
-            df_nw['Market_Gains_AUD'] = pd.to_numeric(df_nw['Market_Gains_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Market_Gains_AUD'] = 0.0
-            
-        if 'FX_Impact_AUD' in df_nw.columns:
-            df_nw['FX_Impact_AUD'] = pd.to_numeric(df_nw['FX_Impact_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['FX_Impact_AUD'] = 0.0
-            
-        if 'Starting_Balance_AUD' in df_nw.columns:
-            df_nw['Starting_Balance_AUD'] = pd.to_numeric(df_nw['Starting_Balance_AUD'], errors='coerce').fillna(0)
-        else:
-            df_nw['Starting_Balance_AUD'] = 0.0
-            
-        if 'Contribution_Breakdown' not in df_nw.columns:
-            df_nw['Contribution_Breakdown'] = ""
-        
-        # Load portfolio columns (H through O)
-        portfolio_columns = ['N26_AUD', 'Raiz_AUD', 'Vanguard_AUD', 'Shares_AUD', 'Commodities_AUD', 'Super_AUD', 'Cash_AUD', 'EUR_Cash_AUD']
-        for col in portfolio_columns:
-            if col in df_nw.columns:
-                df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
-            else:
-                df_nw[col] = 0.0
-        
-        # Load new tracking columns (P through U)
-        tracking_columns = ['EUR_Cash_Deposits_AUD', 'AUD_Cash_Interest_AUD', 'EUR_Cash_Interest_AUD', 
-                           'N26_Dividends_Received_AUD', 'Shares_Dividends_Received_AUD', 'N26_EUR_Value']
-        for col in tracking_columns:
-            if col in df_nw.columns:
-                df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
-            else:
-                df_nw[col] = 0.0
-            
+        numeric_cols = [c for c in df_nw.columns if c not in ('Date', 'Contribution_Breakdown')]
+        for col in numeric_cols:
+            df_nw[col] = pd.to_numeric(df_nw[col], errors='coerce').fillna(0)
+        df_nw['Contribution_Breakdown'] = df_nw['Contribution_Breakdown'].fillna("")
         return df_nw.dropna(subset=['Total_AUD'])
     except Exception as e:
         return pd.DataFrame(columns=['Date', 'Total_AUD'])
@@ -2852,35 +2806,6 @@ with tab6:
     st.header("🪙 Commodities — Revolut Precious Metals")
     st.caption("Holdings from your Metal Google Sheet tab. Prices fetched live from Yahoo Finance (USD futures → AUD).")
 
-    with st.expander("🔍 DEBUG — remove after fixing"):
-        _df_debug, _err_debug = load_metal_data()
-        st.write("Load error:", _err_debug)
-        st.write("Raw dataframe:", _df_debug)
-        if _df_debug is not None and not _df_debug.empty:
-            st.write("Unique Types found:", _df_debug['Type'].unique().tolist())
-            st.write("Holdings by Type:", _df_debug.groupby('Type')['Quantity'].sum())
-        try:
-            _usd_aud_debug = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
-            st.write("AUDUSD=X price:", _usd_aud_debug)
-        except Exception as e:
-            st.write("AUDUSD=X fetch FAILED:", str(e))
-        for _tkr in ['GC=F', 'SI=F', 'PL=F']:
-            try:
-                _p = float(yf.Ticker(_tkr).fast_info['last_price'])
-                st.write(f"{_tkr} price:", _p)
-            except Exception as e:
-                st.write(f"{_tkr} FAILED:", str(e))
-
-        st.write("---")
-        st.write("**Testing get_commodities_total_for_dashboard() directly:**")
-        try:
-            get_commodities_total_for_dashboard.clear()
-            _test_total = get_commodities_total_for_dashboard()
-            st.write("Result:", _test_total)
-        except Exception:
-            import traceback
-            st.code(traceback.format_exc())
-
     # USD→AUD rate
     @st.cache_data(ttl=600)
     def get_usd_aud():
@@ -3451,40 +3376,24 @@ with tab10:
     @st.cache_data(ttl=0)
     def load_forecast_inputs():
         try:
-            df_f = _sheets_read(FORECAST_SHEET_ID, "Forecast!A:C")
+            conn = get_pg()
+            df_f = conn.query(
+                "SELECT category, key, value FROM forecast_settings",
+                ttl=0,
+            )
             if df_f.empty:
                 return {}
-            df_f.columns = [c.strip() for c in df_f.columns]
-            # Clean percentage signs from values
-            def clean_value(val):
-                if isinstance(val, str):
-                    val = val.replace('%', '').strip()
-                return pd.to_numeric(val, errors='coerce')
-            df_f['Value'] = df_f['Value'].apply(clean_value).fillna(0)
             result = {}
             for _, row in df_f.iterrows():
-                cat = str(row['Category']).strip()
-                key = str(row['Key']).strip()
-                result[f"{cat}_{key}"] = float(row['Value'])
+                cat = str(row['category']).strip()
+                key = str(row['key']).strip()
+                result[f"{cat}_{key}"] = float(row['value'])
             return result
         except:
             return {}
 
     def save_forecast_inputs(inputs_dict):
         try:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            gs = st.secrets["gdrive"]
-            creds = service_account.Credentials.from_service_account_info({
-                "type": "service_account",
-                "project_id": gs["project_id"],
-                "private_key_id": gs["private_key_id"],
-                "private_key": gs["private_key"],
-                "client_email": gs["client_email"],
-                "client_id": gs.get("client_id", ""),
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-            service = build("sheets", "v4", credentials=creds, cache_discovery=False)
             CATEGORY_KEY_MAP = [
                 ("Income",   "rent_eur"),
                 ("Expense",  "housing"),
@@ -3499,21 +3408,24 @@ with tab10:
                 ("Interest", "Up"),
                 ("Interest", "Trade Republic"),
                 ("Interest", "N26"),
-                ("Interest", "BUNQ"),
                 ("Interest", "BPM Cash"),
                 ("Interest", "BPM Bonds"),
                 ("Returns",  "metals_pct"),
             ]
-            rows = [["Category", "Key", "Value"]]
-            for cat, key in CATEGORY_KEY_MAP:
-                val = inputs_dict.get(f"{cat}_{key}", 0.0)
-                rows.append([cat, key, str(val)])
-            service.spreadsheets().values().update(
-                spreadsheetId=FORECAST_SHEET_ID,
-                range="Forecast!A1",
-                valueInputOption="RAW",
-                body={"values": rows}
-            ).execute()
+            conn = get_pg()
+            with conn.session as s:
+                for cat, key in CATEGORY_KEY_MAP:
+                    val = float(inputs_dict.get(f"{cat}_{key}", 0.0))
+                    s.execute(
+                        sql_text("""
+                            INSERT INTO forecast_settings (category, key, value)
+                            VALUES (:category, :key, :value)
+                            ON CONFLICT (category, key) DO UPDATE
+                                SET value = EXCLUDED.value, updated_at = now()
+                        """),
+                        {"category": cat, "key": key, "value": val}
+                    )
+                s.commit()
             return True, None
         except Exception as e:
             import traceback
@@ -4540,3 +4452,94 @@ with tab11:
             st.rerun()
         else:
             st.error(f"Could not save: {err}")
+
+    st.divider()
+
+    st.markdown("### 💰 Record Dividend")
+    st.caption(
+        "Recording a dividend does two things at once: adds it to the relevant "
+        "cash account balance immediately, and logs it for Net Worth attribution "
+        "so it shows as 'Dividends' rather than a Contribution on your next snapshot."
+    )
+
+    div_col1, div_col2, div_col3 = st.columns(3)
+    with div_col1:
+        div_date = st.date_input("Dividend Date", value=date.today(), key="div_date_input")
+        div_portfolio = st.selectbox("Source Portfolio", options=["N26", "Shares"], key="div_portfolio")
+    with div_col2:
+        div_currency = st.selectbox("Currency", options=["EUR", "AUD", "USD"], key="div_currency")
+        div_amount = st.number_input(f"Amount ({div_currency})", min_value=0.0, step=1.0,
+                                       format="%.2f", key="div_amount")
+    with div_col3:
+        div_dest_options = list(CASH_ACCOUNTS.keys())
+        default_dest = "N26" if div_portfolio == "N26" and "N26" in div_dest_options else div_dest_options[0]
+        div_dest_account = st.selectbox(
+            "Deposited Into", options=div_dest_options,
+            index=div_dest_options.index(default_dest) if default_dest in div_dest_options else 0,
+            key="div_dest_account"
+        )
+
+    if st.button("💾 Record Dividend", type="primary", key="save_dividend_btn"):
+        if div_amount <= 0:
+            st.warning("Enter an amount greater than zero.")
+        else:
+            try:
+                dest_acc_id, dest_currency = CASH_ACCOUNTS[div_dest_account]
+                if div_currency == dest_currency:
+                    amount_in_dest_ccy = div_amount
+                elif div_currency == "EUR" and dest_currency == "AUD":
+                    amount_in_dest_ccy = div_amount * fx_now
+                elif div_currency == "USD":
+                    try:
+                        usd_aud = 1 / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+                    except:
+                        usd_aud = 1.58
+                    amount_in_dest_ccy = div_amount * (usd_aud if dest_currency == "AUD" else usd_aud / fx_now)
+                else:
+                    amount_in_dest_ccy = div_amount  # fallback, same-currency assumption
+
+                conn = get_pg()
+                with conn.session as s:
+                    tx_result = s.execute(
+                        sql_text("""
+                            INSERT INTO transactions
+                                (account_id, tx_date, tx_type, amount, fx_rate_to_aud, notes, processed)
+                            VALUES
+                                (:account_id, :tx_date, 'deposit', :amount, :fx_rate, :notes, true)
+                            RETURNING id
+                        """),
+                        {
+                            "account_id": dest_acc_id,
+                            "tx_date": div_date,
+                            "amount": amount_in_dest_ccy,
+                            "fx_rate": fx_now if dest_currency == "EUR" else 1.0,
+                            "notes": f"[dividend:{div_portfolio}] {div_amount:.2f} {div_currency} received",
+                        }
+                    )
+                    new_tx_id = tx_result.fetchone()[0]
+
+                    s.execute(
+                        sql_text("""
+                            INSERT INTO dividends
+                                (div_date, portfolio, amount, currency, processed, transaction_id, account_id)
+                            VALUES
+                                (:div_date, :portfolio, :amount, :currency, false, :transaction_id, :account_id)
+                        """),
+                        {
+                            "div_date": div_date,
+                            "portfolio": div_portfolio,
+                            "amount": div_amount,
+                            "currency": div_currency,
+                            "transaction_id": new_tx_id,
+                            "account_id": dest_acc_id,
+                        }
+                    )
+                    s.commit()
+
+                st.success(f"✅ Dividend recorded: {div_amount:.2f} {div_currency} from {div_portfolio} → {div_dest_account}")
+                load_cash_balances.clear()
+                get_cash_total_for_dashboard.clear()
+                st.rerun()
+            except Exception as e:
+                import traceback
+                st.error(f"Could not record dividend: {traceback.format_exc()}")
