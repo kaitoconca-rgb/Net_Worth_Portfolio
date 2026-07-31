@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+from sqlalchemy import text as sql_text
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
 import time
 import numpy as np  
-from streamlit_gsheets import GSheetsConnection
+
 
 # NOTE: EUR/AUD rate is fetched via get_fx_data() below (cached, using fast_info).
 # fx_now is the single authoritative rate used throughout the app.
@@ -36,8 +37,216 @@ ticker_map = {
     "IE00B3RBWM25": "VWRL.AS", "IE00B3VVMM84": "VFEM.DE", "IE00B3XXRP09": "VUSA.DE",
     "IE00BZ56RN96": "GGRW.MI", "IE0005042456": "IUSA.DE"
 }
+CASH_ACCOUNTS = {
+    "CBA":                 ("160aa9c5-b55d-466b-b85b-90f37a2e04e1", "AUD"),
+    "Me Bank":             ("d3dc4451-3b8f-401c-b05f-db6b2666f3d5", "AUD"),
+    "Rabobank":            ("01d890ac-0c5f-482c-8419-be8ec241701d", "AUD"),
+    "Up":                  ("414ff8f6-6c43-4d8b-921f-fdcf1f57c755", "AUD"),
+    "Trade Republic":      ("92592fb8-d5d3-4318-9ca8-7bc84c338251", "EUR"),
+    "N26":                 ("48ca6a9e-373a-4af1-957f-167090b13f45", "EUR"),
+    "BPM Cash":            ("d5920f95-da3d-4246-af04-7dcb0bc3f46e", "EUR"),
+    "BPM Bonds":           ("f6be25f1-53a0-453c-a22e-3c49995379ce", "EUR"),
+    "C6 Cash":             ("2c2cfdd1-67b4-446a-91bb-d2827b630b79", "BRL"),
+    "C6 Investments":      ("cf6fa923-9c00-4599-bac9-02b3afa6d69d", "BRL"),
+}
+SUPER_ACCOUNT_ID = "79b626ee-4563-48c9-975d-ecefc6221fe7"
 
-@st.cache_data(ttl=600)
+def get_pg():
+    return st.connection("postgresql", type="sql", pool_pre_ping=True)
+
+def get_or_create_instrument(symbol, display_name, asset_class, native_currency, yahoo_ticker=None):
+    conn = get_pg()
+    with conn.session as s:
+        existing = s.execute(
+            sql_text("SELECT id FROM instruments WHERE symbol = :symbol"),
+            {"symbol": symbol}
+        ).fetchone()
+        if existing:
+            return existing[0]
+        result = s.execute(
+            sql_text("""
+                INSERT INTO instruments (symbol, display_name, asset_class, native_currency, yahoo_ticker)
+                VALUES (:symbol, :display_name, :asset_class, :native_currency, :yahoo_ticker)
+                RETURNING id
+            """),
+            {"symbol": symbol, "display_name": display_name, "asset_class": asset_class,
+             "native_currency": native_currency, "yahoo_ticker": yahoo_ticker}
+        )
+        new_id = result.fetchone()[0]
+        s.commit()
+        return new_id
+
+@st.cache_data(ttl=0)
+def load_transactions_for_editor(account_id, symbol_prefix=""):
+    conn = get_pg()
+    df = conn.query(
+        """
+        SELECT t.id::text AS id, t.tx_date AS "Date",
+               REPLACE(i.symbol, :prefix, '') AS "Symbol",
+               t.tx_type AS "Type", t.quantity AS "Quantity",
+               t.price AS "Price", t.amount AS "Amount",
+               COALESCE(t.notes, '') AS "Notes"
+        FROM transactions t
+        JOIN instruments i ON i.id = t.instrument_id
+        WHERE t.account_id = :acc_id
+        ORDER BY t.tx_date
+        """,
+        params={"acc_id": account_id, "prefix": symbol_prefix},
+        ttl=0,
+    )
+    return df
+
+def sync_transaction_edits(account_id, symbol_prefix, native_currency, asset_class, original_df, edited_df):
+    try:
+        conn = get_pg()
+        original_ids = set(original_df['id'].dropna().astype(str)) if not original_df.empty else set()
+        edited_ids = set(edited_df['id'].dropna().astype(str)) if 'id' in edited_df.columns else set()
+        deleted_ids = original_ids - edited_ids
+
+        with conn.session as s:
+            for row_id in deleted_ids:
+                s.execute(sql_text("DELETE FROM transactions WHERE id = :id"), {"id": row_id})
+            s.commit()
+
+        with conn.session as s:
+            for _, row in edited_df.iterrows():
+                symbol_raw = str(row.get('Symbol', '')).strip().upper()
+                if not symbol_raw:
+                    continue
+                full_symbol = f"{symbol_prefix}{symbol_raw}"
+                qty = float(row['Quantity']) if pd.notnull(row.get('Quantity')) else 0.0
+                tx_type = str(row.get('Type', 'BUY')).strip().upper()
+                signed_qty = -abs(qty) if tx_type == 'SELL' else abs(qty)
+                price = float(row['Price']) if pd.notnull(row.get('Price')) else None
+                if pd.notnull(row.get('Amount')):
+                    amount = float(row['Amount'])
+                elif price is not None:
+                    amount = abs(signed_qty * price)
+                else:
+                    amount = 0.0
+                notes = str(row['Notes']) if pd.notnull(row.get('Notes')) else ""
+                tx_date = row['Date']
+
+                instrument_id = get_or_create_instrument(
+                    full_symbol, display_name=full_symbol,
+                    asset_class=asset_class, native_currency=native_currency
+                )
+
+                row_id = row.get('id')
+                if pd.isna(row_id) or str(row_id).strip() == "":
+                    s.execute(
+                        sql_text("""
+                            INSERT INTO transactions
+                                (account_id, instrument_id, tx_date, tx_type, quantity, price, amount, notes, processed)
+                            VALUES
+                                (:account_id, :instrument_id, :tx_date, :tx_type, :quantity, :price, :amount, :notes, true)
+                        """),
+                        {"account_id": account_id, "instrument_id": instrument_id, "tx_date": tx_date,
+                         "tx_type": tx_type, "quantity": signed_qty, "price": price, "amount": amount, "notes": notes}
+                    )
+                else:
+                    s.execute(
+                        sql_text("""
+                            UPDATE transactions
+                            SET instrument_id = :instrument_id, tx_date = :tx_date, tx_type = :tx_type,
+                                quantity = :quantity, price = :price, amount = :amount, notes = :notes
+                            WHERE id = :id
+                        """),
+                        {"instrument_id": instrument_id, "tx_date": tx_date, "tx_type": tx_type,
+                         "quantity": signed_qty, "price": price, "amount": amount, "notes": notes,
+                         "id": str(row_id)}
+                    )
+            s.commit()
+        return True, None
+    except Exception as e:
+        import traceback
+        return False, traceback.format_exc()
+
+@st.cache_data(ttl=0)
+def load_cash_balances():
+    try:
+        conn = get_pg()
+        ids = [acc_id for acc_id, _ in CASH_ACCOUNTS.values()] + [SUPER_ACCOUNT_ID]
+        placeholders = ", ".join(f"'{i}'" for i in ids)
+        df = conn.query(
+            f"""
+            SELECT account_id::text AS account_id, COALESCE(SUM(amount), 0) AS balance
+            FROM transactions
+            WHERE account_id IN ({placeholders})
+            GROUP BY account_id
+            """,
+            ttl=0,
+        )
+        bal_by_id = dict(zip(df["account_id"], df["balance"]))
+        result = {name: float(bal_by_id.get(acc_id, 0.0))
+                  for name, (acc_id, _cur) in CASH_ACCOUNTS.items()}
+        result["Super"] = float(bal_by_id.get(SUPER_ACCOUNT_ID, 0.0))
+        return result
+    except Exception as e:
+        st.warning(f"Could not load cash balances from Postgres: {e}")
+        return {name: 0.0 for name in CASH_ACCOUNTS}
+
+def save_cash_balances(balances_dict):
+    try:
+        conn = get_pg()
+        current = load_cash_balances()
+        today_str = date.today().isoformat()
+        rows_to_insert = []
+        for name, new_balance in balances_dict.items():
+            if name == "Super":
+                acc_id, currency = SUPER_ACCOUNT_ID, "AUD"
+            elif name in CASH_ACCOUNTS:
+                acc_id, currency = CASH_ACCOUNTS[name]
+            else:
+                continue
+            old_balance = current.get(name, 0.0)
+            delta = round(float(new_balance) - float(old_balance), 2)
+            if abs(delta) < 0.005:
+                continue
+            tx_type = "deposit" if delta > 0 else "withdrawal"
+            if currency == "AUD":
+                fx_rate = 1.0
+            elif currency == "EUR":
+                fx_rate = fx_now
+            else:
+                try:
+                    fx_rate = float(yf.Ticker("BRLAUD=X").fast_info['last_price'])
+                except Exception:
+                    fx_rate = 0.27
+            rows_to_insert.append({
+                "account_id": acc_id,
+                "tx_date": today_str,
+                "tx_type": tx_type,
+                "amount": delta,
+                "fx_rate_to_aud": fx_rate,
+                "notes": f"[manual_cash_update_{today_str}] balance set to {new_balance:,.2f} {currency}",
+            })
+        if not rows_to_insert:
+            return True, None
+        with conn.session as s:
+            for row in rows_to_insert:
+                s.execute(
+                    sql_text(
+                        """
+                        INSERT INTO transactions
+                            (account_id, tx_date, tx_type, amount, fx_rate_to_aud, notes, processed)
+                        VALUES
+                            (:account_id, :tx_date, :tx_type, :amount, :fx_rate_to_aud, :notes, true)
+                        """
+                    ),
+                    row,
+                )
+            s.commit()
+        load_cash_balances.clear()
+        return True, None
+    except Exception as e:
+        import traceback
+        return False, traceback.format_exc()
+
+
+
+
+@st.cache_data(ttl=300)
 def get_fx_data():
     try:
         t = yf.Ticker("EURAUD=X")
@@ -50,19 +259,33 @@ def get_fx_data():
 fx_now, fx_hist = get_fx_data()
 
 # --- 2. DATI N26 (European Portfolio) ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-df_input = conn.read(ttl=0)
-df_input.columns = [c.strip() for c in df_input.columns]
+N26_ACCOUNT_ID = "818cca44-648f-469b-ac01-7366dfda9cc8"
+
+@st.cache_data(ttl=0)
+def load_n26_transactions():
+    conn = get_pg()
+    return conn.query(
+        """
+        SELECT t.tx_date, i.symbol AS isin, t.tx_type, t.quantity, t.price, t.amount
+        FROM transactions t
+        JOIN instruments i ON i.id = t.instrument_id
+        WHERE t.account_id = :acc_id
+        ORDER BY t.tx_date
+        """,
+        params={"acc_id": N26_ACCOUNT_ID},
+        ttl=0,
+    )
+
+df_input = load_n26_transactions()
 
 df_raw = pd.DataFrame()
-df_raw['Data'] = pd.to_datetime(df_input['Fecha Valor'], dayfirst=True)
-df_raw['ISIN'] = df_input['ISIN']
-df_raw['Tipo'] = df_input['Tipo'].str.upper().fillna('BUY')
-df_raw['Qty'] = pd.to_numeric(df_input['Cantidad'], errors='coerce')
-df_raw['Inv_EUR'] = pd.to_numeric(df_input['Importe Cargado'], errors='coerce')
-df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['Precio'], errors='coerce')
-df_raw['Manual_Price'] = pd.to_numeric(df_input['Price'], errors='coerce')
-df_raw.loc[df_raw['Tipo'] == 'SELL', 'Qty'] = -df_raw['Qty'].abs()
+df_raw['Data'] = pd.to_datetime(df_input['tx_date'])
+df_raw['ISIN'] = df_input['isin']
+df_raw['Tipo'] = df_input['tx_type'].str.upper()
+df_raw['Qty'] = pd.to_numeric(df_input['quantity'], errors='coerce')  # already signed (negative on sell) from backfill
+df_raw['Inv_EUR'] = pd.to_numeric(df_input['amount'], errors='coerce').abs()
+df_raw['Prezzo_Acq'] = pd.to_numeric(df_input['price'], errors='coerce')
+df_raw['Manual_Price'] = np.nan  # manual overrides not migrated — flag if you relied on these
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
 def get_fx_at(dt):
@@ -189,57 +412,50 @@ for _, row in df_sells.iterrows():
 df_dettaglio_vendite = pd.DataFrame(vendite_effettuate)
 
 # ── RAIZ TOTAL (hoisted for dashboard) ───────────────────────────────────────
+RAIZ_ACCOUNT_ID = "ec7a3f4e-adbb-4d9b-a24e-1b179d29e916"
+
 @st.cache_data(ttl=300)
 def _load_raiz_csv_raw():
     """
-    Download the Raiz CSV from Google Drive and return a cleaned DataFrame.
+    Load Raiz transactions from Postgres (migrated from the old CSV pipeline).
     Single source of truth — used by both the dashboard total and Tab 5.
+    NOTE: IVV split adjustment was already applied once during the original
+    migration/backfill, so quantity/price here are already split-adjusted —
+    do not reapply it.
     """
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseDownload
-    import io
-    gs = st.secrets["gdrive"]
-    creds = service_account.Credentials.from_service_account_info({
-        "type": gs.get("type", "service_account"),
-        "project_id": gs["project_id"],
-        "private_key_id": gs["private_key_id"],
-        "private_key": gs["private_key"],
-        "client_email": gs["client_email"],
-        "client_id": gs.get("client_id", ""),
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }, scopes=["https://www.googleapis.com/auth/drive.readonly"])
-    service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    folder_id = st.secrets["gdrive"]["raiz_folder_id"]
-    results = service.files().list(
-        q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-        orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
-    ).execute()
-    files = results.get("files", [])
-    if not files:
+    conn = get_pg()
+    df = conn.query(
+        """
+        SELECT t.tx_date AS "Trade Date",
+               REPLACE(i.symbol, 'RAIZ:', '') AS "Instrument Code",
+               t.tx_type AS "Transaction Type",
+               t.quantity AS "Quantity",
+               t.price AS "Price",
+               t.amount AS "Amount"
+        FROM transactions t
+        JOIN instruments i ON i.id = t.instrument_id
+        WHERE t.account_id = :acc_id
+        ORDER BY t.tx_date
+        """,
+        params={"acc_id": RAIZ_ACCOUNT_ID},
+        ttl=0,
+    )
+    if df.empty:
         return pd.DataFrame(), ""
-    latest = files[0]
-    request = service.files().get_media(fileId=latest["id"])
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, request)
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    buf.seek(0)
-    df = pd.read_csv(buf)
-    df.columns = [c.strip() for c in df.columns]
-    df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
-    df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
-    df['Price']    = pd.to_numeric(df['Price'],    errors='coerce')
-    df['Amount']   = pd.to_numeric(df['Amount'],   errors='coerce')
-    # IVV stock split adjustment
+    df['Trade Date'] = pd.to_datetime(df['Trade Date'])
+    df['Transaction Type'] = df['Transaction Type'].str.upper()
+    df['Amount'] = df['Amount'].abs()  # magnitude, matches old CSV convention
+
+    # IVV stock split adjustment (2022-12-09, factor 15.317277).
+    # Confirmed via cross-check against the live Raiz app: migrated quantities
+    # were NOT split-adjusted despite an earlier assumption that they were.
     IVV_SPLIT_DATE   = pd.Timestamp('2022-12-09')
     IVV_SPLIT_FACTOR = 15.317277
     ivv_pre = (df['Instrument Code'] == 'IVV') & (df['Trade Date'] < IVV_SPLIT_DATE)
     df.loc[ivv_pre, 'Quantity'] = df.loc[ivv_pre, 'Quantity'] * IVV_SPLIT_FACTOR
     df.loc[ivv_pre, 'Price']    = df.loc[ivv_pre, 'Price']    / IVV_SPLIT_FACTOR
-    df.loc[df['Transaction Type'] == 'SELL', 'Quantity'] = -df['Quantity'].abs()
-    label = f"{latest['name']} • {latest['modifiedTime'][:10]}"
+
+    label = f"Postgres · last synced {date.today().isoformat()}"
     return df, label
 
 @st.cache_data(ttl=300)
@@ -331,15 +547,33 @@ def _sheets_read(spreadsheet_id, range_name):
 PORTFOLIO_SHEET_ID = "1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8"
 
 # ── VANGUARD TOTAL (hoisted for dashboard) ────────────────────────────────────
+VANGUARD_ACCOUNT_ID = "8c4ee8bf-29b5-4533-99c7-84850e656e07"
+
+@st.cache_data(ttl=300)
+def load_vanguard_transactions_pg():
+    conn = get_pg()
+    df = conn.query(
+        """
+        SELECT tx_date AS "Date", tx_type, quantity AS "Quantity",
+               price AS "Purchase Price", amount
+        FROM transactions
+        WHERE account_id = :acc_id
+        ORDER BY tx_date
+        """,
+        params={"acc_id": VANGUARD_ACCOUNT_ID},
+        ttl=0,
+    )
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["Transaction"] = df["tx_type"].str.upper()
+    df["Amount"] = pd.to_numeric(df["amount"], errors="coerce").abs()  # magnitude, matches old Sheet convention
+    return df[["Date", "Transaction", "Quantity", "Purchase Price", "Amount"]]
+
 @st.cache_data(ttl=300)
 def get_vanguard_total_for_dashboard():
     try:
-        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
+        df_v = load_vanguard_transactions_pg()
         if df_v.empty:
             return 0.0
-        df_v.columns = [c.strip() for c in df_v.columns]
-        df_v['Quantity'] = pd.to_numeric(df_v['Quantity'], errors='coerce').fillna(0)
-        df_v.loc[df_v['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_v['Quantity'].abs()
         net_qty = df_v['Quantity'].sum()
         if abs(net_qty) < 0.001:
             return 0.0
@@ -363,13 +597,27 @@ SHARES_TICKERS = {
     'WBC': 'WBC.AX',
 }
 
+SHARES_ACCOUNT_ID = "d11dbbea-8a63-42da-9329-ab85ec00bea8"
+
 @st.cache_data(ttl=300)
 def get_shares_data():
     try:
-        df_s = _sheets_read(PORTFOLIO_SHEET_ID, "Shares!A:B")
-        if df_s.empty:
+        conn = get_pg()
+        df_raw_shares = conn.query(
+            """
+            SELECT REPLACE(i.symbol, 'ASX:', '') AS "Share",
+                   SUM(t.quantity) AS "Quantity"
+            FROM transactions t
+            JOIN instruments i ON i.id = t.instrument_id
+            WHERE t.account_id = :acc_id
+            GROUP BY i.symbol
+            """,
+            params={"acc_id": SHARES_ACCOUNT_ID},
+            ttl=0,
+        )
+        if df_raw_shares.empty:
             return pd.DataFrame(), 0.0
-        df_s.columns = [c.strip() for c in df_s.columns]
+        df_s = df_raw_shares
         df_s['Quantity'] = pd.to_numeric(df_s['Quantity'], errors='coerce').fillna(0)
         df_s = df_s[df_s['Quantity'] > 0].copy()
         rows = []
@@ -405,16 +653,44 @@ def get_shares_data():
 
 df_shares, shares_total_aud = get_shares_data()
 
+METALS_ACCOUNT_ID = "d2e04bcf-04fc-4151-bcb5-3ff64ccf1f97"
+
+@st.cache_data(ttl=0)
+def load_metal_data():
+    try:
+        conn = get_pg()
+        df_m = conn.query(
+            """
+            SELECT t.tx_date AS "Date",
+                   TRIM(REPLACE(i.symbol, 'METAL:', '')) AS "Type",
+                   t.tx_type,
+                   t.quantity AS "Quantity",
+                   t.price AS "Purchase Price",
+                   t.amount
+            FROM transactions t
+            JOIN instruments i ON i.id = t.instrument_id
+            WHERE t.account_id = :acc_id
+            ORDER BY t.tx_date
+            """,
+            params={"acc_id": METALS_ACCOUNT_ID},
+            ttl=0,
+        )
+        if df_m.empty:
+            return pd.DataFrame(), None
+        df_m["Date"] = pd.to_datetime(df_m["Date"])
+        df_m["Transaction"] = df_m["tx_type"].str.upper()
+        df_m["Currency"] = "AUD"  # all Revolut Metals purchases confirmed AUD
+        return df_m[["Date", "Type", "Transaction", "Quantity", "Purchase Price", "Currency"]], None
+    except Exception as e:
+        return None, str(e)
+
 # ── COMMODITIES TOTAL (hoisted for dashboard) ─────────────────────────────────
 @st.cache_data(ttl=300)
 def get_commodities_total_for_dashboard():
     try:
-        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:E")
-        if df_m.empty:
+        df_m, _err = load_metal_data()
+        if df_m is None or df_m.empty:
             return 0.0
-        df_m.columns = [c.strip() for c in df_m.columns]
-        df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
-        df_m.loc[df_m['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_m['Quantity'].abs()
 
         METAL_TICKERS = {'Gold': 'GC=F', 'Silver': 'SI=F', 'Platinum': 'PL=F'}
         try:
@@ -456,20 +732,13 @@ commodities_total_aud = get_commodities_total_for_dashboard()
 @st.cache_data(ttl=0)
 def get_cash_total_for_dashboard():
     try:
-        # Cash accounts only — Super, Vanguard, Metals removed
         ACCOUNTS_CURR = {
-            "CBA": "AUD", "Me Bank": "AUD", "Rabobank": "AUD",
-            "Up": "AUD",
-            "Trade Republic": "EUR", "N26": "EUR", "BUNQ": "EUR",
+            "CBA": "AUD", "Me Bank": "AUD", "Rabobank": "AUD", "Up": "AUD",
+            "Trade Republic": "EUR", "N26": "EUR",
             "BPM Cash": "EUR", "BPM Bonds": "EUR",
             "C6 Cash": "BRL", "C6 Investments": "BRL",
         }
-        conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=0, usecols=[0, 1])
-        df_c.columns = [c.strip() for c in df_c.columns]
-        df_c = df_c.dropna(subset=['Account'])
-        df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-        bal = df_c.set_index('Account')['Balance'].to_dict()
+        bal = load_cash_balances()
         brl_rate = 0.27
         try:
             brl_rate = float(yf.Ticker("BRLAUD=X").fast_info['last_price'])
@@ -494,12 +763,7 @@ cash_total_aud = get_cash_total_for_dashboard()
 @st.cache_data(ttl=0)
 def get_super_total_for_dashboard():
     try:
-        conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=0, usecols=[0, 1])
-        df_c.columns = [c.strip() for c in df_c.columns]
-        df_c = df_c.dropna(subset=['Account'])
-        df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-        bal = df_c.set_index('Account')['Balance'].to_dict()
+        bal = load_cash_balances()
         return float(bal.get("Super", 0.0))
     except:
         return 0.0
@@ -507,32 +771,8 @@ def get_super_total_for_dashboard():
 super_total_aud = get_super_total_for_dashboard()
 
 # ── GLOBAL SAVE FUNCTIONS ─────────────────────────────────────────────────────
-def save_cash_balances(balances_dict):
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        gs = st.secrets["gdrive"]
-        creds = service_account.Credentials.from_service_account_info({
-            "type": "service_account",
-            "project_id": gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key": gs["private_key"],
-            "client_email": gs["client_email"],
-            "client_id": gs.get("client_id", ""),
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        rows = [["Account", "Balance"]] + [[k, v] for k, v in balances_dict.items()]
-        service.spreadsheets().values().update(
-            spreadsheetId="1ad1wkw7fUdKO-Kq5869JYPsldS_Xr3A0T0W9YLcQKe8",
-            range="Cash!A1",
-            valueInputOption="RAW",
-            body={"values": rows}
-        ).execute()
-        return True, None
-    except Exception as e:
-        import traceback
-        return False, traceback.format_exc()
+# save_cash_balances() and load_cash_balances() now live near the top of the
+# file, next to CASH_ACCOUNTS — they read/write Postgres, not Sheets.
 def calculate_weighted_interest(prev_balance, prev_date, curr_balance, curr_date, transactions, interest_rate_pct):
     """
     Calculate interest using weighted average balance based on transaction dates.
@@ -622,7 +862,7 @@ def get_cash_transactions_for_period(start_date, end_date):
             raiz_period = raiz_df[(raiz_df['Trade Date'].dt.date >= start_date) & (raiz_df['Trade Date'].dt.date <= end_date)]
             for _, tx in raiz_period.iterrows():
                 txtype = str(tx['Transaction Type']).upper().strip()
-                if txtype in ('INVEST', 'DEPOSIT'):
+                if txtype == 'BUY':
                     transactions.append({
                         'date': tx['Trade Date'],
                         'amount': -abs(tx['Amount']),
@@ -678,13 +918,8 @@ def save_net_worth_snapshot(total, force=False):
         cash_aud      = cash_total_aud  # all cash in AUD equiv
 
         # EUR cash sub-total (EUR accounts only, in AUD)
-        EUR_CASH_ACCOUNTS = ["Trade Republic", "N26", "BUNQ", "BPM Cash", "BPM Bonds"]
-        conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-        df_c = conn_c.read(ttl=0, usecols=[0, 1])
-        df_c.columns = [c.strip() for c in df_c.columns]
-        df_c = df_c.dropna(subset=['Account'])
-        df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-        bal = df_c.set_index('Account')['Balance'].to_dict()
+        EUR_CASH_ACCOUNTS = ["Trade Republic", "N26", "BPM Cash", "BPM Bonds"]  # BUNQ dropped, account closed
+        bal = load_cash_balances()
         eur_cash_eur  = sum(bal.get(a, 0.0) for a in EUR_CASH_ACCOUNTS)
         eur_cash_aud  = eur_cash_eur * fx_now
 
@@ -765,7 +1000,7 @@ def save_net_worth_snapshot(total, force=False):
                             lambda v: pd.to_numeric(str(v).replace('%','').strip(), errors='coerce')).fillna(0)
                         # Weighted average: rate × balance / total balance
                         aud_accs = ['CBA','Me Bank','Rabobank','Up']
-                        eur_accs = ['Trade Republic','N26','BUNQ','BPM Cash','BPM Bonds']
+                        eur_accs = ['Trade Republic','N26','BPM Cash','BPM Bonds']
                         def _weighted_rate(accs):
                             total_bal = rate_num = 0.0
                             for acc in accs:
@@ -1133,46 +1368,10 @@ def analyze_net_worth_change(df_history, start_date, end_date):
 # Add these functions right after load_net_worth_history() and before the tabs
 
 @st.cache_data(ttl=300)
-@st.cache_data(ttl=300)
 def get_raiz_transactions():
     """Get Raiz transaction history for contribution tracking"""
     try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaIoBaseDownload
-        import io
-        gs = st.secrets["gdrive"]
-        creds_dict = {
-            "type": gs.get("type", "service_account"),
-            "project_id": gs["project_id"],
-            "private_key_id": gs["private_key_id"],
-            "private_key": gs["private_key"],
-            "client_email": gs["client_email"],
-            "client_id": gs.get("client_id", ""),
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"])
-        service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        folder_id = st.secrets["gdrive"]["raiz_folder_id"]
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and mimeType='text/csv' and trashed=false",
-            orderBy="modifiedTime desc", pageSize=1, fields="files(id, name, modifiedTime)"
-        ).execute()
-        files = results.get("files", [])
-        if not files:
-            return pd.DataFrame()
-        request = service.files().get_media(fileId=files[0]["id"])
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        buffer.seek(0)
-        df = pd.read_csv(buffer)
-        df.columns = [c.strip() for c in df.columns]
-        df['Trade Date'] = pd.to_datetime(df['Trade Date'], dayfirst=True)
-        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+        df, _label = _load_raiz_csv_raw()
         return df
     except:
         return pd.DataFrame()
@@ -1181,13 +1380,7 @@ def get_raiz_transactions():
 def get_vanguard_transactions():
     """Get Vanguard transaction history"""
     try:
-        df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:F")
-        if df_v.empty:
-            return pd.DataFrame()
-        df_v.columns = [c.strip() for c in df_v.columns]
-        df_v['Date'] = pd.to_datetime(df_v['Date'], dayfirst=True)
-        df_v['Amount'] = pd.to_numeric(df_v['Amount'], errors='coerce').fillna(0)
-        return df_v
+        return load_vanguard_transactions_pg()
     except:
         return pd.DataFrame()
 
@@ -1195,14 +1388,8 @@ def get_vanguard_transactions():
 def get_commodities_transactions():
     """Get commodities transaction history"""
     try:
-        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
-        if df_m.empty:
-            return pd.DataFrame()
-        df_m.columns = [c.strip() for c in df_m.columns]
-        df_m['Date'] = pd.to_datetime(df_m['Date'], dayfirst=True)
-        df_m['Purchase Price'] = pd.to_numeric(df_m['Purchase Price'], errors='coerce').fillna(0)
-        df_m['Quantity'] = pd.to_numeric(df_m['Quantity'], errors='coerce').fillna(0)
-        return df_m
+        df_m, _err = load_metal_data()
+        return df_m if df_m is not None else pd.DataFrame()
     except:
         return pd.DataFrame()
 
@@ -1244,7 +1431,7 @@ def calculate_period_contributions(start_date, end_date):
             raiz_period = raiz_df[
                 (raiz_df['Trade Date'].dt.date >= start_date) & 
                 (raiz_df['Trade Date'].dt.date <= end_date) &
-                (raiz_df['_txtype'].isin(['INVEST', 'DEPOSIT']))
+                (raiz_df['_txtype'] == 'BUY')
             ]
             raiz_total = raiz_period['Amount'].abs().sum()
             breakdown['Raiz'] = raiz_total
@@ -1284,40 +1471,7 @@ def calculate_period_contributions(start_date, end_date):
     
     return total, breakdown
 
-def calculate_fx_impact_period(start_date, end_date):
-    """Calculate FX impact from N26 portfolio and EUR Cash accounts"""
-    try:
-        # Get exchange rates
-        start_fx = get_fx_at(pd.Timestamp(start_date))
-        end_fx = get_fx_at(pd.Timestamp(end_date))
-        
-        # Get N26 EUR values at start and end
-        start_n26_eur = get_european_portfolio_value_at_date(start_date)
-        end_n26_eur = current_market_value_eur
-        
-        # FX Impact on N26 = (end value at end rate) - (end value at start rate)
-        # Or more simply: average exposure * rate change
-        avg_n26_eur = (start_n26_eur + end_n26_eur) / 2
-        fx_impact_n26 = avg_n26_eur * (end_fx - start_fx)
-        
-        # Get EUR Cash at start and end
-        df_history = load_net_worth_history()
-        start_row = df_history[df_history['Date'].dt.date == start_date]
-        end_row = df_history[df_history['Date'].dt.date == end_date]
-        
-        fx_impact_cash = 0
-        if not start_row.empty and not end_row.empty and 'EUR_Cash_AUD' in start_row.columns:
-            start_eur_cash_aud = start_row['EUR_Cash_AUD'].iloc[0]
-            end_eur_cash_aud = end_row['EUR_Cash_AUD'].iloc[0]
-            
-            # Convert to EUR, then back to AUD at new rate to isolate FX impact
-            start_eur_cash_eur = start_eur_cash_aud / start_fx if start_fx != 0 else 0
-            fx_impact_cash = start_eur_cash_eur * (end_fx - start_fx)
-        
-        return fx_impact_n26 + fx_impact_cash
-        
-    except Exception as e:
-        return 0.0
+
 # ==================== CONTRIBUTION TRACKING FUNCTIONS ====================
 
 
@@ -1328,17 +1482,6 @@ METAL_CONFIG = {
     'Silver':   {'ticker': 'XAGAUD=X', 'symbol': 'XAG', 'unit': 'unit', 'colour': '#95a5a6'},
     'Platinum': {'ticker': 'XPTAUD=X', 'symbol': 'XPT', 'unit': 'unit', 'colour': '#8e44ad'},
 }
-
-@st.cache_data(ttl=0)
-def load_metal_data():
-    try:
-        df_m = _sheets_read(PORTFOLIO_SHEET_ID, "Metal!A:F")
-        if df_m.empty:
-            return pd.DataFrame(), None
-        df_m.columns = [c.strip() for c in df_m.columns]
-        return df_m, None
-    except Exception as e:
-        return None, str(e)
 
 @st.cache_data(ttl=300)
 def get_metal_prices():
@@ -1438,7 +1581,7 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
         return total_cost * get_hist_fx_rate(currency, 'AUD', date_str)
 
 # --- 4. INTERFACCIA ---
-(tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10) = st.tabs([
+(tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11) = st.tabs([
     "🌐 Dashboard",
     "📊 N26 Performance",
     "💸 N26 Simulatore ATO",
@@ -1449,7 +1592,8 @@ def convert_purchase_to_aud(total_cost, currency, date_str):
     "🏛️ Super",
     "🏦 Cash",
     "🛠️ Diagnostics",
-    "📈 Forecast"
+    "📈 Forecast",
+    "📝 Data Entry"
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2549,13 +2693,9 @@ with tab5:
     # ── VANGUARD SECTION ──────────────────────────────────────────────────────
     st.subheader("📈 Vanguard VDAL — ASX ETF")
 
-    @st.cache_data(ttl=300)
     def load_vanguard_data():
         try:
-            df_v = _sheets_read(PORTFOLIO_SHEET_ID, "Vanguard!A:E")
-            if df_v.empty:
-                return pd.DataFrame(), None
-            df_v.columns = [c.strip() for c in df_v.columns]
+            df_v = load_vanguard_transactions_pg()
             return df_v, None
         except Exception as e:
             return None, str(e)
@@ -2565,10 +2705,6 @@ with tab5:
     if vdal_error:
         st.error(f"Could not load Vanguard data: {vdal_error}")
     elif df_vdal is not None and not df_vdal.empty:
-        df_vdal['Date'] = pd.to_datetime(df_vdal['Date'], dayfirst=True)
-        df_vdal['Quantity'] = pd.to_numeric(df_vdal['Quantity'], errors='coerce').fillna(0)
-        df_vdal['Purchase Price'] = pd.to_numeric(df_vdal['Purchase Price'], errors='coerce')
-        df_vdal.loc[df_vdal['Transaction'].str.upper() == 'SELL', 'Quantity'] = -df_vdal['Quantity'].abs()
         df_vdal = df_vdal.sort_values('Date')
 
         # Live price
@@ -2715,6 +2851,35 @@ with tab5:
 with tab6:
     st.header("🪙 Commodities — Revolut Precious Metals")
     st.caption("Holdings from your Metal Google Sheet tab. Prices fetched live from Yahoo Finance (USD futures → AUD).")
+
+    with st.expander("🔍 DEBUG — remove after fixing"):
+        _df_debug, _err_debug = load_metal_data()
+        st.write("Load error:", _err_debug)
+        st.write("Raw dataframe:", _df_debug)
+        if _df_debug is not None and not _df_debug.empty:
+            st.write("Unique Types found:", _df_debug['Type'].unique().tolist())
+            st.write("Holdings by Type:", _df_debug.groupby('Type')['Quantity'].sum())
+        try:
+            _usd_aud_debug = float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
+            st.write("AUDUSD=X price:", _usd_aud_debug)
+        except Exception as e:
+            st.write("AUDUSD=X fetch FAILED:", str(e))
+        for _tkr in ['GC=F', 'SI=F', 'PL=F']:
+            try:
+                _p = float(yf.Ticker(_tkr).fast_info['last_price'])
+                st.write(f"{_tkr} price:", _p)
+            except Exception as e:
+                st.write(f"{_tkr} FAILED:", str(e))
+
+        st.write("---")
+        st.write("**Testing get_commodities_total_for_dashboard() directly:**")
+        try:
+            get_commodities_total_for_dashboard.clear()
+            _test_total = get_commodities_total_for_dashboard()
+            st.write("Result:", _test_total)
+        except Exception:
+            import traceback
+            st.code(traceback.format_exc())
 
     # USD→AUD rate
     @st.cache_data(ttl=600)
@@ -2953,12 +3118,7 @@ with tab7:
     # Load current super balance from Cash sheet
     def load_super_balance():
         try:
-            conn_c = st.connection("gsheets_cash", type=GSheetsConnection)
-            df_c = conn_c.read(ttl=0, usecols=[0, 1])
-            df_c.columns = [c.strip() for c in df_c.columns]
-            df_c = df_c.dropna(subset=['Account'])
-            df_c['Balance'] = pd.to_numeric(df_c['Balance'], errors='coerce').fillna(0)
-            bal = df_c.set_index('Account')['Balance'].to_dict()
+            bal = load_cash_balances()
             return float(bal.get("Super", 0.0))
         except:
             return 0.0
@@ -2996,16 +3156,13 @@ with tab7:
         if st.button("💾 Save Super Balance", type="primary", key="super_save_btn"):
             # Load all current cash balances first, then update just Super
             try:
-                conn_c2 = st.connection("gsheets_cash", type=GSheetsConnection)
-                df_c2 = conn_c2.read(ttl=0, usecols=[0, 1])
-                df_c2.columns = [c.strip() for c in df_c2.columns]
-                df_c2 = df_c2.dropna(subset=['Account'])
-                df_c2['Balance'] = pd.to_numeric(df_c2['Balance'], errors='coerce').fillna(0)
-                all_balances = df_c2.set_index('Account')['Balance'].to_dict()
+                all_balances = load_cash_balances()
                 all_balances['Super'] = new_super_balance
                 ok, err = save_cash_balances(all_balances)
                 if ok:
                     st.success(f"✅ Super balance updated to ${new_super_balance:,.2f}")
+                    get_super_total_for_dashboard.clear()
+                    get_cash_total_for_dashboard.clear()
                     st.rerun()
                 else:
                     st.error(f"Could not save: {err}")
@@ -3057,18 +3214,6 @@ with tab8:
 
     brl_to_aud = get_brl_aud()
 
-    def load_cash_balances():
-        try:
-            conn_cash = st.connection("gsheets_cash", type=GSheetsConnection)
-            df = conn_cash.read(ttl=0, usecols=[0, 1])
-            df.columns = [c.strip() for c in df.columns]
-            df = df.dropna(subset=['Account'])
-            df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0)
-            return df.set_index('Account')['Balance'].to_dict()
-        except Exception as e:
-            st.warning(f"Could not load cash balances: {e}")
-            return {a["name"]: 0.0 for a in ACCOUNTS}
-
     current_balances = load_cash_balances()
 
     if st.button("🔄 Refresh from Sheet", key="cash_refresh_btn"):
@@ -3111,6 +3256,9 @@ with tab8:
         ok, err = save_cash_balances(all_balances_to_save)
         if ok:
             st.success("✅ Balances saved!")
+            get_cash_total_for_dashboard.clear()
+            get_super_total_for_dashboard.clear()
+            st.rerun()
         else:
             st.error(f"Could not save: {err}")
 
@@ -3446,7 +3594,7 @@ with tab10:
 
     with col_int:
         st.markdown("**🏦 Cash Interest Rates (% p.a.)**")
-        interest_accounts = ['CBA', 'Me Bank', 'Rabobank', 'Up', 'Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']
+        interest_accounts = ['CBA', 'Me Bank', 'Rabobank', 'Up', 'Trade Republic', 'N26', 'BPM Cash', 'BPM Bonds']
         for acc in interest_accounts:
             new_inputs[f'Interest_{acc}'] = st.number_input(
                 acc, min_value=0.0, max_value=20.0,
@@ -3567,12 +3715,7 @@ with tab10:
         new_inputs['Returns_metals_pct'] = new_inputs.get('Returns_metals_pct', 5.0) + sensitivity_adjustment
         new_inputs['Returns_super_pct'] = new_inputs.get('Returns_super_pct', 8.6) + sensitivity_adjustment
     # ── LOAD CASH BALANCES ONCE ───────────────────────────────────────────────
-    cash_conn = st.connection("gsheets_cash", type=GSheetsConnection)
-    df_cash_bal = cash_conn.read(ttl=0, usecols=[0, 1])
-    df_cash_bal.columns = [c.strip() for c in df_cash_bal.columns]
-    df_cash_bal = df_cash_bal.dropna(subset=['Account'])
-    df_cash_bal['Balance'] = pd.to_numeric(df_cash_bal['Balance'], errors='coerce').fillna(0)
-    cash_bal = df_cash_bal.set_index('Account')['Balance'].to_dict()
+    cash_bal = load_cash_balances()
 
     # ── MONTHLY CASH INTEREST FUNCTION ────────────────────────────────────────
     def monthly_cash_interest():
@@ -3580,7 +3723,7 @@ with tab10:
         for acc in interest_accounts:
             rate = new_inputs.get(f'Interest_{acc}', 0.0) / 100 / 12
             bal = cash_bal.get(acc, 0.0)
-            if acc in ('Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds'):
+            if acc in ('Trade Republic', 'N26', 'BPM Cash', 'BPM Bonds'):
                 bal = bal * fx_now
             total_int += bal * rate
         return total_int
@@ -3688,7 +3831,18 @@ with tab10:
             hovertemplate='Actual: $%{y:,.2f}<extra></extra>'
         ))
 
-    fig_proj.add_vline(x=str(today), line_dash="dash", line_color="white", opacity=0.5, annotation_text="Today", annotation_position="top right")
+    _today_ts = pd.Timestamp(today)
+    fig_proj.add_shape(
+        type="line", xref="x", yref="paper",
+        x0=_today_ts, x1=_today_ts, y0=0, y1=1,
+        line=dict(color="white", dash="dash", width=1),
+        opacity=0.5,
+    )
+    fig_proj.add_annotation(
+        x=_today_ts, y=1, xref="x", yref="paper",
+        text="Today", showarrow=False,
+        xanchor="right", yanchor="bottom",
+    )
     fig_proj.update_layout(
         height=550, hovermode="x unified",
         yaxis=dict(title="Net Worth (AUD $)", tickprefix="$"),
@@ -3895,12 +4049,7 @@ with tab10:
     st.caption("Simulate moving BOTH AUD cash to AUD investments AND EUR cash to N26 (EUR investment). See the combined 5-year impact. Uses the same return assumptions as your main projection (including Scenario and Sensitivity adjustments).")
     
     # Get current cash balances by currency
-    conn_cash_check = st.connection("gsheets_cash", type=GSheetsConnection)
-    df_cash_check = conn_cash_check.read(ttl=0, usecols=[0, 1])
-    df_cash_check.columns = [c.strip() for c in df_cash_check.columns]
-    df_cash_check = df_cash_check.dropna(subset=['Account'])
-    df_cash_check['Balance'] = pd.to_numeric(df_cash_check['Balance'], errors='coerce').fillna(0)
-    cash_bal_check = df_cash_check.set_index('Account')['Balance'].to_dict()
+    cash_bal_check = load_cash_balances()
     
     # Calculate AUD cash (AUD accounts only)
     aud_cash_total = 0
@@ -3909,7 +4058,7 @@ with tab10:
     
     # Calculate EUR cash (EUR accounts only)
     eur_cash_total = 0
-    for acc in ['Trade Republic', 'N26', 'BUNQ', 'BPM Cash', 'BPM Bonds']:
+    for acc in ['Trade Republic', 'N26', 'BPM Cash', 'BPM Bonds']:
         eur_cash_total += cash_bal_check.get(acc, 0.0)
     eur_cash_aud_total = eur_cash_total * fx_now
     
@@ -4151,9 +4300,19 @@ with tab10:
             yaxis='y2'
         ))
         
-        fig_combined.add_vline(x='2027-07-01', line_dash='dash', line_color='#e74c3c',
-                               opacity=0.6, annotation_text='CGT change 1 Jul 2027',
-                               annotation_position='top left')
+        _cgt_date = pd.Timestamp('2027-07-01')
+        fig_combined.add_shape(
+            type="line", xref="x", yref="paper",
+            x0=_cgt_date, x1=_cgt_date, y0=0, y1=1,
+            line=dict(color='#e74c3c', dash='dash', width=1),
+            opacity=0.6,
+        )
+        fig_combined.add_annotation(
+            x=_cgt_date, y=1, xref="x", yref="paper",
+            text="CGT change 1 Jul 2027", showarrow=False,
+            xanchor="left", yanchor="top",
+            font=dict(color='#e74c3c'),
+        )
         
         fig_combined.update_layout(
             height=450, hovermode='x unified',
@@ -4214,3 +4373,170 @@ with tab10:
             )
     else:
         st.info("👆 Click 'Run Combined Scenario' to see the 5-year impact of redeploying both AUD and EUR cash.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 11 — DATA ENTRY
+# ══════════════════════════════════════════════════════════════════════════════
+with tab11:
+    st.header("📝 Data Entry — N26 & Raiz Transactions")
+    st.caption("Add, edit, or delete rows directly. Changes save to Postgres when you click Save.")
+    st.warning("⚠️ New feature — test with a dummy row first before relying on it for real entries.")
+
+    st.markdown("### 🇪🇺 N26 Transactions")
+    df_n26_edit_orig = load_transactions_for_editor(N26_ACCOUNT_ID, symbol_prefix="")
+    if df_n26_edit_orig.empty:
+        df_n26_edit_orig = pd.DataFrame(columns=['id', 'Date', 'Symbol', 'Type', 'Quantity', 'Price', 'Amount', 'Notes'])
+    df_n26_edited = st.data_editor(
+        df_n26_edit_orig,
+        column_config={
+            "id": None,
+            "Date": st.column_config.DateColumn("Date", required=True),
+            "Symbol": st.column_config.TextColumn("ISIN", required=True, help="e.g. IE00B3RBWM25"),
+            "Type": st.column_config.SelectboxColumn("Type", options=["BUY", "SELL"], required=True),
+            "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, format="%.6f", required=True),
+            "Price": st.column_config.NumberColumn("Price (€)", min_value=0.0, format="%.4f"),
+            "Amount": st.column_config.NumberColumn("Amount (€)", min_value=0.0, format="%.2f",
+                                                      help="Leave blank to auto-calculate as Quantity × Price"),
+            "Notes": st.column_config.TextColumn("Notes"),
+        },
+        num_rows="dynamic", use_container_width=True, hide_index=True, key="n26_editor",
+    )
+    if st.button("💾 Save N26 Changes", type="primary", key="save_n26_edits"):
+        ok, err = sync_transaction_edits(N26_ACCOUNT_ID, "", "EUR", "ETF", df_n26_edit_orig, df_n26_edited)
+        if ok:
+            st.success("✅ N26 transactions saved.")
+            load_transactions_for_editor.clear()
+            load_n26_transactions.clear()
+            st.rerun()
+        else:
+            st.error(f"Could not save: {err}")
+
+    st.divider()
+
+    st.markdown("### 🌱 Raiz — Bulk CSV Upload")
+    st.caption("Upload your Raiz Trade Statement CSV. Expects columns: Trade Date, Instrument Code, Transaction Type, Quantity, Price, Amount. Already-imported rows are detected and skipped automatically.")
+    _raiz_csv_upload = st.file_uploader("Raiz Trade Statement CSV", type="csv", key="raiz_bulk_csv")
+
+    if _raiz_csv_upload is not None:
+        try:
+            _df_bulk = pd.read_csv(_raiz_csv_upload)
+            _df_bulk.columns = [c.strip() for c in _df_bulk.columns]
+            required_cols = {'Trade Date', 'Instrument Code', 'Transaction Type', 'Quantity', 'Price', 'Amount'}
+            missing = required_cols - set(_df_bulk.columns)
+            if missing:
+                st.error(f"CSV is missing required columns: {', '.join(missing)}")
+            else:
+                _df_bulk['Trade Date'] = pd.to_datetime(_df_bulk['Trade Date'], dayfirst=True, errors='coerce')
+                _df_bulk['Quantity'] = pd.to_numeric(_df_bulk['Quantity'], errors='coerce')
+                _df_bulk['Price'] = pd.to_numeric(_df_bulk['Price'], errors='coerce')
+                _df_bulk['Amount'] = pd.to_numeric(_df_bulk['Amount'], errors='coerce')
+                _df_bulk = _df_bulk.dropna(subset=['Trade Date', 'Instrument Code', 'Quantity'])
+                _df_bulk['Transaction Type'] = _df_bulk['Transaction Type'].str.upper().str.strip()
+                _df_bulk['Instrument Code'] = _df_bulk['Instrument Code'].str.strip()
+
+                _existing_raiz = load_transactions_for_editor(RAIZ_ACCOUNT_ID, symbol_prefix="RAIZ:")
+                if not _existing_raiz.empty:
+                    _existing_keys = set(zip(
+                        pd.to_datetime(_existing_raiz['Date']).dt.date,
+                        _existing_raiz['Symbol'].str.strip(),
+                        _existing_raiz['Type'].str.upper(),
+                        _existing_raiz['Quantity'].abs().round(6)
+                    ))
+                else:
+                    _existing_keys = set()
+
+                _df_bulk['_key'] = list(zip(
+                    _df_bulk['Trade Date'].dt.date,
+                    _df_bulk['Instrument Code'],
+                    _df_bulk['Transaction Type'],
+                    _df_bulk['Quantity'].abs().round(6)
+                ))
+                _df_bulk['Already Imported'] = _df_bulk['_key'].isin(_existing_keys)
+
+                st.write(f"Found {len(_df_bulk)} rows — "
+                         f"{(~_df_bulk['Already Imported']).sum()} new, "
+                         f"{_df_bulk['Already Imported'].sum()} already imported (will be skipped).")
+                st.dataframe(
+                    _df_bulk[['Trade Date', 'Instrument Code', 'Transaction Type', 'Quantity', 'Price', 'Amount', 'Already Imported']],
+                    use_container_width=True, hide_index=True
+                )
+
+                _df_new = _df_bulk[~_df_bulk['Already Imported']]
+
+                if st.button(f"📥 Import {len(_df_new)} New Transactions", type="primary", key="raiz_bulk_import_btn"):
+                    if _df_new.empty:
+                        st.info("Nothing new to import — all rows already exist.")
+                    else:
+                        try:
+                            symbol_to_id = {}
+                            for code in _df_new['Instrument Code'].unique():
+                                full_symbol = f"RAIZ:{code}"
+                                symbol_to_id[code] = get_or_create_instrument(
+                                    full_symbol, display_name=full_symbol,
+                                    asset_class="ETF", native_currency="AUD"
+                                )
+                            conn = get_pg()
+                            inserted = 0
+                            with conn.session as s:
+                                for _, row in _df_new.iterrows():
+                                    qty_signed = -abs(row['Quantity']) if row['Transaction Type'] == 'SELL' else abs(row['Quantity'])
+                                    s.execute(
+                                        sql_text("""
+                                            INSERT INTO transactions
+                                                (account_id, instrument_id, tx_date, tx_type, quantity, price, amount, notes, processed)
+                                            VALUES
+                                                (:account_id, :instrument_id, :tx_date, :tx_type, :quantity, :price, :amount, :notes, true)
+                                        """),
+                                        {"account_id": RAIZ_ACCOUNT_ID,
+                                         "instrument_id": symbol_to_id[row['Instrument Code']],
+                                         "tx_date": row['Trade Date'].date(),
+                                         "tx_type": row['Transaction Type'].lower(),
+                                         "quantity": qty_signed,
+                                         "price": row['Price'] if pd.notnull(row['Price']) else None,
+                                         "amount": abs(row['Amount']) if pd.notnull(row['Amount']) else 0.0,
+                                         "notes": "[bulk_csv_import]"}
+                                    )
+                                    inserted += 1
+                                s.commit()
+                            st.success(f"✅ Imported {inserted} new transactions.")
+                            load_transactions_for_editor.clear()
+                            _load_raiz_csv_raw.clear()
+                            st.rerun()
+                        except Exception as e:
+                            import traceback
+                            st.error(f"Import failed: {traceback.format_exc()}")
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
+
+    st.divider()
+
+    st.markdown("### 🌱 Raiz Transactions")
+    df_raiz_edit_orig = load_transactions_for_editor(RAIZ_ACCOUNT_ID, symbol_prefix="RAIZ:")
+    if df_raiz_edit_orig.empty:
+        df_raiz_edit_orig = pd.DataFrame(columns=['id', 'Date', 'Symbol', 'Type', 'Quantity', 'Price', 'Amount', 'Notes'])
+    df_raiz_edited = st.data_editor(
+        df_raiz_edit_orig,
+        column_config={
+            "id": None,
+            "Date": st.column_config.DateColumn("Date", required=True),
+            "Symbol": st.column_config.SelectboxColumn("ETF Code",
+                                                          options=["AAA", "STW", "IAA", "IEU", "IAF", "RCB", "IVV"],
+                                                          required=True),
+            "Type": st.column_config.SelectboxColumn("Type", options=["BUY", "SELL"], required=True),
+            "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, format="%.6f", required=True),
+            "Price": st.column_config.NumberColumn("Price ($)", min_value=0.0, format="%.4f"),
+            "Amount": st.column_config.NumberColumn("Amount ($)", min_value=0.0, format="%.2f",
+                                                      help="Leave blank to auto-calculate as Quantity × Price"),
+            "Notes": st.column_config.TextColumn("Notes"),
+        },
+        num_rows="dynamic", use_container_width=True, hide_index=True, key="raiz_editor",
+    )
+    if st.button("💾 Save Raiz Changes", type="primary", key="save_raiz_edits"):
+        ok, err = sync_transaction_edits(RAIZ_ACCOUNT_ID, "RAIZ:", "AUD", "ETF", df_raiz_edit_orig, df_raiz_edited)
+        if ok:
+            st.success("✅ Raiz transactions saved.")
+            load_transactions_for_editor.clear()
+            _load_raiz_csv_raw.clear()
+            st.rerun()
+        else:
+            st.error(f"Could not save: {err}")
