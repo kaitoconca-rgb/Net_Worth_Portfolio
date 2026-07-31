@@ -4539,7 +4539,44 @@ with tab11:
                 st.success(f"✅ Dividend recorded: {div_amount:.2f} {div_currency} from {div_portfolio} → {div_dest_account}")
                 load_cash_balances.clear()
                 get_cash_total_for_dashboard.clear()
+                load_dividends_for_editor.clear()
                 st.rerun()
             except Exception as e:
                 import traceback
                 st.error(f"Could not record dividend: {traceback.format_exc()}")
+
+    st.divider()
+    st.markdown("### 📋 Dividends Entered")
+
+    @st.cache_data(ttl=0)
+    def load_dividends_for_editor():
+        conn = get_pg()
+        return conn.query(
+            """
+            SELECT div_date AS "Date", portfolio AS "Portfolio",
+                   amount AS "Amount", currency AS "Currency",
+                   processed AS "Counted in Snapshot",
+                   (transaction_id IS NOT NULL) AS "Linked to Cash"
+            FROM dividends
+            ORDER BY div_date DESC
+            """,
+            ttl=0,
+        )
+
+    df_div_view = load_dividends_for_editor()
+    if df_div_view.empty:
+        st.info("No dividends recorded yet.")
+    else:
+        st.dataframe(
+            df_div_view.style.format({
+                "Date": lambda x: pd.to_datetime(x).strftime('%Y-%m-%d'),
+                "Amount": "{:.2f}",
+            }),
+            use_container_width=True, hide_index=True
+        )
+        total_unprocessed = df_div_view[~df_div_view["Counted in Snapshot"]]
+        if not total_unprocessed.empty:
+            st.caption(
+                f"⏳ {len(total_unprocessed)} dividend(s) not yet counted in a snapshot — "
+                f"they'll be picked up next time you click 'Save Snapshot Now' on the Dashboard."
+            )
