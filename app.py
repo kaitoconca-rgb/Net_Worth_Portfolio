@@ -4455,6 +4455,21 @@ with tab11:
 
     st.divider()
 
+    @st.cache_data(ttl=0)
+    def load_dividends_for_editor():
+        conn = get_pg()
+        return conn.query(
+            """
+            SELECT div_date AS "Date", portfolio AS "Portfolio",
+                   amount AS "Amount", currency AS "Currency",
+                   processed AS "Counted in Snapshot",
+                   (transaction_id IS NOT NULL) AS "Linked to Cash"
+            FROM dividends
+            ORDER BY div_date DESC
+            """,
+            ttl=0,
+        )
+
     st.markdown("### 💰 Record Dividend")
     st.caption(
         "Recording a dividend does two things at once: adds it to the relevant "
@@ -4547,21 +4562,6 @@ with tab11:
 
     st.divider()
     st.markdown("### 📋 Dividends Entered")
-
-    @st.cache_data(ttl=0)
-    def load_dividends_for_editor():
-        conn = get_pg()
-        return conn.query(
-            """
-            SELECT div_date AS "Date", portfolio AS "Portfolio",
-                   amount AS "Amount", currency AS "Currency",
-                   processed AS "Counted in Snapshot",
-                   (transaction_id IS NOT NULL) AS "Linked to Cash"
-            FROM dividends
-            ORDER BY div_date DESC
-            """,
-            ttl=0,
-        )
 
     df_div_view = load_dividends_for_editor()
     if df_div_view.empty:
