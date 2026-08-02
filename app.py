@@ -939,6 +939,9 @@ def save_net_worth_snapshot(total, force=False):
                 baseline_row = df_not_today.iloc[-1]
 
         # ── Initialise all attribution to zero ───────────────────────────
+        # Dividends/shares_dividends start from any existing TODAY row's stored
+        # value (not zero) so a second same-day save doesn't wipe out dividends
+        # already correctly counted and flagged processed by an earlier save today.
         starting_balance      = 0.0
         contributions         = 0.0
         market_gains          = 0.0
@@ -949,6 +952,18 @@ def save_net_worth_snapshot(total, force=False):
         n26_dividends         = 0.0
         shares_dividends      = 0.0
         contribution_breakdown = ""
+
+        df_today_existing = pg_conn.query(
+            "SELECT n26_dividends_aud, shares_dividends_aud FROM net_worth_snapshots WHERE snapshot_date = :d",
+            params={"d": today}, ttl=0,
+        )
+        if not df_today_existing.empty:
+            try:
+                n26_dividends = float(df_today_existing.iloc[0]['n26_dividends_aud']) or 0.0
+                shares_dividends = float(df_today_existing.iloc[0]['shares_dividends_aud']) or 0.0
+            except:
+                n26_dividends = 0.0
+                shares_dividends = 0.0
 
         if baseline_row is not None:
             prev = baseline_row
