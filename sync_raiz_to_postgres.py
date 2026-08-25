@@ -16,7 +16,9 @@ Usage:
 
 import argparse
 import io
+import streamlit as st
 from datetime import datetime
+
 
 import pandas as pd
 import psycopg2
@@ -27,7 +29,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 # ── CONFIG — fill these in ──────────────────────────────────────────────────
-PG_CONN_STRING = url = "postgresql://postgres.rqaoqweyggtyzycjwxen:ClaKaito2011?@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+PG_CONN_STRING = PG_CONN_STRING = st.secrets["PG_CONN_STRING"]
 GDRIVE_CREDS_PATH = "gdrive_creds.json"
 RAIZ_FOLDER_ID = "13lzwthpCR1-F1-IORbBM1Yhq-BMOyjfy"  # confirmed correct folder
 RAIZ_ACCOUNT_ID = "ec7a3f4e-adbb-4d9b-a24e-1b179d29e916"
