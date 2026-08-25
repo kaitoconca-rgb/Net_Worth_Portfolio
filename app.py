@@ -589,15 +589,21 @@ def get_vanguard_total_for_dashboard():
 
 vanguard_total_aud = get_vanguard_total_for_dashboard()
 
-# ── SHARES TOTAL (hoisted for dashboard) ─────────────────────────────────────
+# ── COMMSEC TOTAL (hoisted for dashboard) ────────────────────────────────────
+# This account was originally labelled "ASX Shares" — rebranded to CommSec
+# since that's the actual broker these holdings sit in. Run
+# add_commsec_purchase.py once to rename the row in Postgres to match.
 SHARES_TICKERS = {
     'NHF': 'NHF.AX',
     'TPG': 'TPG.AX',
     'TUA': 'TUA.AX',
     'WBC': 'WBC.AX',
+    'VAS': 'VAS.AX',
+    'VGS': 'VGS.AX',
+    'ASIA': 'ASIA.AX',
 }
 
-SHARES_ACCOUNT_ID = "d11dbbea-8a63-42da-9329-ab85ec00bea8"
+SHARES_ACCOUNT_ID = "d11dbbea-8a63-42da-9329-ab85ec00bea8"  # CommSec
 
 @st.cache_data(ttl=300)
 def get_shares_data():
@@ -640,7 +646,10 @@ def get_shares_data():
             rows.append({
                 'Code': code,
                 'Name': {'NHF': 'NIB Holdings', 'TPG': 'TPG Telecom',
-                         'TUA': 'Tuas Limited', 'WBC': 'Westpac'}.get(code, code),
+                         'TUA': 'Tuas Limited', 'WBC': 'Westpac',
+                         'VAS': 'Vanguard Australian Shares Index ETF',
+                         'VGS': 'Vanguard MSCI Index International Shares ETF',
+                         'ASIA': 'BetaShares Asia Technology Tigers ETF'}.get(code, code),
                 'Ticker': ticker,
                 'Quantity': qty,
                 'Live Price (AUD)': price,
@@ -1239,7 +1248,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     for col, label in [
         ('Raiz_AUD',       '🌱 Raiz'),
         ('Vanguard_AUD',   '📈 Vanguard'),
-        ('Shares_AUD',     '🇦🇺 ASX Shares'),
+        ('Shares_AUD',     '🏦 CommSec'),
         ('Commodities_AUD','🪙 Commodities'),
         ('Super_AUD',      '🏛️ Super'),
     ]:
@@ -1597,7 +1606,7 @@ with tab0:
     p1.metric("🇪🇺 N26",        f"${n26_aud:,.0f}",   f"€{current_market_value_eur:,.0f}")
     p2.metric("🌱 Raiz",        f"${raiz_aud:,.0f}")
     p3.metric("📈 Vanguard",    f"${vdal_aud:,.0f}")
-    p4.metric("🇦🇺 Shares",     f"${shares_aud:,.0f}")
+    p4.metric("🏦 CommSec",     f"${shares_aud:,.0f}")
     p5.metric("🪙 Metals",      f"${metals_aud:,.0f}")
     p6.metric("🏛️ Super",       f"${super_aud:,.0f}")
     p7.metric("🏦 Cash",        f"${cash_aud:,.0f}")
@@ -1609,7 +1618,7 @@ with tab0:
         {"Platform": "🇪🇺 N26 European",    "Value": n26_aud},
         {"Platform": "🌱 Raiz ETFs",         "Value": raiz_aud},
         {"Platform": "📈 Vanguard VDAL",     "Value": vdal_aud},
-        {"Platform": "🇦🇺 ASX Shares",       "Value": shares_aud},
+        {"Platform": "🏦 CommSec",       "Value": shares_aud},
         {"Platform": "🪙 Precious Metals",   "Value": metals_aud},
         {"Platform": "🏛️ Super",             "Value": super_aud},
         {"Platform": "🏦 Cash & Savings",    "Value": cash_aud},
@@ -1828,7 +1837,7 @@ with tab0:
                     _id1.metric("AUD Cash Interest", f"${analysis['aud_cash_interest']:+,.2f}")
                     _id2.metric("EUR Cash Interest", f"${analysis['eur_cash_interest']:+,.2f}")
                     _id3.metric("N26 Dividends",     f"${analysis['n26_dividends']:+,.2f}")
-                    _id4.metric("Shares Dividends",  f"${analysis['shares_dividends']:+,.2f}")
+                    _id4.metric("CommSec Dividends",  f"${analysis['shares_dividends']:+,.2f}")
 
                 # Cash balance change detail
                 with st.expander("💰 Cash Balance Change (AUD vs EUR)"):
@@ -1968,7 +1977,7 @@ with tab0:
         st.caption(
             f"Saves current values: N26 ${n26_aud:,.0f} · "
             f"Raiz ${raiz_aud:,.0f} · Vanguard ${vdal_aud:,.0f} · "
-            f"Shares ${shares_aud:,.0f} · Metals ${metals_aud:,.0f} · "
+            f"CommSec ${shares_aud:,.0f} · Metals ${metals_aud:,.0f} · "
             f"Super ${super_aud:,.0f} · Cash ${cash_aud:,.0f} · "
             f"**Total ${total_nw:,.0f}**"
         )
@@ -2756,7 +2765,7 @@ with tab5:
     st.divider()
 
     # ── ASX SHARES SECTION ────────────────────────────────────────────────────
-    st.subheader("🇦🇺 ASX Shares")
+    st.subheader("🏦 CommSec")
     if st.button("🔄 Refresh Share Prices", key="shares_refresh"):
         st.cache_data.clear()
         st.rerun()
@@ -2776,7 +2785,7 @@ with tab5:
         with col_sp:
             fig_shares_pie = px.pie(df_shares[df_shares['Value (AUD)'] > 0],
                                     values='Value (AUD)', names='Name', hole=0.4,
-                                    title=f"Shares Allocation — ${shares_total_aud:,.2f}",
+                                    title=f"CommSec Allocation — ${shares_total_aud:,.2f}",
                                     color_discrete_sequence=px.colors.qualitative.Set3)
             fig_shares_pie.update_layout(height=320)
             st.plotly_chart(fig_shares_pie, use_container_width=True)
@@ -2788,7 +2797,7 @@ with tab5:
             fig_shares_bar.update_layout(height=320, showlegend=False, yaxis_tickprefix="$")
             st.plotly_chart(fig_shares_bar, use_container_width=True)
     else:
-        st.info("No share data available. Check your Shares tab in Google Sheets.")
+        st.info("No CommSec holdings found in Postgres yet. Run add_commsec_purchase.py to register a buy.")
 
     st.divider()
 
@@ -2798,7 +2807,7 @@ with tab5:
     df_combined = pd.DataFrame([
         {"Portfolio": "🌱 Raiz ETFs", "Value (AUD)": raiz_total_aud},
         {"Portfolio": "📈 Vanguard VDAL", "Value (AUD)": vanguard_total_aud},
-        {"Portfolio": "🇦🇺 ASX Shares", "Value (AUD)": shares_total_aud},
+        {"Portfolio": "🏦 CommSec", "Value (AUD)": shares_total_aud},
     ])
     cs1, cs2 = st.columns(2)
     with cs1:
@@ -2810,7 +2819,7 @@ with tab5:
     with cs2:
         st.metric("Raiz ETFs", f"${raiz_total_aud:,.2f}")
         st.metric("Vanguard VDAL", f"${vanguard_total_aud:,.2f}")
-        st.metric("ASX Shares", f"${shares_total_aud:,.2f}")
+        st.metric("CommSec", f"${shares_total_aud:,.2f}")
         st.metric("Combined Total", f"${combined_value:,.2f}",
                   delta=f"€{combined_value/fx_now:,.2f} EUR equiv.")
 
@@ -3330,7 +3339,7 @@ with tab9:
         st.metric("Raiz ETFs", f"${raiz_total_aud:,.2f}")
         st.metric("Vanguard VDAL", f"${vanguard_total_aud:,.2f}")
     with col_p2:
-        st.metric("ASX Shares", f"${shares_total_aud:,.2f}")
+        st.metric("CommSec", f"${shares_total_aud:,.2f}")
         st.metric("Commodities", f"${commodities_total_aud:,.2f}")
         st.metric("Super", f"${super_total_aud:,.2f}")
     with col_p3:
@@ -3488,7 +3497,7 @@ with tab10:
             value=float(forecast_inputs.get('Returns_vanguard_pct', hist_returns['vanguard'])),
             step=0.5, format="%.2f")
         new_inputs['Returns_shares_pct'] = st.number_input(
-            "ASX Shares", min_value=-20.0, max_value=50.0,
+            "CommSec", min_value=-20.0, max_value=50.0,
             value=float(forecast_inputs.get('Returns_shares_pct', hist_returns['shares'])),
             step=0.5, format="%.2f")
         new_inputs['Returns_metals_pct'] = st.number_input(
@@ -3600,7 +3609,7 @@ with tab10:
             st.metric("Raiz ETFs", f"{scenario['raiz']:.1f}%")
         with col_scen2:
             st.metric("Vanguard VDAL", f"{scenario['vanguard']:.1f}%")
-            st.metric("ASX Shares", f"{scenario['shares']:.1f}%")
+            st.metric("CommSec", f"{scenario['shares']:.1f}%")
         with col_scen3:
             st.metric("Precious Metals", f"{scenario['metals']:.1f}%")
             st.metric("Super (Mercer)", f"{scenario['super']:.1f}%")
@@ -3718,7 +3727,7 @@ with tab10:
             'N26': n26_v,
             'Raiz': raiz_v,
             'Vanguard': vdal_v,
-            'Shares': shares_v,
+            'CommSec': shares_v,
             'Metals': metals_v,
             'Super': super_v,
             'Cash': cash_v,
@@ -3732,7 +3741,7 @@ with tab10:
 
     components = [
         ('N26', '#2980b9'), ('Raiz', '#27ae60'), ('Vanguard', '#2ecc71'),
-        ('Shares', '#1abc9c'), ('Metals', '#f39c12'), ('Super', '#8e44ad'), ('Cash', '#e67e22'),
+        ('CommSec', '#1abc9c'), ('Metals', '#f39c12'), ('Super', '#8e44ad'), ('Cash', '#e67e22'),
     ]
     for comp, colour in components:
         fig_proj.add_trace(go.Scatter(
@@ -4000,7 +4009,7 @@ with tab10:
     
     # ========== SCENARIO 1: AUD Cash → AUD Investment ==========
     st.markdown("### 📊 Scenario 1: AUD Cash → AUD Investment")
-    st.caption("Move AUD cash into Australian dollar investments (Raiz, Vanguard, or ASX Shares)")
+    st.caption("Move AUD cash into Australian dollar investments (Raiz, Vanguard, or CommSec)")
     
     col_s1_1, col_s1_2, col_s1_3 = st.columns(3)
     with col_s1_1:
@@ -4019,7 +4028,7 @@ with tab10:
     with col_s1_2:
         aud_target = st.selectbox(
             "AUD investment target",
-            options=["Raiz ETFs", "Vanguard VDAL", "ASX Shares"],
+            options=["Raiz ETFs", "Vanguard VDAL", "CommSec"],
             key="aud_target",
             index=0
         )
@@ -4027,7 +4036,7 @@ with tab10:
         aud_return_map = {
             "Raiz ETFs": new_inputs.get('Returns_raiz_pct', 10.0),
             "Vanguard VDAL": new_inputs.get('Returns_vanguard_pct', 9.5),
-            "ASX Shares": new_inputs.get('Returns_shares_pct', 10.0),
+            "CommSec": new_inputs.get('Returns_shares_pct', 10.0),
         }
         aud_return_pct = aud_return_map[aud_target]
         st.caption(f"Expected return: {aud_return_pct:.2f}% p.a. (including scenario & sensitivity)")
@@ -4495,7 +4504,7 @@ with tab11:
     div_col1, div_col2, div_col3 = st.columns(3)
     with div_col1:
         div_date = st.date_input("Dividend Date", value=date.today(), key="div_date_input")
-        div_portfolio = st.selectbox("Source Portfolio", options=["N26", "Shares"], key="div_portfolio")
+        div_portfolio = st.selectbox("Source Portfolio", options=["N26", "CommSec"], key="div_portfolio")
     with div_col2:
         div_currency = st.selectbox("Currency", options=["EUR", "AUD", "USD"], key="div_currency")
         div_amount = st.number_input(f"Amount ({div_currency})", min_value=0.0, step=1.0,
