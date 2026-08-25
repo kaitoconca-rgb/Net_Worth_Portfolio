@@ -52,7 +52,7 @@ CASH_ACCOUNTS = {
 SUPER_ACCOUNT_ID = "79b626ee-4563-48c9-975d-ecefc6221fe7"
 
 def get_pg():
-    return st.connection("postgresql", type="sql", pool_pre_ping=True)
+    return st.connection("postgresql", type="sql", url=st.secrets["PG_CONN_STRING"],pool_pre_ping=True)
 
 def get_or_create_instrument(symbol, display_name, asset_class, native_currency, yahoo_ticker=None):
     conn = get_pg()
