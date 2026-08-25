@@ -662,6 +662,113 @@ def get_shares_data():
 
 df_shares, shares_total_aud = get_shares_data()
 
+# Cost-basis confidence is tagged per-transaction in `notes` (not per-code —
+# WBC, for instance, has some confirmed lots and one unconfirmed one):
+#   [VERIFIED]   from an actual CommSec confirmation slip
+#   [DERIVED]    computed from a documented corporate action (ATO ruling,
+#                demutualisation cost base, demerger cost-base apportionment)
+#   [UNCONFIRMED] a placeholder — origin/price/date not sourced yet
+# Rows with no tag (pre-dating this convention) default to "Confirmed".
+def _cost_basis_label(notes):
+    n = str(notes or '')
+    if '[UNCONFIRMED]' in n:
+        return '⚠ Unconfirmed'
+    if '[DERIVED]' in n:
+        return '📋 Derived'
+    return '✅ Confirmed'
+
+@st.cache_data(ttl=300)
+def get_commsec_lots():
+    """
+    FIFO lot-level detail for CommSec holdings, same pattern as the Vanguard
+    VDAL and Metals lot tables: walk BUY lots oldest-first, consume them
+    against total SOLD quantity, and report whatever's left with cost basis,
+    live value, P&L, days held and CGT 12-month-discount eligibility.
+    """
+    try:
+        conn = get_pg()
+        df_tx = conn.query(
+            """
+            SELECT REPLACE(i.symbol, 'ASX:', '') AS "Code",
+                   t.tx_date AS "Date",
+                   t.tx_type AS "Type",
+                   t.quantity AS "Quantity",
+                   t.price AS "Price",
+                   t.notes AS "Notes"
+            FROM transactions t
+            JOIN instruments i ON i.id = t.instrument_id
+            WHERE t.account_id = :acc_id
+            ORDER BY REPLACE(i.symbol, 'ASX:', ''), t.tx_date
+            """,
+            params={"acc_id": SHARES_ACCOUNT_ID},
+            ttl=0,
+        )
+        if df_tx.empty:
+            return pd.DataFrame()
+
+        df_tx['Date'] = pd.to_datetime(df_tx['Date'])
+        df_tx['Quantity'] = pd.to_numeric(df_tx['Quantity'], errors='coerce').fillna(0)
+        df_tx['Price'] = pd.to_numeric(df_tx['Price'], errors='coerce').fillna(0)
+
+        lots = []
+        for code, df_code in df_tx.groupby('Code'):
+            df_code = df_code.sort_values('Date')
+            buys = df_code[df_code['Type'].str.lower() == 'buy'].copy()
+            if buys.empty:
+                continue
+            sold_qty = df_code[df_code['Type'].str.lower() == 'sell']['Quantity'].abs().sum()
+
+            ticker = SHARES_TICKERS.get(code, f"{code}.AX")
+            live_price = None
+            try:
+                h = yf.download(ticker, period='5d', progress=False)['Close']
+                if isinstance(h, pd.DataFrame): h = h.iloc[:, 0]
+                h = h.dropna()
+                if not h.empty:
+                    live_price = float(h.iloc[-1])
+            except:
+                pass
+            if not live_price:
+                recent_price = buys['Price'].dropna()
+                live_price = float(recent_price.iloc[-1]) if not recent_price.empty else 0.0
+
+            for _, row in buys.iterrows():
+                qty_ini = row['Quantity']
+                if sold_qty > 0:
+                    if sold_qty >= qty_ini:
+                        sold_qty -= qty_ini
+                        qty_res = 0.0
+                    else:
+                        qty_res = qty_ini - sold_qty
+                        sold_qty = 0.0
+                else:
+                    qty_res = qty_ini
+                if qty_res < 0.001:
+                    continue
+                cost = qty_res * row['Price']
+                val = qty_res * live_price
+                pl = val - cost
+                days = (date.today() - row['Date'].date()).days
+                lots.append({
+                    'Code': code,
+                    'Date': row['Date'].strftime('%Y-%m-%d'),
+                    'Qty': qty_res,
+                    'Purchase Price': row['Price'],
+                    'Current Price': live_price,
+                    'Cost (AUD)': cost,
+                    'Value (AUD)': val,
+                    'P&L (AUD)': pl,
+                    'ROI %': (pl / cost * 100) if cost > 0 else 0,
+                    'Days Held': days,
+                    'CGT': '50% Disc' if days >= 365 else 'No Disc',
+                    'Cost Basis': _cost_basis_label(row.get('Notes')),
+                })
+        return pd.DataFrame(lots)
+    except Exception:
+        return pd.DataFrame()
+
+df_commsec_lots = get_commsec_lots()
+
 METALS_ACCOUNT_ID = "d2e04bcf-04fc-4151-bcb5-3ff64ccf1f97"
 
 @st.cache_data(ttl=0)
@@ -2798,6 +2905,55 @@ with tab5:
             st.plotly_chart(fig_shares_bar, use_container_width=True)
     else:
         st.info("No CommSec holdings found in Postgres yet. Run add_commsec_purchase.py to register a buy.")
+
+    st.markdown("#### Lot Detail (FIFO, for CGT tracking)")
+    if not df_commsec_lots.empty:
+        n_unconfirmed = (df_commsec_lots['Cost Basis'] == '⚠ Unconfirmed').sum()
+        n_derived = (df_commsec_lots['Cost Basis'] == '📋 Derived').sum()
+        if n_unconfirmed or n_derived:
+            st.caption(
+                (f"⚠ {n_unconfirmed} lot(s) have an unconfirmed cost basis — don't rely on "
+                 f"their P&L/CGT for a real tax return until sourced. " if n_unconfirmed else "")
+                +
+                (f"📋 {n_derived} lot(s) use a cost basis derived from a documented corporate "
+                 f"action (demutualisation / demerger) rather than a CommSec confirmation slip — "
+                 f"worth a second opinion from your accountant before filing." if n_derived else "")
+            )
+        st.dataframe(df_commsec_lots.style
+                     .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0
+                          else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 else ''),
+                          subset=['P&L (AUD)', 'ROI %'])
+                     .format({'Qty': '{:.2f}', 'Purchase Price': '${:.4f}',
+                              'Current Price': '${:.4f}',
+                              'Cost (AUD)': '${:,.2f}', 'Value (AUD)': '${:,.2f}',
+                              'P&L (AUD)': '${:,.2f}', 'ROI %': '{:.2f}%'}),
+                     use_container_width=True, hide_index=True)
+
+        lot1, lot2, lot3 = st.columns(3)
+        lot1.metric("Total Cost Basis", f"${df_commsec_lots['Cost (AUD)'].sum():,.2f}")
+        lot2.metric("Total Unrealised P&L", f"${df_commsec_lots['P&L (AUD)'].sum():,.2f}")
+        lot3.metric("Lots eligible for 50% CGT discount",
+                    f"{(df_commsec_lots['CGT'] == '50% Disc').sum()} / {len(df_commsec_lots)}")
+    else:
+        st.caption("No lot data yet.")
+
+    with st.expander("📋 CommSec Full Trade History (incl. fully exited positions)"):
+        try:
+            df_all_commsec_tx = get_pg().query(
+                """
+                SELECT REPLACE(i.symbol, 'ASX:', '') AS "Code", t.tx_date AS "Date",
+                       t.tx_type AS "Type", t.quantity AS "Qty", t.price AS "Price",
+                       t.amount AS "Amount (AUD)", t.notes AS "Notes"
+                FROM transactions t
+                JOIN instruments i ON i.id = t.instrument_id
+                WHERE t.account_id = :acc_id
+                ORDER BY t.tx_date
+                """,
+                params={"acc_id": SHARES_ACCOUNT_ID}, ttl=0,
+            )
+            st.dataframe(df_all_commsec_tx, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.caption(f"Could not load full trade history: {e}")
 
     st.divider()
 
