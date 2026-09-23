@@ -54,6 +54,39 @@ SUPER_ACCOUNT_ID = "79b626ee-4563-48c9-975d-ecefc6221fe7"
 def get_pg():
     return st.connection("postgresql", type="sql", url=st.secrets["PG_CONN_STRING"],pool_pre_ping=True)
 
+
+@st.cache_resource
+def ensure_income_schema():
+    """BTP coupons (Sep 2026): BPM's "bonds" are Italian BTPs that pay coupons
+    (cedole), not dividends. The dividends table now records either type:
+      income_type   'dividend' | 'coupon'
+      gross_amount  before tax (optional for old rows)
+      tax_withheld  tax deducted at source (e.g. 12.5% on BTP coupons)
+      security      fund / bond name or ISIN
+    `amount` keeps meaning the NET cash received, so every existing query and
+    cash balance stays correct. net_worth_snapshots gets its own
+    bond_coupons_aud bucket so coupons stop showing up as N26 dividends.
+    Idempotent -- runs once per app process."""
+    try:
+        conn = get_pg()
+        with conn.session as s:
+            for stmt in (
+                "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS income_type text NOT NULL DEFAULT 'dividend'",
+                "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS gross_amount numeric",
+                "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS tax_withheld numeric",
+                "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS security text",
+                "ALTER TABLE net_worth_snapshots ADD COLUMN IF NOT EXISTS bond_coupons_aud numeric DEFAULT 0",
+            ):
+                s.execute(sql_text(stmt))
+            s.commit()
+        return True
+    except Exception as e:
+        st.warning(f"Could not update the database for BTP coupons: {e}")
+        return False
+
+
+ensure_income_schema()
+
 def get_or_create_instrument(symbol, display_name, asset_class, native_currency, yahoo_ticker=None):
     conn = get_pg()
     with conn.session as s:
@@ -1067,19 +1100,22 @@ def save_net_worth_snapshot(total, force=False):
         eur_cash_deposits_aud = 0.0
         n26_dividends         = 0.0
         shares_dividends      = 0.0
+        bond_coupons          = 0.0
         contribution_breakdown = ""
 
         df_today_existing = pg_conn.query(
-            "SELECT n26_dividends_aud, shares_dividends_aud FROM net_worth_snapshots WHERE snapshot_date = :d",
+            "SELECT n26_dividends_aud, shares_dividends_aud, COALESCE(bond_coupons_aud, 0) AS bond_coupons_aud FROM net_worth_snapshots WHERE snapshot_date = :d",
             params={"d": today}, ttl=0,
         )
         if not df_today_existing.empty:
             try:
                 n26_dividends = float(df_today_existing.iloc[0]['n26_dividends_aud']) or 0.0
                 shares_dividends = float(df_today_existing.iloc[0]['shares_dividends_aud']) or 0.0
+                bond_coupons = float(df_today_existing.iloc[0]['bond_coupons_aud']) or 0.0
             except:
                 n26_dividends = 0.0
                 shares_dividends = 0.0
+                bond_coupons = 0.0
 
         if baseline_row is not None:
             prev = baseline_row
@@ -1136,7 +1172,8 @@ def save_net_worth_snapshot(total, force=False):
             try:
                 df_div_unprocessed = pg_conn.query(
                     """
-                    SELECT id, div_date, portfolio, amount, currency
+                    SELECT id, div_date, portfolio, amount, currency,
+                           COALESCE(income_type, 'dividend') AS income_type
                     FROM dividends
                     WHERE processed = false
                     ORDER BY div_date
@@ -1158,7 +1195,9 @@ def save_net_worth_snapshot(total, force=False):
                         else:
                             amt_aud = amt
                         port = str(drow['portfolio']).upper()
-                        if 'N26' in port:
+                        if str(drow['income_type']).lower() == 'coupon':
+                            bond_coupons += amt_aud
+                        elif 'N26' in port:
                             n26_dividends += amt_aud
                         else:
                             shares_dividends += amt_aud
@@ -1185,6 +1224,7 @@ def save_net_worth_snapshot(total, force=False):
                              - aud_cash_interest
                              - eur_cash_interest
                              - (n26_dividends + shares_dividends)
+                             - bond_coupons
                              - fx_impact)
 
             contribution_breakdown = "; ".join(
@@ -1205,13 +1245,13 @@ def save_net_worth_snapshot(total, force=False):
                          starting_balance_aud, contribution_breakdown, n26_aud, raiz_aud, vanguard_aud,
                          shares_aud, commodities_aud, super_aud, cash_aud, eur_cash_aud,
                          eur_cash_deposits_aud, aud_cash_interest_aud, eur_cash_interest_aud,
-                         n26_dividends_aud, shares_dividends_aud, n26_eur_value)
+                         n26_dividends_aud, shares_dividends_aud, n26_eur_value, bond_coupons_aud)
                     VALUES
                         (:snapshot_date, :total_aud, :contributions_aud, :market_gains_aud, :fx_impact_aud,
                          :starting_balance_aud, :contribution_breakdown, :n26_aud, :raiz_aud, :vanguard_aud,
                          :shares_aud, :commodities_aud, :super_aud, :cash_aud, :eur_cash_aud,
                          :eur_cash_deposits_aud, :aud_cash_interest_aud, :eur_cash_interest_aud,
-                         :n26_dividends_aud, :shares_dividends_aud, :n26_eur_value)
+                         :n26_dividends_aud, :shares_dividends_aud, :n26_eur_value, :bond_coupons_aud)
                     ON CONFLICT (snapshot_date) DO UPDATE SET
                         total_aud = EXCLUDED.total_aud,
                         contributions_aud = EXCLUDED.contributions_aud,
@@ -1232,7 +1272,8 @@ def save_net_worth_snapshot(total, force=False):
                         eur_cash_interest_aud = EXCLUDED.eur_cash_interest_aud,
                         n26_dividends_aud = EXCLUDED.n26_dividends_aud,
                         shares_dividends_aud = EXCLUDED.shares_dividends_aud,
-                        n26_eur_value = EXCLUDED.n26_eur_value
+                        n26_eur_value = EXCLUDED.n26_eur_value,
+                        bond_coupons_aud = EXCLUDED.bond_coupons_aud
                 """),
                 {
                     "snapshot_date": today,
@@ -1256,6 +1297,7 @@ def save_net_worth_snapshot(total, force=False):
                     "n26_dividends_aud": float(round(n26_dividends, 2)),
                     "shares_dividends_aud": float(round(shares_dividends, 2)),
                     "n26_eur_value": float(round(current_market_value_eur, 2)),
+                    "bond_coupons_aud": float(round(bond_coupons, 2)),
                 }
             )
             s.commit()
@@ -1290,7 +1332,8 @@ def load_net_worth_history():
                 eur_cash_interest_aud AS "EUR_Cash_Interest_AUD",
                 n26_dividends_aud AS "N26_Dividends_Received_AUD",
                 shares_dividends_aud AS "Shares_Dividends_Received_AUD",
-                n26_eur_value AS "N26_EUR_Value"
+                n26_eur_value AS "N26_EUR_Value",
+                COALESCE(bond_coupons_aud, 0) AS "Bond_Coupons_AUD"
             FROM net_worth_snapshots
             ORDER BY snapshot_date
             """,
@@ -1338,6 +1381,7 @@ def analyze_net_worth_change(df_history, start_date, end_date):
     eur_cash_interest = _col('EUR_Cash_Interest_AUD')
     n26_dividends     = _col('N26_Dividends_Received_AUD')
     shares_dividends  = _col('Shares_Dividends_Received_AUD')
+    bond_coupons      = _col('Bond_Coupons_AUD')
     fx_impact         = _col('FX_Impact_AUD')
     total_cash_interest = aud_cash_interest + eur_cash_interest
     total_dividends     = n26_dividends + shares_dividends
@@ -1438,6 +1482,8 @@ def analyze_net_worth_change(df_history, start_date, end_date):
         'n26_dividends':     n26_dividends,
         'shares_dividends':  shares_dividends,
         'total_dividends':   total_dividends,
+        'bond_coupons':      bond_coupons,
+        'coupons_pct':       _pct(bond_coupons),
         'fx_impact':         fx_impact,
         'has_zero_rows':     has_zero_rows,
         'market_pct':        _pct(market_gains),
@@ -1893,11 +1939,12 @@ with tab0:
                         f'</div>'
                     )
 
-                t1, t2, t3, t4, t5 = st.columns(5)
+                t1, t2, t3, t4, t4b, t5 = st.columns(6)
                 t1.markdown(_tile("📈","Market Gains",    analysis['market_gains'],         analysis['market_pct']),    unsafe_allow_html=True)
                 t2.markdown(_tile("💰","Contributions",   analysis['total_contributions'],   analysis['contrib_pct']),   unsafe_allow_html=True)
                 t3.markdown(_tile("🏦","Cash Interest",   analysis['total_cash_interest'],   analysis['interest_pct']),  unsafe_allow_html=True)
                 t4.markdown(_tile("💸","Dividends",       analysis['total_dividends'],       analysis['dividends_pct']), unsafe_allow_html=True)
+                t4b.markdown(_tile("🇮🇹","BTP Coupons",   analysis['bond_coupons'],          analysis['coupons_pct']),   unsafe_allow_html=True)
                 t5.markdown(_tile("💱","FX Impact",       analysis['fx_impact'],             analysis['fx_pct']),        unsafe_allow_html=True)
 
                 # ── 5c. Platform breakdown under Market Gains ─────────────
@@ -1940,11 +1987,12 @@ with tab0:
 
                 # Interest/dividend detail
                 with st.expander("📋 Interest & Dividend detail"):
-                    _id1, _id2, _id3, _id4 = st.columns(4)
+                    _id1, _id2, _id3, _id4, _id5 = st.columns(5)
                     _id1.metric("AUD Cash Interest", f"${analysis['aud_cash_interest']:+,.2f}")
                     _id2.metric("EUR Cash Interest", f"${analysis['eur_cash_interest']:+,.2f}")
                     _id3.metric("N26 Dividends",     f"${analysis['n26_dividends']:+,.2f}")
                     _id4.metric("CommSec Dividends",  f"${analysis['shares_dividends']:+,.2f}")
+                    _id5.metric("BTP Coupons (BPM)",  f"${analysis['bond_coupons']:+,.2f}")
 
                 # Cash balance change detail
                 with st.expander("💰 Cash Balance Change (AUD vs EUR)"):
@@ -1986,6 +2034,7 @@ with tab0:
                     ("Contributions",   analysis['total_contributions']),
                     ("Cash Interest",   analysis['total_cash_interest']),
                     ("Dividends",       analysis['total_dividends']),
+                    ("BTP Coupons",     analysis['bond_coupons']),
                     ("FX Impact",       analysis['fx_impact']),
                 ]
                 _wf_labels  = ["Start"] + [c[0] for c in _wf_components] + ["End"]
@@ -4640,8 +4689,15 @@ with tab11:
         conn = get_pg()
         return conn.query(
             """
-            SELECT div_date AS "Date", portfolio AS "Portfolio",
-                   amount AS "Amount", currency AS "Currency",
+            SELECT id,
+                   div_date AS "Date",
+                   CASE WHEN COALESCE(income_type, 'dividend') = 'coupon' THEN 'BTP coupon' ELSE 'Dividend' END AS "Type",
+                   portfolio AS "Portfolio",
+                   security AS "Security",
+                   gross_amount AS "Gross",
+                   tax_withheld AS "Tax withheld",
+                   amount AS "Net received",
+                   currency AS "Currency",
                    processed AS "Counted in Snapshot",
                    (transaction_id IS NOT NULL) AS "Linked to Cash"
             FROM dividends
@@ -4650,33 +4706,64 @@ with tab11:
             ttl=0,
         )
 
-    st.markdown("### 💰 Record Dividend")
+    # BTP coupons (Sep 2026): BPM "bonds" are Italian BTPs paying coupons
+    # (cedole). They used to be entered here as N26 dividends, which put them
+    # in the wrong bucket. Each entry now has a type, and gross / tax
+    # withheld / net, which is what an accountant needs.
+    BTP_DEFAULT_TAX_PCT = 12.5  # Italian imposta sostitutiva on government bonds
+
+    st.markdown("### 💰 Record Dividend or BTP Coupon")
     st.caption(
-        "Recording a dividend does two things at once: adds it to the relevant "
-        "cash account balance immediately, and logs it for Net Worth attribution "
-        "so it shows as 'Dividends' rather than a Contribution on your next snapshot."
+        "Recording income does two things at once: adds the NET amount to the chosen "
+        "cash account immediately, and logs it for Net Worth attribution so it shows as "
+        "'Dividends' or 'BTP Coupons' rather than a Contribution on your next snapshot."
     )
+
+    inc_type = st.radio("Type", options=["Dividend", "BTP coupon"], horizontal=True, key="inc_type")
+    is_coupon = inc_type == "BTP coupon"
 
     div_col1, div_col2, div_col3 = st.columns(3)
     with div_col1:
-        div_date = st.date_input("Dividend Date", value=date.today(), key="div_date_input")
-        div_portfolio = st.selectbox("Source Portfolio", options=["N26", "CommSec"], key="div_portfolio")
+        div_date = st.date_input("Payment Date", value=date.today(), key="div_date_input")
+        if is_coupon:
+            div_portfolio = "BPM"
+            st.text_input("Source", value="BPM (BTP)", disabled=True, key="div_portfolio_fixed")
+        else:
+            div_portfolio = st.selectbox("Source Portfolio", options=["N26", "CommSec"], key="div_portfolio")
+        div_security = st.text_input(
+            "BTP name / ISIN" if is_coupon else "Fund / share (optional)",
+            placeholder="e.g. BTP 3.85% 2029 – IT0005…" if is_coupon else "e.g. VHYL",
+            key="div_security",
+        )
     with div_col2:
-        div_currency = st.selectbox("Currency", options=["EUR", "AUD", "USD"], key="div_currency")
-        div_amount = st.number_input(f"Amount ({div_currency})", min_value=0.0, step=1.0,
-                                       format="%.2f", key="div_amount")
+        div_currency = "EUR" if is_coupon else st.selectbox("Currency", options=["EUR", "AUD", "USD"], key="div_currency")
+        div_gross = st.number_input(f"Gross amount ({div_currency})", min_value=0.0, step=1.0,
+                                    format="%.2f", key=f"div_gross_{inc_type}")
+        default_tax = round(div_gross * BTP_DEFAULT_TAX_PCT / 100, 2) if is_coupon else 0.0
+        div_tax = st.number_input(
+            f"Tax withheld ({div_currency})", min_value=0.0, step=0.01, format="%.2f",
+            value=default_tax, key=f"div_tax_{inc_type}_{div_gross}",
+            help="For BTP coupons BPM normally withholds 12.5% – check the coupon advice and correct if different.",
+        )
+        div_amount = round(max(div_gross - div_tax, 0.0), 2)
+        st.metric("Net received", f"{div_amount:,.2f} {div_currency}")
     with div_col3:
         div_dest_options = list(CASH_ACCOUNTS.keys())
-        default_dest = "N26" if div_portfolio == "N26" and "N26" in div_dest_options else div_dest_options[0]
+        if is_coupon:
+            default_dest = "BPM Cash"
+        else:
+            default_dest = "N26" if div_portfolio == "N26" else div_dest_options[0]
         div_dest_account = st.selectbox(
             "Deposited Into", options=div_dest_options,
             index=div_dest_options.index(default_dest) if default_dest in div_dest_options else 0,
-            key="div_dest_account"
+            key=f"div_dest_account_{inc_type}"
         )
 
-    if st.button("💾 Record Dividend", type="primary", key="save_dividend_btn"):
-        if div_amount <= 0:
-            st.warning("Enter an amount greater than zero.")
+    if st.button("💾 Record " + ("Coupon" if is_coupon else "Dividend"), type="primary", key="save_dividend_btn"):
+        if div_gross <= 0:
+            st.warning("Enter a gross amount greater than zero.")
+        elif div_tax > div_gross:
+            st.warning("Tax withheld can't be more than the gross amount.")
         else:
             try:
                 dest_acc_id, dest_currency = CASH_ACCOUNTS[div_dest_account]
@@ -4693,6 +4780,8 @@ with tab11:
                 else:
                     amount_in_dest_ccy = div_amount  # fallback, same-currency assumption
 
+                tag = "coupon" if is_coupon else "dividend"
+                label = f" {div_security.strip()}" if div_security.strip() else ""
                 conn = get_pg()
                 with conn.session as s:
                     tx_result = s.execute(
@@ -4708,7 +4797,7 @@ with tab11:
                             "tx_date": div_date,
                             "amount": amount_in_dest_ccy,
                             "fx_rate": fx_now if dest_currency == "EUR" else 1.0,
-                            "notes": f"[dividend:{div_portfolio}] {div_amount:.2f} {div_currency} received",
+                            "notes": f"[{tag}:{div_portfolio}]{label} {div_amount:.2f} {div_currency} net received",
                         }
                     )
                     new_tx_id = tx_result.fetchone()[0]
@@ -4716,9 +4805,11 @@ with tab11:
                     s.execute(
                         sql_text("""
                             INSERT INTO dividends
-                                (div_date, portfolio, amount, currency, processed, transaction_id, account_id)
+                                (div_date, portfolio, amount, currency, processed, transaction_id, account_id,
+                                 income_type, gross_amount, tax_withheld, security)
                             VALUES
-                                (:div_date, :portfolio, :amount, :currency, false, :transaction_id, :account_id)
+                                (:div_date, :portfolio, :amount, :currency, false, :transaction_id, :account_id,
+                                 :income_type, :gross_amount, :tax_withheld, :security)
                         """),
                         {
                             "div_date": div_date,
@@ -4727,36 +4818,121 @@ with tab11:
                             "currency": div_currency,
                             "transaction_id": new_tx_id,
                             "account_id": dest_acc_id,
+                            "income_type": tag,
+                            "gross_amount": div_gross,
+                            "tax_withheld": div_tax,
+                            "security": div_security.strip() or None,
                         }
                     )
                     s.commit()
 
-                st.success(f"✅ Dividend recorded: {div_amount:.2f} {div_currency} from {div_portfolio} → {div_dest_account}")
+                st.success(f"✅ {inc_type} recorded: {div_amount:.2f} {div_currency} net from {div_portfolio} → {div_dest_account}")
                 load_cash_balances.clear()
                 get_cash_total_for_dashboard.clear()
                 load_dividends_for_editor.clear()
                 st.rerun()
             except Exception as e:
                 import traceback
-                st.error(f"Could not record dividend: {traceback.format_exc()}")
+                st.error(f"Could not record {inc_type.lower()}: {traceback.format_exc()}")
 
     st.divider()
-    st.markdown("### 📋 Dividends Entered")
+    st.markdown("### 📋 Dividends & Coupons Entered")
+    st.caption(
+        "You can correct Type, Security, Gross and Tax withheld here – e.g. to reclassify an old "
+        "'N26 dividend' that was really a BTP coupon. Net received and the cash account are not changed."
+    )
 
     df_div_view = load_dividends_for_editor()
     if df_div_view.empty:
-        st.info("No dividends recorded yet.")
+        st.info("Nothing recorded yet.")
     else:
-        st.dataframe(
-            df_div_view.style.format({
-                "Date": lambda x: pd.to_datetime(x).strftime('%Y-%m-%d'),
-                "Amount": "{:.2f}",
-            }),
-            use_container_width=True, hide_index=True
+        df_div_edit_src = df_div_view.copy()
+        df_div_edit_src["Date"] = pd.to_datetime(df_div_edit_src["Date"]).dt.date
+        edited_div = st.data_editor(
+            df_div_edit_src,
+            key="div_editor",
+            use_container_width=True, hide_index=True,
+            column_config={
+                "id": None,  # hidden
+                "Type": st.column_config.SelectboxColumn("Type", options=["Dividend", "BTP coupon"], required=True),
+                "Security": st.column_config.TextColumn("Security"),
+                "Gross": st.column_config.NumberColumn("Gross", format="%.2f", min_value=0.0),
+                "Tax withheld": st.column_config.NumberColumn("Tax withheld", format="%.2f", min_value=0.0),
+                "Net received": st.column_config.NumberColumn("Net received", format="%.2f"),
+            },
+            disabled=["Date", "Portfolio", "Net received", "Currency", "Counted in Snapshot", "Linked to Cash"],
         )
+        if st.button("💾 Save corrections", key="save_div_corrections"):
+            changed = 0
+            try:
+                conn = get_pg()
+                with conn.session as s:
+                    for (_, before), (_, after) in zip(df_div_edit_src.iterrows(), edited_div.iterrows()):
+                        cols = ["Type", "Security", "Gross", "Tax withheld"]
+                        if all((pd.isna(before[c]) and pd.isna(after[c])) or before[c] == after[c] for c in cols):
+                            continue
+                        new_type = "coupon" if after["Type"] == "BTP coupon" else "dividend"
+                        s.execute(
+                            sql_text("""
+                                UPDATE dividends
+                                SET income_type = :t,
+                                    security = :sec,
+                                    gross_amount = :g,
+                                    tax_withheld = :tx,
+                                    portfolio = CASE WHEN :t = 'coupon' THEN 'BPM' ELSE portfolio END
+                                WHERE id = :id
+                            """),
+                            {
+                                "t": new_type,
+                                "sec": (str(after["Security"]).strip() or None) if pd.notna(after["Security"]) else None,
+                                "g": float(after["Gross"]) if pd.notna(after["Gross"]) else None,
+                                "tx": float(after["Tax withheld"]) if pd.notna(after["Tax withheld"]) else None,
+                                "id": str(after["id"]),
+                            },
+                        )
+                        changed += 1
+                    s.commit()
+                load_dividends_for_editor.clear()
+                st.success(f"✅ Saved {changed} correction(s).")
+                st.rerun()
+            except Exception:
+                import traceback
+                st.error(f"Could not save corrections: {traceback.format_exc()}")
+
         total_unprocessed = df_div_view[~df_div_view["Counted in Snapshot"]]
         if not total_unprocessed.empty:
             st.caption(
-                f"⏳ {len(total_unprocessed)} dividend(s) not yet counted in a snapshot — "
+                f"⏳ {len(total_unprocessed)} entr(y/ies) not yet counted in a snapshot — "
                 f"they'll be picked up next time you click 'Save Snapshot Now' on the Dashboard."
             )
+
+        # ── Tax summary by Australian financial year (1 Jul – 30 Jun) ──────
+        st.divider()
+        st.markdown("### 🧾 For your accountant – by Australian financial year")
+        _d = df_div_view.copy()
+        _d["Date"] = pd.to_datetime(_d["Date"])
+        _d["FY"] = _d["Date"].apply(lambda x: f"FY{str(x.year + 1 if x.month >= 7 else x.year)[-2:]}")
+        fy_options = sorted(_d["FY"].unique(), reverse=True)
+        sel_fy = st.selectbox("Financial year", fy_options, key="div_fy_sel")
+        _f = _d[_d["FY"] == sel_fy].copy()
+        _f["Gross (or net if unknown)"] = _f["Gross"].fillna(_f["Net received"])
+        _f["Tax withheld"] = _f["Tax withheld"].fillna(0.0)
+        summary = (_f.groupby(["Type", "Portfolio", "Currency"], dropna=False)
+                     .agg(Payments=("Net received", "size"),
+                          Gross=("Gross (or net if unknown)", "sum"),
+                          Tax_withheld=("Tax withheld", "sum"),
+                          Net=("Net received", "sum"))
+                     .reset_index()
+                     .rename(columns={"Tax_withheld": "Tax withheld"}))
+        st.dataframe(summary.style.format({"Gross": "{:,.2f}", "Tax withheld": "{:,.2f}", "Net": "{:,.2f}"}),
+                     use_container_width=True, hide_index=True)
+        if _f["Gross"].isna().any():
+            st.caption("⚠️ Some entries have no gross/tax recorded (older entries) – their net amount is shown as gross. "
+                       "Add the gross and tax in the table above for an accurate figure.")
+        st.download_button(
+            f"⬇️ Download {sel_fy} detail (CSV)",
+            _f[["Date", "Type", "Portfolio", "Security", "Gross", "Tax withheld", "Net received", "Currency"]]
+              .assign(Date=lambda x: x["Date"].dt.strftime("%Y-%m-%d"))
+              .to_csv(index=False).encode("utf-8"),
+            file_name=f"dividends_coupons_{sel_fy}.csv", mime="text/csv", key="div_fy_csv",
+        )
