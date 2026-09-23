@@ -4710,7 +4710,7 @@ with tab11:
     # (cedole). They used to be entered here as N26 dividends, which put them
     # in the wrong bucket. Each entry now has a type, and gross / tax
     # withheld / net, which is what an accountant needs.
-    BTP_DEFAULT_TAX_PCT = 12.5  # Italian imposta sostitutiva on government bonds
+    BTP_DEFAULT_TAX_PCT = 0.0  # Registered with AIRE (Italians resident abroad): BPM applies no withholding on BTP coupons
 
     st.markdown("### 💰 Record Dividend or BTP Coupon")
     st.caption(
@@ -4743,7 +4743,7 @@ with tab11:
         div_tax = st.number_input(
             f"Tax withheld ({div_currency})", min_value=0.0, step=0.01, format="%.2f",
             value=default_tax, key=f"div_tax_{inc_type}_{div_gross}",
-            help="For BTP coupons BPM normally withholds 12.5% – check the coupon advice and correct if different.",
+            help="As an AIRE-registered non-resident, BPM withholds no tax on your BTP coupons – leave at 0 unless a coupon advice shows otherwise.",
         )
         div_amount = round(max(div_gross - div_tax, 0.0), 2)
         st.metric("Net received", f"{div_amount:,.2f} {div_currency}")
