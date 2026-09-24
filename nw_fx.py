@@ -126,14 +126,25 @@ def refresh_rba_rates(conn, force=False):
         if latest and not force:
             df = df[df["rate_date"] > latest]
         with conn.session as s:
+            s.execute(sql_text("SET LOCAL statement_timeout = '60s'"))
+            # Only one app session updates at a time; others just use what's stored.
+            got_lock = s.execute(sql_text("SELECT pg_try_advisory_xact_lock(424242)")).scalar()
+            if not got_lock:
+                s.rollback()
+                status["ok"] = True
+                return status
             if not df.empty:
+                # One statement for all rows (row-by-row inserts took minutes over the network).
                 s.execute(sql_text("""
                     INSERT INTO fx_rates (rate_date, from_currency, to_currency, rate, source)
-                    VALUES (:d, :c, 'AUD', :r, :src)
+                    SELECT u.d, u.c, 'AUD', u.r, :src
+                    FROM unnest(CAST(:ds AS date[]), CAST(:cs AS text[]), CAST(:rs AS numeric[])) AS u(d, c, r)
                     ON CONFLICT (rate_date, from_currency, to_currency)
                     DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source
-                """), [{"d": r.rate_date, "c": r.currency, "r": round(r.aud_per_unit, 8), "src": RBA_SOURCE}
-                       for r in df.itertuples()])
+                """), {"ds": [r.rate_date for r in df.itertuples()],
+                       "cs": [r.currency for r in df.itertuples()],
+                       "rs": [round(float(r.aud_per_unit), 8) for r in df.itertuples()],
+                       "src": RBA_SOURCE})
             for stmt in BACKFILL_STMTS:
                 s.execute(sql_text(stmt))
             s.commit()
