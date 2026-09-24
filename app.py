@@ -1839,6 +1839,7 @@ _PAGES = [
     "📈 Forecast",
     "📝 Data Entry",
     "🧾 Cost base & gains",
+    "🏠 Benalmadena (Zarpia)",
 ]
 
 # Used by the Diagnostics and Forecast pages as well as the Dashboard.
@@ -4318,17 +4319,86 @@ if _page == _PAGES[10]:
 
     st.divider()
 
-    # ── FORECAST vs ACTUALS TABLE ──────────────────────────────────────────────
+    # ── FORECAST vs ACTUALS ────────────────────────────────────────────────────
+    # Sep 2026: the old table compared past snapshots with a projection that
+    # always starts today, so nothing ever matched (all "None"). Now you save
+    # the projection as a baseline; later, each month-end snapshot is compared
+    # with what that baseline expected for that month.
     st.markdown("### 📋 Forecast vs Actuals")
-    if not df_actual.empty:
-        df_vs = df_actual.copy()
-        df_vs['Month'] = df_vs['Date'].apply(lambda d: round((d - pd.Timestamp(today)).days / 30.44))
-        df_vs = df_vs.merge(df_proj[['Month', 'Projected NW']].rename(columns={'Projected NW': 'Projected'}), on='Month', how='left')
-        df_vs['Variance ($)'] = df_vs['Total_AUD'] - df_vs['Projected']
-        df_vs['Variance (%)'] = (df_vs['Variance ($)'] / df_vs['Projected'] * 100).round(2)
-        st.dataframe(df_vs[['Date', 'Total_AUD', 'Projected', 'Variance ($)', 'Variance (%)']].style.format({'Total_AUD': '${:,.2f}', 'Projected': '${:,.2f}', 'Variance ($)': '${:+,.2f}', 'Variance (%)': '{:+.2f}%'}), use_container_width=True, hide_index=True)
+
+    @st.cache_resource
+    def _ensure_baseline_table():
+        try:
+            with get_pg().session as _s:
+                _s.execute(sql_text("""
+                    CREATE TABLE IF NOT EXISTS forecast_baselines (
+                        baseline_id uuid NOT NULL, saved_on date NOT NULL, month integer NOT NULL,
+                        proj_date date NOT NULL, projected_nw numeric NOT NULL,
+                        created_at timestamptz NOT NULL DEFAULT now(),
+                        PRIMARY KEY (baseline_id, month))"""))
+                _s.commit()
+            return True
+        except Exception as _e:
+            st.warning(f"Could not create the forecast baseline table: {_e}")
+            return False
+
+    _ensure_baseline_table()
+    _bl_all = get_pg().query(
+        "SELECT baseline_id::text AS baseline_id, saved_on, month, proj_date, projected_nw "
+        "FROM forecast_baselines ORDER BY saved_on DESC, month", ttl=0)
+
+    bcol1, bcol2 = st.columns([1, 3])
+    with bcol1:
+        if st.button("📌 Save this forecast as a baseline", key="fc_save_baseline"):
+            import uuid as _uuid
+            _bid = str(_uuid.uuid4())
+            with get_pg().session as _s:
+                _s.execute(sql_text("""
+                    INSERT INTO forecast_baselines (baseline_id, saved_on, month, proj_date, projected_nw)
+                    SELECT CAST(:bid AS uuid), :saved, u.m, u.d, u.nw
+                    FROM unnest(CAST(:ms AS int[]), CAST(:ds AS date[]), CAST(:nws AS numeric[])) AS u(m, d, nw)
+                """), {"bid": _bid, "saved": today,
+                       "ms": [int(x) for x in df_proj["Month"]],
+                       "ds": [pd.Timestamp(x).date() for x in df_proj["Date"]],
+                       "nws": [round(float(x), 2) for x in df_proj["Projected NW"]]})
+                _s.commit()
+            st.success("Baseline saved. Month by month, your actual net worth will be compared with it here.")
+            st.rerun()
+    with bcol2:
+        st.caption("Saves the projection above as it stands today. Each month after that, the table compares "
+                   "your actual net worth (last snapshot of the month) with what this baseline expected.")
+
+    if _bl_all.empty:
+        st.info("No baseline saved yet. Click **Save this forecast as a baseline** to start tracking.")
     else:
-        st.info("No actuals yet — save a net worth snapshot from the Dashboard to start tracking.")
+        _bl_all["saved_on"] = pd.to_datetime(_bl_all["saved_on"]).dt.date
+        _opts = _bl_all.drop_duplicates("baseline_id")[["baseline_id", "saved_on"]]
+        _labels = {r.baseline_id: f"Baseline saved {r.saved_on:%d %b %Y}" for r in _opts.itertuples()}
+        _sel = st.selectbox("Compare against", list(_labels), format_func=_labels.get, key="fc_baseline_sel")
+        _bl = _bl_all[_bl_all["baseline_id"] == _sel].copy()
+        _bl["proj_date"] = pd.to_datetime(_bl["proj_date"])
+        _bl["projected_nw"] = _bl["projected_nw"].astype(float)
+        _act = df_actual.copy() if not df_actual.empty else pd.DataFrame(columns=["Date", "Total_AUD"])
+        _act["Date"] = pd.to_datetime(_act["Date"])
+        _act = _act.sort_values("Date")
+        _rows = []
+        for _, r in _bl[_bl["proj_date"] <= pd.Timestamp(today)].iterrows():
+            _hit = _act[(_act["Date"] <= r["proj_date"]) & (_act["Date"] > r["proj_date"] - pd.Timedelta(days=31))]
+            if _hit.empty:
+                continue
+            _a = float(_hit.iloc[-1]["Total_AUD"])
+            _rows.append({"Month": r["proj_date"].strftime("%b %Y"), "Snapshot date": _hit.iloc[-1]["Date"].date(),
+                          "Actual": _a, "Forecast": r["projected_nw"],
+                          "Variance ($)": _a - r["projected_nw"],
+                          "Variance (%)": (_a - r["projected_nw"]) / r["projected_nw"] * 100})
+        if not _rows:
+            _first = _bl["proj_date"].min()
+            st.info(f"This baseline was saved on {_labels[_sel][15:]}. The first comparison appears after "
+                    f"{_first + pd.Timedelta(days=30):%d %b %Y}, once there's a snapshot a month on.")
+        else:
+            st.dataframe(pd.DataFrame(_rows).style.format(
+                {"Actual": "${:,.0f}", "Forecast": "${:,.0f}", "Variance ($)": "${:+,.0f}",
+                 "Variance (%)": "{:+.2f}%"}), use_container_width=True, hide_index=True)
     st.divider()
 
     st.divider()
@@ -4841,3 +4911,16 @@ if _page == _PAGES[11]:
 
 if _page == _PAGES[12]:
     render_lots_page(get_pg(), ACCOUNTS_DF, aud_rate_on)
+
+if _page == _PAGES[13]:
+    from nw_zarpia import render_property_page
+
+    def _aud_avg_for_fy(fy_year):
+        """Average Reserve Bank AUD-per-EUR rate over the Australian financial year."""
+        _s = RBA.get("EUR")
+        if _s is None or _s.empty:
+            return None
+        _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
+        return float(_w.mean()) if not _w.empty else None
+
+    render_property_page(_aud_avg_for_fy)
