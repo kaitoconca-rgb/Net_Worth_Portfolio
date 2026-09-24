@@ -285,6 +285,33 @@ def save_cash_balances(balances_dict):
 
 
 
+# ── RESERVE BANK EXCHANGE RATES (Sep 2026) ───────────────────────────────────
+# Official RBA daily rates (the ATO accepts these) are stored in fx_rates and
+# used for all historical conversions. See nw_fx.py.
+from nw_fx import ensure_fx_schema, refresh_rba_rates, load_rba_series, rba_rate, rba_latest, RBA_SOURCE
+
+
+@st.cache_resource
+def _ensure_fx_schema_once():
+    try:
+        ensure_fx_schema(get_pg())
+        return True
+    except Exception as e:
+        st.warning(f"Could not update the exchange-rate table: {e}")
+        return False
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Updating Reserve Bank exchange rates…")
+def _refresh_rba_daily(day_str):
+    return refresh_rba_rates(get_pg())
+
+
+_ensure_fx_schema_once()
+RBA_STATUS = _refresh_rba_daily(date.today().isoformat())
+RBA = load_rba_series(get_pg(), str(RBA_STATUS.get("latest")))
+FX_WARNINGS = []   # currencies valued with a rough fallback rate this run
+
+
 @st.cache_data(ttl=300)
 def get_fx_data():
     try:
@@ -293,9 +320,19 @@ def get_fx_data():
         hist = yf.download("EURAUD=X", start="2024-01-01", progress=False)['Close']
         if isinstance(hist, pd.DataFrame): hist = hist.iloc[:, 0]
         return now, hist
-    except: return 1.6500, None
+    except: return None, None
 
 fx_now, fx_hist = get_fx_data()
+if fx_now is None:
+    # Yahoo unavailable: use the latest Reserve Bank rate rather than a guess.
+    fx_now = rba_latest(RBA, "EUR")
+    if fx_now is None:
+        fx_now = 1.65
+        FX_WARNINGS.append("EUR")
+if RBA.get("EUR") is not None and not RBA["EUR"].empty:
+    # Historical EUR conversions (N26 purchase costs, dividends, charts) use
+    # the official daily rate. fx_now stays the live rate for today's value.
+    fx_hist = RBA["EUR"]
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -312,13 +349,26 @@ _FX_FALLBACK = {"USD": 1.55, "GBP": 2.0, "BRL": 0.27, "CHF": 1.8, "NZD": 0.9}
 
 
 def ccy_to_aud(cur):
-    """AUD value of 1 unit of `cur` (EUR uses the app-wide fx_now)."""
+    """Today's AUD value of 1 unit of `cur` (EUR uses the app-wide fx_now).
+    Live Yahoo rate, else the latest Reserve Bank rate, else a rough fallback
+    (flagged in the sidebar and on the Diagnostics page)."""
     cur = str(cur or "AUD").upper().strip()
     if cur in ("AUD", "A$"):
         return 1.0
     if cur == "EUR":
         return fx_now
-    return _yf_ccy_aud(cur) or _FX_FALLBACK.get(cur, 1.0)
+    r = _yf_ccy_aud(cur) or rba_latest(RBA, cur)
+    if r:
+        return r
+    if cur not in FX_WARNINGS:
+        FX_WARNINGS.append(cur)
+    return _FX_FALLBACK.get(cur, 1.0)
+
+
+def aud_rate_on(cur, d):
+    """AUD per 1 `cur` on date d: Reserve Bank rate for that day, else today's rate."""
+    r = rba_rate(RBA, cur, d)
+    return r if r is not None else ccy_to_aud(cur)
 
 
 def refresh_balance_caches():
@@ -359,8 +409,12 @@ df_raw['Manual_Price'] = np.nan  # manual overrides not migrated — flag if you
 df_raw = df_raw.dropna(subset=['ISIN', 'Qty']).sort_values('Data')
 
 def get_fx_at(dt):
-    try: return float(fx_hist.asof(dt))
-    except: return 1.6500
+    """AUD per EUR on a date (RBA daily rate; previous business day on weekends)."""
+    try:
+        v = float(fx_hist.asof(dt))
+        return v if v == v else fx_now   # NaN before the series starts
+    except Exception:
+        return fx_now
 
 df_raw['Inv_AUD'] = df_raw['Inv_EUR'] * df_raw['Data'].apply(get_fx_at)
 
@@ -1196,15 +1250,7 @@ def save_net_worth_snapshot(total, force=False):
                         amt = float(drow['amount']) if pd.notnull(drow['amount']) else 0.0
                         cur = str(drow['currency']).upper().strip()
                         div_date_val = pd.to_datetime(drow['div_date'])
-                        if cur.startswith('EUR'):
-                            amt_aud = amt * get_fx_at(div_date_val)
-                        elif cur.startswith('USD'):
-                            try:
-                                amt_aud = amt / float(yf.Ticker("AUDUSD=X").fast_info['last_price'])
-                            except:
-                                amt_aud = amt * 1.58
-                        else:
-                            amt_aud = amt
+                        amt_aud = amt * aud_rate_on(cur[:3], div_date_val)
                         port = str(drow['portfolio']).upper()
                         if str(drow['income_type']).lower() == 'coupon':
                             bond_coupons += amt_aud
@@ -1686,6 +1732,10 @@ def get_metal_prices():
 def get_hist_fx_rate(from_currency, to_currency, dt_str):
     if from_currency == to_currency:
         return 1.0
+    if to_currency == 'AUD':
+        r = rba_rate(RBA, from_currency, dt_str)
+        if r is not None:
+            return r
     # Try the direct cross first, then the inverse
     for ticker, invert in [(f"{from_currency}{to_currency}=X", False),
                            (f"{to_currency}{from_currency}=X", True)]:
@@ -1698,7 +1748,8 @@ def get_hist_fx_rate(from_currency, to_currency, dt_str):
                 return (1 / rate) if invert else rate
         except:
             continue
-    return 1.0
+    # No historical rate found: use today's rate (flagged) rather than 1.0.
+    return ccy_to_aud(from_currency) if to_currency == 'AUD' else 1.0
 
 def convert_purchase_to_aud(total_cost, currency, date_str):
     currency = str(currency).strip().upper()
@@ -1755,6 +1806,12 @@ with st.sidebar:
     st.markdown("### Claudio's Executive Console")
     _page = st.radio("Page", _PAGES, key="nav_page", label_visibility="collapsed")
     st.caption(f"Net worth: ${total_nw:,.0f} AUD")
+    if RBA_STATUS.get("error"):
+        st.warning("Couldn't update Reserve Bank exchange rates today - using the last stored ones. "
+                   "See Diagnostics.")
+    if FX_WARNINGS:
+        st.warning("Rough fallback exchange rate used for: " + ", ".join(sorted(set(FX_WARNINGS)))
+                   + ". Values in these currencies are approximate.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 0 — DASHBOARD
@@ -3484,6 +3541,30 @@ if _page == _PAGES[8]:
 if _page == _PAGES[9]:
     st.header("🛠️ Diagnostics")
     st.markdown("System status, data sources, and debug information.")
+
+    st.subheader("🏦 Reserve Bank exchange rates")
+    _rba_cur = sorted(RBA.keys())
+    _rba_last = max((sr.index.max() for sr in RBA.values()), default=None)
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Latest RBA rate date", f"{_rba_last:%d %b %Y}" if _rba_last is not None else "none")
+    r2.metric("Currencies stored", len(_rba_cur))
+    r3.metric("EUR/AUD (RBA)", f"{rba_latest(RBA, 'EUR'):.4f}" if rba_latest(RBA, "EUR") else "n/a")
+    st.caption("Source: RBA table F11.1 (4pm AEST daily). Used for all historical AUD conversions; "
+               "stored as AUD per 1 unit of foreign currency. " + (", ".join(_rba_cur) if _rba_cur else ""))
+    if RBA_STATUS.get("error"):
+        st.error(f"Last update failed: {RBA_STATUS['error']}")
+    if FX_WARNINGS:
+        st.warning("Fallback rate used this session for: " + ", ".join(sorted(set(FX_WARNINGS))))
+    if st.button("🔄 Update Reserve Bank rates now", key="rba_refresh_btn"):
+        _st = refresh_rba_rates(get_pg(), force=True)
+        _refresh_rba_daily.clear()
+        load_rba_series.clear()
+        if _st.get("error"):
+            st.error(f"Update failed: {_st['error']}")
+        else:
+            st.success(f"Updated: {_st['new_rows']} rates stored, latest {_st['latest']}.")
+            st.rerun()
+    st.divider()
     
     # FX Rates
     st.subheader("💱 Current Exchange Rates")
@@ -4790,10 +4871,12 @@ if _page == _PAGES[11]:
             else:
                 try:
                     dest_acc_id, dest_currency = CASH_ACCOUNTS[div_dest_account]
+                    div_fx = aud_rate_on(div_currency, div_date)     # AUD per unit, RBA rate that day
+                    dest_fx = aud_rate_on(dest_currency, div_date)
                     if div_currency == dest_currency:
                         amount_in_dest_ccy = div_amount
                     else:
-                        amount_in_dest_ccy = div_amount * ccy_to_aud(div_currency) / ccy_to_aud(dest_currency)
+                        amount_in_dest_ccy = div_amount * div_fx / dest_fx
 
                     tag = "coupon" if is_coupon else "dividend"
                     label = f" {div_security.strip()}" if div_security.strip() else ""
@@ -4811,7 +4894,7 @@ if _page == _PAGES[11]:
                                 "account_id": dest_acc_id,
                                 "tx_date": div_date,
                                 "amount": amount_in_dest_ccy,
-                                "fx_rate": ccy_to_aud(dest_currency),
+                                "fx_rate": dest_fx,
                                 "notes": f"[{tag}:{div_portfolio}]{label} {div_amount:.2f} {div_currency} net received",
                             }
                         )
@@ -4821,10 +4904,10 @@ if _page == _PAGES[11]:
                             sql_text("""
                             INSERT INTO dividends
                                 (div_date, portfolio, amount, currency, processed, transaction_id, account_id,
-                                 income_type, gross_amount, tax_withheld, security)
+                                 income_type, gross_amount, tax_withheld, security, fx_rate_to_aud)
                             VALUES
                                 (:div_date, :portfolio, :amount, :currency, false, :transaction_id, :account_id,
-                                 :income_type, :gross_amount, :tax_withheld, :security)
+                                 :income_type, :gross_amount, :tax_withheld, :security, :fx_rate_to_aud)
                         """),
                             {
                                 "div_date": div_date,
@@ -4837,6 +4920,7 @@ if _page == _PAGES[11]:
                                 "gross_amount": div_gross,
                                 "tax_withheld": div_tax,
                                 "security": div_security.strip() or None,
+                                "fx_rate_to_aud": div_fx,
                             }
                         )
                         s.commit()
