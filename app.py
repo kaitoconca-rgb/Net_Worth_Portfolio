@@ -4914,12 +4914,21 @@ if _page == _PAGES[12]:
     render_lots_page(get_pg(), ACCOUNTS_DF, aud_rate_on)
 
 def _aud_avg_for_fy(fy_year):
-    """Average Reserve Bank AUD-per-EUR rate over the Australian financial year."""
+    """A$ per EUR for an Australian financial year, the ATO way.
+
+    The ATO's published annual rate (e.g. FY26: 0.5817 EUR per A$) is the
+    average of the Reserve Bank's daily EUR-per-A$ rates, rounded to 4
+    decimals. Sep 2026 fix: this used to average the inverted A$-per-EUR
+    figures instead (FY26: 1.7215), which is not the same number - now
+    averages EUR-per-A$ like the ATO, then inverts (FY26: 1.7191).
+    """
     _s = RBA.get("EUR")
     if _s is None or _s.empty:
         return None
     _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
-    return float(_w.mean()) if not _w.empty else None
+    if _w.empty:
+        return None
+    return 1.0 / round(float((1.0 / _w).mean()), 4)
 
 
 if _page == _PAGES[13]:

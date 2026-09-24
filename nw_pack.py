@@ -163,8 +163,8 @@ def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
         ws = wb.create_sheet("Rental property")
         ws["A1"] = f"Rental property - Benalmadena, Spain - {fy}"
         ws["A1"].font = TITLE
-        ws["A2"] = (f"Source: {prop_src}. EUR amounts; A$ at the {fy} average Reserve Bank rate "
-                    f"({eur_avg:.4f} AUD per EUR)." if eur_avg else f"Source: {prop_src}.")
+        ws["A2"] = (f"Source: {prop_src}. EUR amounts; A$ at the ATO's {fy} average rate "
+                    f"({1 / eur_avg:.4f} EUR per A$, i.e. {eur_avg:.4f} A$ per EUR)." if eur_avg else f"Source: {prop_src}.")
         ws["A2"].font = NOTE
         r = 4
         rows = [("Weeks available for rent", prop["weeks_available"], None,
@@ -405,7 +405,8 @@ def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
 def rates_used_list(fy_year, eur_avg, income, gains):
     rows = []
     if eur_avg:
-        rows.append((f"{fy_name(fy_year)} average", "EUR", eur_avg, "Rental property (spread through the year)"))
+        rows.append((f"{fy_name(fy_year)} average", "EUR", eur_avg, "Rental property - ATO annual average "
+                     f"({1 / eur_avg:.4f} EUR per A$ = average of the Reserve Bank daily rates)"))
     if income is not None and not income.empty:
         for _, x in income[income["currency"].str.upper() != "AUD"].iterrows():
             payer = x["payer"] if isinstance(x["payer"], str) and x["payer"] else (x["portfolio"] or "")

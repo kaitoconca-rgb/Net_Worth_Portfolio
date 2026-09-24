@@ -242,7 +242,8 @@ def render_property_page(aud_avg_for_fy, pg=None):
     c4.metric("Deductible expenses", f"€{s['expenses_total']:,.2f}",
               f"A${s['expenses_total'] * rate:,.0f}" if rate else None, delta_color="off")
     if rate:
-        st.caption(f"A$ at the {s['fy']} average Reserve Bank rate ({rate:.4f} AUD per EUR).")
+        st.caption(f"A$ at the ATO's {s['fy']} average rate ({1 / rate:.4f} EUR per A$ = {rate:.4f} A$ per EUR), "
+                   "the same rate Zarpia uses.")
 
     st.markdown("#### Expenses by accountant category")
     t = s["expenses_by_cat"].reset_index()
