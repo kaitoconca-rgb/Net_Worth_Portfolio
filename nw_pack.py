@@ -11,7 +11,7 @@ rate for single items, the ATO financial-year average (in each property's own
 currency) for rental properties (income and costs spread through the year).
 """
 import io
-from datetime import date, datetime
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -86,15 +86,12 @@ def gains_for_fy(conn, fy_year, aud_rate_on):
 def property_for_fy(pg, fy_year):
     """([summary per property with activity in the FY], source text) or ([], reason)."""
     try:
-        if nw_zarpia.feed_configured():
-            feed, src = nw_zarpia.load_feed(), f"Zarpia (live, read {datetime.now():%d %b %Y})"
-        else:
-            feed = nw_zarpia.load_snapshot(pg)
-            if feed is None:
-                return [], "Zarpia not connected"
-            src = f"Zarpia (copy of {feed['copied_at']:%d %b %Y})"
+        feed, status = nw_zarpia.get_feed(pg)
+        src = nw_zarpia.status_text(status)
+        if status["error"]:
+            src += f" - live read failed: {status['error']}"
     except Exception as e:
-        return [], f"Couldn't read Zarpia: {e}"
+        return [], str(e)
     props = nw_zarpia.portfolio_fy_summaries(feed, fy_year)
     if not props:
         return [], f"No Zarpia rent or expenses for {fy_name(fy_year)}"

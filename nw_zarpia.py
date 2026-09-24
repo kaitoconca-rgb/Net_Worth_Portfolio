@@ -15,17 +15,24 @@ Income comes from two places in Zarpia:
   * manual / Gmail / Outlook income (nw_feed.manual_income) - spread over the
     nights of the stay, like Zarpia's reports.
 
-Two ways to get the data:
-  * live: a connection string in Streamlit secrets (ZARPIA_FEED_CONN_STRING);
-  * snapshot: a copy of the same views stored in this app's own database,
-    table public.zarpia_snapshot (one JSON row per copy; the newest is used).
-    Older snapshots (single property, no property_id) still load.
+Where the data comes from (get_feed):
+  * live: a connection string in Streamlit secrets (ZARPIA_FEED_CONN_STRING).
+    Each read is retried once (connection blips). Every successful read is
+    also saved as a copy in this app's own database (public.zarpia_snapshot)
+    when the data has changed.
+  * if the live read still fails (Zarpia's database down or over quota, a
+    permission problem...), the newest saved copy is used and the page says
+    so, with the date of the copy and the error -- never partial figures.
+  * with no live link configured, the saved copy is used.
+Older copies (single property, no property_id) still load.
 """
 import json
-from datetime import date
+import time
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text as sql_text
 
 SPANISH_NR_RATE = 0.24   # IRNR rate for non-EU residents (Modelo 210), on gross rent
 
@@ -137,43 +144,115 @@ def _frames_from_json(data):
     return feed
 
 
-def load_snapshot(_pg):
-    """Newest copy from public.zarpia_snapshot, or None if there isn't one."""
+def _latest_copy(_pg):
+    """(copied_at, raw dict) of the newest saved copy, or (None, None)."""
     try:
         df = _pg.query("SELECT copied_at, data::text AS data FROM public.zarpia_snapshot "
                        "ORDER BY id DESC LIMIT 1", ttl=0)
     except Exception:
-        return None
+        return None, None
     if df.empty:
+        return None, None
+    return pd.to_datetime(df.iloc[0]["copied_at"]), json.loads(df.iloc[0]["data"])
+
+
+def _feed_from_raw(raw):
+    return _typed(_frames_from_json(raw))
+
+
+def load_snapshot(_pg):
+    """Newest saved copy as a feed (with copied_at), or None if there isn't one."""
+    copied_at, raw = _latest_copy(_pg)
+    if raw is None:
         return None
-    feed = _typed(_frames_from_json(json.loads(df.iloc[0]["data"])))
-    feed["copied_at"] = pd.to_datetime(df.iloc[0]["copied_at"])
+    feed = _feed_from_raw(raw)
+    feed["copied_at"] = copied_at
     return feed
 
 
+FEED_QUERIES = {
+    "property": "SELECT * FROM nw_feed.property ORDER BY name",
+    "units": "SELECT * FROM nw_feed.units",
+    "bookings": "SELECT * FROM nw_feed.bookings ORDER BY arrival",
+    "accruals": "SELECT * FROM nw_feed.booking_accruals",
+    "expenses": "SELECT * FROM nw_feed.expenses ORDER BY expense_date",
+    "statements": "SELECT * FROM nw_feed.agent_statements ORDER BY settlement_date",
+    "manual_income": "SELECT * FROM nw_feed.manual_income ORDER BY checkin",
+}
+
+
+def _records(df):
+    """DataFrame -> JSON-safe records: UUID / date / Decimal -> str or number,
+    NaN / NaT -> null (Postgres jsonb rejects NaN)."""
+    clean = df.astype(object).where(df.notna(), None)
+    return json.loads(json.dumps(clean.to_dict("records"), default=str))
+
+
 @st.cache_data(ttl=3600, show_spinner="Reading your properties from Zarpia…")
-def load_feed():
-    c = _conn()
-    q = lambda sql: c.query(sql, ttl=0)
-    feed = {
-        "property": q("SELECT * FROM nw_feed.property ORDER BY name"),
-        "units": q("SELECT * FROM nw_feed.units"),
-        "bookings": q("SELECT * FROM nw_feed.bookings ORDER BY arrival"),
-        "accruals": q("SELECT * FROM nw_feed.booking_accruals"),
-        "expenses": q("SELECT * FROM nw_feed.expenses ORDER BY expense_date"),
-        "statements": q("SELECT * FROM nw_feed.agent_statements ORDER BY settlement_date"),
-    }
+def fetch_live_raw():
+    """All feed views, as plain JSON-able records. Every view must be read:
+    one failing view fails the whole read (no partial figures). Retried once."""
+    last_err = None
+    for attempt in range(2):
+        try:
+            c = _conn()
+            raw = {}
+            for k, sql in FEED_QUERIES.items():
+                df = c.query(sql, ttl=0)
+                raw[k] = _records(df)
+            return raw
+        except Exception as e:          # connection blip, Zarpia down, missing view / permission
+            last_err = e
+            if attempt == 0:
+                time.sleep(2)
+    raise last_err
+
+
+def _save_copy(pg, raw):
+    """Store the live data as the fallback copy, only when it changed."""
     try:
-        feed["manual_income"] = q("SELECT * FROM nw_feed.manual_income ORDER BY checkin")
+        _, latest = _latest_copy(pg)
+        if latest is not None and latest == json.loads(json.dumps(raw)):
+            return
+        with pg.session as s:
+            s.execute(sql_text("INSERT INTO public.zarpia_snapshot (copied_at, data) VALUES (now(), :d)"),
+                      {"d": json.dumps(raw)})
+            # keep the last 30 copies
+            s.execute(sql_text("DELETE FROM public.zarpia_snapshot WHERE id NOT IN "
+                               "(SELECT id FROM public.zarpia_snapshot ORDER BY id DESC LIMIT 30)"))
+            s.commit()
     except Exception:
-        # Zarpia migration 149 not applied yet: icnea income only.
-        feed["manual_income"] = pd.DataFrame(columns=FEED_COLS["manual_income"])
-    for k, cols in FEED_COLS.items():
-        for col in cols:
-            if col not in feed[k].columns:
-                feed[k][col] = None
-    _single_property_ids(feed)
-    return _typed(feed)
+        pass                             # saving the copy must never break the page
+
+
+def get_feed(pg=None):
+    """(feed, status). status: {"mode": "live"|"copy", "copied_at": ts|None, "error": str|None}.
+    Raises only if there is no live link AND no saved copy."""
+    if feed_configured():
+        try:
+            raw = fetch_live_raw()
+            if pg is not None and not st.session_state.get("zf_copy_saved"):
+                _save_copy(pg, raw)
+                st.session_state["zf_copy_saved"] = True
+            return _feed_from_raw(raw), {"mode": "live", "copied_at": None, "error": None}
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}" if str(e) else type(e).__name__
+            feed = load_snapshot(pg) if pg is not None else None
+            if feed is None:
+                raise RuntimeError(f"Couldn't read Zarpia and there is no saved copy ({err})") from e
+            return feed, {"mode": "copy", "copied_at": feed["copied_at"], "error": err}
+    feed = load_snapshot(pg) if pg is not None else None
+    if feed is None:
+        raise RuntimeError("Zarpia not connected and no saved copy")
+    return feed, {"mode": "copy", "copied_at": feed["copied_at"], "error": None}
+
+
+def status_text(status):
+    """One line for captions / the accountant pack."""
+    if status["mode"] == "live":
+        return f"Zarpia (live, read {datetime.now():%d %b %Y})"
+    when = f"{status['copied_at']:%d %b %Y %H:%M} UTC" if status.get("copied_at") is not None else "unknown date"
+    return f"Zarpia (saved copy of {when})"
 
 
 def _typed(feed):
@@ -448,24 +527,24 @@ def _render_detail(s, rate):
 
 def render_property_page(aud_avg_for_fy, pg=None):
     st.header("🏠 Investment properties (from Zarpia)")
-    if feed_configured():
-        try:
-            feed = load_feed()
-        except Exception as e:
-            st.error(f"Couldn't read from Zarpia: {e}")
-            st.markdown(SETUP_HELP)
-            return
-        if st.button("🔄 Refresh from Zarpia", key="zf_refresh"):
-            load_feed.clear()
-            st.rerun()
-    else:
-        feed = load_snapshot(pg) if pg is not None else None
-        if feed is None:
-            st.info("No property data yet - ask Claude to copy it from Zarpia.")
-            return
-        st.caption(f"Copied from Zarpia on {feed['copied_at']:%d %b %Y %H:%M} UTC. "
-                   "Ask Claude to refresh it when new bookings or expenses are in Zarpia "
-                   "(e.g. before the accountant pack).")
+    try:
+        feed, status = get_feed(pg)
+    except Exception as e:
+        st.error(str(e))
+        st.markdown(SETUP_HELP)
+        return
+    if feed_configured() and st.button("🔄 Refresh from Zarpia", key="zf_refresh"):
+        fetch_live_raw.clear()
+        st.session_state.pop("zf_copy_saved", None)
+        st.rerun()
+    if status["error"]:
+        st.warning(f"Couldn't read Zarpia live just now, so this page shows the **saved copy from "
+                   f"{status['copied_at']:%d %b %Y %H:%M} UTC** - complete up to that date; anything added in "
+                   f"Zarpia since isn't included. Try **Refresh from Zarpia** in a few minutes. "
+                   f"If it keeps failing, check that Zarpia's Supabase project is up (quota) - "
+                   f"error: `{status['error']}`")
+    elif status["mode"] == "copy":
+        st.caption(f"Saved copy from Zarpia, {status['copied_at']:%d %b %Y %H:%M} UTC (no live link configured).")
 
     years = available_fys(feed)
     if not years:

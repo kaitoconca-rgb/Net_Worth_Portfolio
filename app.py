@@ -94,6 +94,43 @@ ensure_income_schema()
 
 # ── ACCOUNT REGISTRY (Sep 2026) ──────────────────────────────────────────────
 # Accounts are managed from the Cash page instead of being hard-coded here.
+# ── Reload the helper modules (nw_*.py) when one of them changes ─────────────
+# Streamlit Cloud re-runs app.py after a push but keeps helper modules it has
+# already imported in memory, so a change to e.g. nw_zarpia.py alone was not
+# picked up until the app was rebooted (Sep 2026). If any nw_*.py file is
+# newer than when it was loaded, reload all of them (dependencies first), so
+# the "from nw_... import" lines below bind to the new code.
+import importlib as _importlib
+import os as _os
+import sys as _sys
+
+_NW_MODULES = ["nw_fx", "nw_accounts", "nw_income", "nw_lots", "nw_zarpia", "nw_pack"]
+
+
+def _reload_changed_nw_modules():
+    loaded = [_sys.modules[m] for m in _NW_MODULES if m in _sys.modules]
+    changed = False
+    for mod in loaded:
+        try:
+            mtime = _os.path.getmtime(mod.__file__)
+            if not hasattr(mod, "_nw_loaded_mtime"):      # first seen: loaded fresh, just record it
+                mod._nw_loaded_mtime = mtime
+            elif mtime > mod._nw_loaded_mtime:
+                changed = True
+        except OSError:
+            pass
+    if not changed:
+        return
+    for mod in loaded:
+        try:
+            mod = _importlib.reload(mod)
+            mod._nw_loaded_mtime = _os.path.getmtime(mod.__file__)
+        except Exception as _e:
+            st.warning(f"Couldn't reload {mod.__name__}: {_e} - reboot the app if pages look out of date.")
+
+
+_reload_changed_nw_modules()
+
 from nw_accounts import (ensure_accounts_schema, load_accounts, clear_account_caches, cash_accounts,
                          role_id, flag_for, term_deposit_status, render_accounts_manager, CASH_CATEGORIES)
 
