@@ -204,7 +204,7 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
         shown = shown[shown["Date"].map(fy_label) == fy_filter]
 
     edited = st.data_editor(
-        shown, key="income_editor", hide_index=True, use_container_width=True,
+        shown, key="income_editor", hide_index=True, width="stretch",
         disabled=["Date", "Source", "Net", "Currency", "AUD rate"],
         column_config={
             "id": None,
@@ -262,7 +262,7 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
                  .rename(columns={"Tax": "Tax withheld", "Gross_AUD": "Gross A$", "Tax_AUD": "Tax withheld A$"}))
     st.dataframe(summary.style.format({"Gross": "{:,.2f}", "Tax withheld": "{:,.2f}", "Net": "{:,.2f}",
                                        "Gross A$": "{:,.2f}", "Tax withheld A$": "{:,.2f}"}),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
     foreign = f[f["Country"] != "AU"]
     m1, m2, m3 = st.columns(3)
     m1.metric("Foreign income (gross, A$)", f"{foreign['Gross AUD'].sum():,.2f}")

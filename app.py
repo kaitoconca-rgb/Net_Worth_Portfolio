@@ -1956,13 +1956,13 @@ if _page == _PAGES[0]:
         fig_pie = px.pie(df_alloc, values="Value", names="Platform", hole=0.45,
                          color_discrete_sequence=COLOURS)
         fig_pie.update_layout(height=350, margin=dict(t=10, b=10))
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
     with col_bar:
         fig_bar = px.bar(df_alloc, x="Platform", y="Value", color="Platform",
                          color_discrete_sequence=COLOURS)
         fig_bar.update_layout(height=350, showlegend=False,
                               yaxis_tickprefix="$", margin=dict(t=10, b=10))
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
     st.divider()
 
     # ── SECTION 4: Net Worth History ──────────────────────────────────────────
@@ -2011,7 +2011,7 @@ if _page == _PAGES[0]:
         fig_hist.update_layout(height=380, hovermode="x unified",
                                yaxis=dict(title="AUD $", tickprefix="$"),
                                margin=dict(t=20, b=20, r=220))
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
         # Summary stats row
         if len(df_hist) > 1:
@@ -2138,7 +2138,7 @@ if _page == _PAGES[0]:
                             .map(lambda v: "color:#27ae60" if isinstance(v,(int,float)) and v>0
                                  else ("color:#e74c3c" if isinstance(v,(int,float)) and v<0 else ""),
                                  subset=["Gain (AUD)","% of Mkt Gain"]),
-                            use_container_width=True, hide_index=True
+                            width="stretch", hide_index=True
                         )
                         _df_plot = _df_pg[_df_pg["Gain (AUD)"].abs() > 0]
                         if not _df_plot.empty:
@@ -2155,7 +2155,7 @@ if _page == _PAGES[0]:
                                                   coloraxis_showscale=False,
                                                   yaxis_tickprefix="$",
                                                   margin=dict(t=10,b=10))
-                            st.plotly_chart(_fig_pg, use_container_width=True)
+                            st.plotly_chart(_fig_pg, width="stretch")
                     else:
                         st.caption("Platform breakdown available after next snapshot.")
 
@@ -2236,7 +2236,7 @@ if _page == _PAGES[0]:
                     height=420, showlegend=False,
                     margin=dict(t=50, b=20)
                 )
-                st.plotly_chart(_fig_wf, use_container_width=True)
+                st.plotly_chart(_fig_wf, width="stretch")
 
                 # ── 5e. Cumulative stacked view ───────────────────────────
                 st.markdown("#### 📈 Cumulative Change Over Period")
@@ -2269,7 +2269,7 @@ if _page == _PAGES[0]:
                         legend=dict(orientation="h", y=1.05),
                         margin=dict(t=30, b=10)
                     )
-                    st.plotly_chart(_fig_cum, use_container_width=True)
+                    st.plotly_chart(_fig_cum, width="stretch")
 
                 # ── 5f. Best / Worst months ───────────────────────────────
                 if len(df_hist) > 2:
@@ -2387,7 +2387,7 @@ if _page == _PAGES[1]:
             'FX_Acquisto_Medio': '{:.4f}', 'Prezzo_Vendita_Unitario': '€{:.4f}',
             'Valore_Vendita_EUR': '€{:,.2f}', 'FX_Vendita': '{:.4f}',
             'Profit_EUR': '€{:,.2f}', 'Profit_AUD': '${:,.2f}'
-        }), use_container_width=True)
+        }), width="stretch")
     else:
         st.info("Nessuna vendita registrata.")
     st.divider()
@@ -2395,18 +2395,18 @@ if _page == _PAGES[1]:
     with col_left:
         st.subheader("Allocation % (Solo Attivi)")
         fig_pie = px.pie(df_unrealized, values='Current_Value', names='ISIN', hole=0.4)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
     with col_right:
         st.subheader("Profitto per Asset (Inclusi Chiusi)")
         fig_bar = px.bar(df_perf, x='ISIN', y=['Profit_EUR', 'Profit_AUD'], barmode='group',
                          labels={'value': 'Profitto (€/$)', 'variable': 'Valuta'},
                          color_discrete_map={'Profit_EUR': '#1f77b4', 'Profit_AUD': '#2ca02c'})
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
     if not df_realized.empty:
         with st.expander("Visualizza Dettaglio Posizioni Chiuse"):
             st.dataframe(df_realized[['ISIN', 'Profit_EUR', 'Profit_AUD']].style.format(
                 {'Profit_EUR': '€{:,.2f}', 'Profit_AUD': '${:,.2f}'}),
-                hide_index=True, use_container_width=True)
+                hide_index=True, width="stretch")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — N26 SIMULATORE ATO
@@ -2492,7 +2492,7 @@ if _page == _PAGES[2]:
     }
     display_cols = ['ISIN', 'Data Acquisto', 'Stato', 'CGT', 'Qty Residua', 'Prezzo Acq (€)',
                     'Inv EUR (€)', 'Att EUR (€)', 'Var % EUR', 'Inv AUD ($)', 'Att AUD ($)', 'Var % AUD', '% Vendi']
-    ed = st.data_editor(df_sim_lotti[display_cols], column_config=column_config, hide_index=True, use_container_width=True)
+    ed = st.data_editor(df_sim_lotti[display_cols], column_config=column_config, hide_index=True, width="stretch")
     sel = ed[ed['% Vendi'] > 0].copy()
     if not sel.empty:
         sel['E_Out'] = sel['Att EUR (€)'] * (sel['% Vendi']/100)
@@ -2566,7 +2566,7 @@ if _page == _PAGES[3]:
             height=600, yaxis_title="Valore Mercato (€)", xaxis_title="Timeline",
             legend_title="Asset (ISIN)", hoverdistance=100, spikedistance=1000)
         fig_timeline.update_traces(hovertemplate="€%{y:,.2f}<extra></extra>")
-        st.plotly_chart(fig_timeline, use_container_width=True)
+        st.plotly_chart(fig_timeline, width="stretch")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — N26 FX ANALYSIS
@@ -2584,7 +2584,7 @@ if _page == _PAGES[4]:
                          annotation_text=f"Today: {fx_now:.4f}", annotation_position="bottom right")
         fig_fx.update_layout(height=350, yaxis_title="AUD per 1 EUR", xaxis_title="Date",
                              hovermode="x unified", margin=dict(t=30, b=30))
-        st.plotly_chart(fig_fx, use_container_width=True)
+        st.plotly_chart(fig_fx, width="stretch")
     else:
         st.warning("FX history not available.")
     st.divider()
@@ -2628,7 +2628,7 @@ if _page == _PAGES[4]:
                                yaxis=dict(title="EUR €", tickprefix="€", side='left'),
                                yaxis2=dict(title="AUD $", tickprefix="$", side='right', overlaying='y'),
                                legend=dict(orientation="h", y=1.08), margin=dict(t=40, b=30))
-        st.plotly_chart(fig_dual, use_container_width=True)
+        st.plotly_chart(fig_dual, width="stretch")
         st.divider()
 
     st.markdown("### Market Return Over Time: EUR vs AUD")
@@ -2716,7 +2716,7 @@ if _page == _PAGES[4]:
             yaxis2=dict(title="AUD $ gain/loss", side='right', overlaying='y', scaleanchor='y', scaleratio=1,
                         zeroline=True, zerolinecolor='#bdc3c7', showticklabels=False),
             legend=dict(orientation="h", y=1.08), margin=dict(t=40, b=30))
-        st.plotly_chart(fig_mr, use_container_width=True)
+        st.plotly_chart(fig_mr, width="stretch")
         last = df_mr_timeline.iloc[-1]
         gap = last['FX Impact (AUD)']
         gap_colour = "#27ae60" if gap >= 0 else "#e74c3c"
@@ -2843,7 +2843,7 @@ if _page == _PAGES[4]:
         fig_decomp_bar.update_layout(
             barmode='stack', title="AUD P&L Split: Market Return vs FX Impact",
             yaxis_title="AUD $", height=400, hovermode="x unified", legend=dict(orientation="h", y=1.15))
-        st.plotly_chart(fig_decomp_bar, use_container_width=True)
+        st.plotly_chart(fig_decomp_bar, width="stretch")
         st.markdown("#### Lot-Level Detail")
         def highlight_closed(row):
             if row['Status'] == '🔒 Closed':
@@ -2858,7 +2858,7 @@ if _page == _PAGES[4]:
                               'FX at Sale/Today': '{:.4f}', 'FX Δ': '{:+.4f}',
                               'Market Return in AUD (at purchase FX)': '${:,.2f}',
                               'FX Impact (AUD)': '${:,.2f}', 'Total P&L (AUD)': '${:,.2f}'}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — RAIZ & VANGUARD
@@ -2961,20 +2961,20 @@ if _page == _PAGES[5]:
                           subset=['P&L_AUD', 'ROI_%'])
                      .format({'Net_Qty': '{:.4f}', 'Current_Price': '${:.4f}', 'Cost_Basis_AUD': '${:,.2f}',
                               'Value_AUD': '${:,.2f}', 'P&L_AUD': '${:,.2f}', 'ROI_%': '{:.2f}%'}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
         col_r1, col_r2 = st.columns(2)
         with col_r1:
             fig_raiz_pie = px.pie(holdings_raiz, values='Value_AUD', names='ETF Name', hole=0.4,
                                   title=f"Raiz Allocation — ${raiz_total:,.2f}")
             fig_raiz_pie.update_layout(height=350)
-            st.plotly_chart(fig_raiz_pie, use_container_width=True)
+            st.plotly_chart(fig_raiz_pie, width="stretch")
         with col_r2:
             fig_raiz_bar = px.bar(holdings_raiz, x='ETF Name', y='P&L_AUD', color='P&L_AUD',
                                   color_continuous_scale=['#e74c3c', '#95a5a6', '#27ae60'], title="Raiz P&L by ETF")
             fig_raiz_bar.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
             fig_raiz_bar.update_layout(height=350, coloraxis_showscale=False)
-            st.plotly_chart(fig_raiz_bar, use_container_width=True)
+            st.plotly_chart(fig_raiz_bar, width="stretch")
 
         with st.expander("📊 Raiz Price Sources"):
             price_info = []
@@ -2987,14 +2987,14 @@ if _page == _PAGES[5]:
                 price_used = live_p if (live_p and live_p > 0) else csv_p
                 price_info.append({"ETF": code, "Price Used": f"${price_used:.4f}", "Source": source,
                                    "CSV Last Price": f"${csv_p:.4f}", "CSV Last Date": csv_date_str})
-            st.dataframe(pd.DataFrame(price_info), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(price_info), hide_index=True, width="stretch")
 
         with st.expander("📋 Raiz Full Trade History"):
             st.dataframe(df_csv[['Trade Date', 'Transaction Type', 'Instrument Code', 'Quantity', 'Price', 'Amount']]
                          .sort_values('Trade Date', ascending=False)
                          .style.format({'Trade Date': lambda x: x.strftime('%Y-%m-%d'), 'Quantity': '{:.6f}',
                                         'Price': '${:.4f}', 'Amount': '${:,.4f}'}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
     st.divider()
 
@@ -3084,13 +3084,13 @@ if _page == _PAGES[5]:
                                   'Current Price': '${:.4f}',
                                   'Cost (AUD)': '${:,.2f}', 'Value (AUD)': '${:,.2f}',
                                   'P&L (AUD)': '${:,.2f}', 'ROI %': '{:.2f}%'}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
         with st.expander("📋 VDAL Full Trade History"):
             st.dataframe(df_vdal[['Date', 'Transaction', 'Quantity', 'Purchase Price']]
                          .style.format({'Date': lambda x: x.strftime('%Y-%m-%d'),
                                         'Quantity': '{:.2f}', 'Purchase Price': '${:.4f}'}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
     st.divider()
 
@@ -3109,7 +3109,7 @@ if _page == _PAGES[5]:
                      .format({'Quantity': '{:.0f}',
                               'Live Price (AUD)': lambda x: f'${x:,.4f}' if x else 'N/A',
                               'Value (AUD)': lambda x: f'${x:,.2f}' if x else 'N/A'}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
         col_sp, col_sb = st.columns(2)
         with col_sp:
@@ -3118,14 +3118,14 @@ if _page == _PAGES[5]:
                                     title=f"CommSec Allocation — ${shares_total_aud:,.2f}",
                                     color_discrete_sequence=px.colors.qualitative.Set3)
             fig_shares_pie.update_layout(height=320)
-            st.plotly_chart(fig_shares_pie, use_container_width=True)
+            st.plotly_chart(fig_shares_pie, width="stretch")
         with col_sb:
             fig_shares_bar = px.bar(df_shares[df_shares['Value (AUD)'] > 0],
                                     x='Name', y='Value (AUD)', color='Name',
                                     color_discrete_sequence=px.colors.qualitative.Set3,
                                     title="Value by Stock (AUD)")
             fig_shares_bar.update_layout(height=320, showlegend=False, yaxis_tickprefix="$")
-            st.plotly_chart(fig_shares_bar, use_container_width=True)
+            st.plotly_chart(fig_shares_bar, width="stretch")
     else:
         st.info("No CommSec holdings found in Postgres yet. Run add_commsec_purchase.py to register a buy.")
 
@@ -3150,7 +3150,7 @@ if _page == _PAGES[5]:
                               'Current Price': '${:.4f}',
                               'Cost (AUD)': '${:,.2f}', 'Value (AUD)': '${:,.2f}',
                               'P&L (AUD)': '${:,.2f}', 'ROI %': '{:.2f}%'}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
         lot1, lot2, lot3 = st.columns(3)
         lot1.metric("Total Cost Basis", f"${df_commsec_lots['Cost (AUD)'].sum():,.2f}")
@@ -3174,7 +3174,7 @@ if _page == _PAGES[5]:
                 """,
                 params={"acc_id": SHARES_ACCOUNT_ID}, ttl=0,
             )
-            st.dataframe(df_all_commsec_tx, use_container_width=True, hide_index=True)
+            st.dataframe(df_all_commsec_tx, width="stretch", hide_index=True)
         except Exception as e:
             st.caption(f"Could not load full trade history: {e}")
 
@@ -3194,7 +3194,7 @@ if _page == _PAGES[5]:
                               title=f"Total: ${combined_value:,.2f} AUD",
                               color_discrete_sequence=["#27ae60", "#2ecc71", "#1abc9c"])
         fig_combined.update_layout(height=300)
-        st.plotly_chart(fig_combined, use_container_width=True)
+        st.plotly_chart(fig_combined, width="stretch")
     with cs2:
         st.metric("Raiz ETFs", f"${raiz_total_aud:,.2f}")
         st.metric("Vanguard VDAL", f"${vanguard_total_aud:,.2f}")
@@ -3350,14 +3350,14 @@ if _page == _PAGES[6]:
                                         title="Metals Allocation",
                                         color_discrete_sequence=[m['colour'] for m in metals_summary])
                 fig_metals_pie.update_layout(height=300)
-                st.plotly_chart(fig_metals_pie, use_container_width=True)
+                st.plotly_chart(fig_metals_pie, width="stretch")
             with col_mb:
                 fig_metals_bar = px.bar(df_metals_chart, x='Metal', y='P&L (AUD)', color='Metal',
                                         color_discrete_sequence=[m['colour'] for m in metals_summary],
                                         title="P&L by Metal (AUD)")
                 fig_metals_bar.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
                 fig_metals_bar.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig_metals_bar, use_container_width=True)
+                st.plotly_chart(fig_metals_bar, width="stretch")
 
             st.divider()
 
@@ -3414,7 +3414,7 @@ if _page == _PAGES[6]:
                                               'Live Price (AUD)': lambda x: f'${x:,.2f}' if x else 'N/A',
                                               'Value (AUD)': '${:,.2f}',
                                               'P&L (AUD)': '${:,.2f}'}),
-                                     use_container_width=True, hide_index=True)
+                                     width="stretch", hide_index=True)
                         # Totals row
                         tot_qty = df_lots['Qty'].sum()
                         tot_cost = df_lots['Cost (AUD)'].sum()
@@ -3590,7 +3590,7 @@ if _page == _PAGES[8]:
             })
         st.dataframe(pd.DataFrame(td_rows).style.format(
             {"Deposit": "{:,.2f}", "Rate %": "{:.2f}", "Interest so far": "{:,.2f}", "Interest at maturity": "{:,.2f}"},
-            na_rep="-"), use_container_width=True, hide_index=True)
+            na_rep="-"), width="stretch", hide_index=True)
         st.caption("Interest is estimated (simple interest on the deposit). It's added to your balance, and "
                    "counted for tax, when it's actually paid.")
 
@@ -3610,7 +3610,7 @@ if _page == _PAGES[8]:
     if not df_cash.empty:
         st.dataframe(df_cash.style.format({"Balance": "{:,.2f}", "Value (AUD)": "${:,.2f}",
                                            "Value (EUR)": "€{:,.2f}", "Rate %": "{:.2f}"}, na_rep="-"),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         df_cash_plot = df_cash[df_cash["Value (AUD)"] > 0]
         if not df_cash_plot.empty:
             with st.expander("Allocation chart"):
@@ -3618,7 +3618,7 @@ if _page == _PAGES[8]:
                                       title=f"Total Cash: ${total_cash_aud:,.2f} AUD",
                                       color_discrete_sequence=px.colors.qualitative.Set2)
                 fig_cash_pie.update_layout(height=400, margin=dict(t=40, b=20))
-                st.plotly_chart(fig_cash_pie, use_container_width=True)
+                st.plotly_chart(fig_cash_pie, width="stretch")
 
     st.divider()
     render_accounts_manager(get_pg(), current_balances, refresh_balance_caches)
@@ -3678,7 +3678,7 @@ if _page == _PAGES[9]:
     st.subheader("📊 N26 European Portfolio — Price Feed Status")
     if diag_logs:
         df_diag = pd.DataFrame.from_dict(diag_logs, orient='index')
-        st.dataframe(df_diag, use_container_width=True)
+        st.dataframe(df_diag, width="stretch")
     else:
         st.info("No N26 price data available")
     
@@ -4180,7 +4180,7 @@ if _page == _PAGES[10]:
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)'
     )
-    st.plotly_chart(fig_proj, use_container_width=True)
+    st.plotly_chart(fig_proj, width="stretch")
     st.divider()
     
     # ==================== MONTE CARLO SIMULATION ====================
@@ -4259,7 +4259,7 @@ if _page == _PAGES[10]:
                 fig_hist.add_vline(x=start_nw, line_dash="dash", line_color="red", annotation_text="Starting NW")
                 fig_hist.add_vline(x=endings_series.quantile(0.5), line_dash="dash", line_color="green", annotation_text="Median")
                 fig_hist.update_layout(title="Distribution of 5-Year Outcomes", xaxis_title="Net Worth (AUD)", xaxis_tickprefix="$", height=400)
-                st.plotly_chart(fig_hist, use_container_width=True)
+                st.plotly_chart(fig_hist, width="stretch")
     # ── KEY MILESTONES ─────────────────────────────────────────────────────────
     st.markdown("### 🎯 Key Milestones")
     milestones = [500000, 750000, 1000000, 1500000, 2000000, 2500000, 3000000]
@@ -4275,7 +4275,7 @@ if _page == _PAGES[10]:
                 milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '🎯 Projected', 'ETA': eta.strftime('%b %Y'), 'Months Away': int(months_away)})
             else:
                 milestone_rows.append({'Milestone': f"${m_val/1e6:.1f}M AUD", 'Status': '⏳ Beyond 5yr', 'ETA': '>2031'})
-    st.dataframe(pd.DataFrame(milestone_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(milestone_rows), width="stretch", hide_index=True)
 
     st.divider()
 
@@ -4336,7 +4336,7 @@ if _page == _PAGES[10]:
         st.dataframe(df_yearly.style.format({
             'Start NW': '${:,.0f}', 'End NW': '${:,.0f}', 'Year Growth': '${:,.0f}',
             'Net Cash Flow': '${:,.0f}', 'Unrealized Gains': '${:,.0f}',
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
 
         st.divider()
 
@@ -4345,7 +4345,7 @@ if _page == _PAGES[10]:
         fig_consistent.add_trace(go.Bar(name='Net Cash Flow (after tax)', x=df_yearly['Year'].astype(str), y=df_yearly['Net Cash Flow'], marker_color='#e74c3c'))
         fig_consistent.add_trace(go.Bar(name='Unrealized Portfolio Gains', x=df_yearly['Year'].astype(str), y=df_yearly['Unrealized Gains'], marker_color='#27ae60'))
         fig_consistent.update_layout(title="Wealth Increase Breakdown", xaxis_title="Year", yaxis_title="Amount (AUD)", yaxis_tickprefix="$", barmode='stack', height=450)
-        st.plotly_chart(fig_consistent, use_container_width=True)
+        st.plotly_chart(fig_consistent, width="stretch")
 
         st.markdown("#### 💡 Summary")
         total_cash = df_yearly['Net Cash Flow'].sum()
@@ -4436,7 +4436,7 @@ if _page == _PAGES[10]:
         else:
             st.dataframe(pd.DataFrame(_rows).style.format(
                 {"Actual": "${:,.0f}", "Forecast": "${:,.0f}", "Variance ($)": "${:+,.0f}",
-                 "Variance (%)": "{:+.2f}%"}), use_container_width=True, hide_index=True)
+                 "Variance (%)": "{:+.2f}%"}), width="stretch", hide_index=True)
     st.divider()
 
     st.divider()
@@ -4719,7 +4719,7 @@ if _page == _PAGES[10]:
             margin=dict(t=50, b=30)
         )
         
-        st.plotly_chart(fig_combined, use_container_width=True)
+        st.plotly_chart(fig_combined, width="stretch")
         
         # Breakdown by currency
         st.markdown("#### 📋 Breakdown by Currency")
@@ -4765,7 +4765,7 @@ if _page == _PAGES[10]:
                     'Combined Advantage': '${:+,.0f}',
                 })
                 .map(lambda v: 'color: #27ae60' if isinstance(v, (int, float)) and v > 0 and 'Advantage' in str(v) else ('color: #e74c3c' if isinstance(v, (int, float)) and v < 0 and 'Advantage' in str(v) else '')),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
     else:
@@ -4799,7 +4799,7 @@ if _page == _PAGES[11]:
                                                           help="Leave blank to auto-calculate as Quantity × Price"),
                 "Notes": st.column_config.TextColumn("Notes"),
             },
-            num_rows="dynamic", use_container_width=True, hide_index=True, key="n26_editor",
+            num_rows="dynamic", width="stretch", hide_index=True, key="n26_editor",
         )
         if st.button("💾 Save N26 Changes", type="primary", key="save_n26_edits"):
             ok, err = sync_transaction_edits(N26_ACCOUNT_ID, "", "EUR", "ETF", df_n26_edit_orig, df_n26_edited)
@@ -4859,7 +4859,7 @@ if _page == _PAGES[11]:
                              f"{_df_bulk['Already Imported'].sum()} already imported (will be skipped).")
                     st.dataframe(
                         _df_bulk[['Trade Date', 'Instrument Code', 'Transaction Type', 'Quantity', 'Price', 'Amount', 'Already Imported']],
-                        use_container_width=True, hide_index=True
+                        width="stretch", hide_index=True
                     )
 
                     _df_new = _df_bulk[~_df_bulk['Already Imported']]
@@ -4930,7 +4930,7 @@ if _page == _PAGES[11]:
                                                           help="Leave blank to auto-calculate as Quantity × Price"),
                 "Notes": st.column_config.TextColumn("Notes"),
             },
-            num_rows="dynamic", use_container_width=True, hide_index=True, key="raiz_editor",
+            num_rows="dynamic", width="stretch", hide_index=True, key="raiz_editor",
         )
         if st.button("💾 Save Raiz Changes", type="primary", key="save_raiz_edits"):
             ok, err = sync_transaction_edits(RAIZ_ACCOUNT_ID, "RAIZ:", "AUD", "ETF", df_raiz_edit_orig, df_raiz_edited)

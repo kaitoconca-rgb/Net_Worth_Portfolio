@@ -487,7 +487,7 @@ def _render_detail(s, rate):
     t.columns = ["Category", ccy]
     if show_aud:
         t["A$"] = t[ccy] * rate
-    st.dataframe(t.style.format({ccy: "{:,.2f}", "A$": "{:,.2f}"}), use_container_width=True, hide_index=True)
+    st.dataframe(t.style.format({ccy: "{:,.2f}", "A$": "{:,.2f}"}), width="stretch", hide_index=True)
     if s["expenses_by_cat"].get("Strata special levy", 0):
         st.caption("Special levies (derrama): purpose to confirm - capital if they fund improvements.")
 
@@ -499,7 +499,7 @@ def _render_detail(s, rate):
              "Filed with": f"{fy - 1} returns (by Jan {fy})"},
             {"Period": f"Jan-Jun {fy}", "Rent (EUR)": s["rent_h1"], "Tax (EUR)": s["spanish_tax_h1"],
              "Filed with": f"{fy} returns (by Jan {fy + 1})"},
-        ]).style.format({"Rent (EUR)": "{:,.2f}", "Tax (EUR)": "{:,.2f}"}), use_container_width=True, hide_index=True)
+        ]).style.format({"Rent (EUR)": "{:,.2f}", "Tax (EUR)": "{:,.2f}"}), width="stretch", hide_index=True)
         st.caption("Calculated on gross rent. Tax on deemed income for days not rented (imputación) and the "
                    "amounts actually paid come from your Modelo 210 filings.")
     elif s["country"] != "AU":
@@ -507,7 +507,7 @@ def _render_detail(s, rate):
         st.dataframe(pd.DataFrame([
             {"Period": f"Jul-Dec {fy - 1}", f"Rent ({ccy})": s["rent_h2"]},
             {"Period": f"Jan-Jun {fy}", f"Rent ({ccy})": s["rent_h1"]},
-        ]).style.format({f"Rent ({ccy})": "{:,.2f}"}), use_container_width=True, hide_index=True)
+        ]).style.format({f"Rent ({ccy})": "{:,.2f}"}), width="stretch", hide_index=True)
         st.caption(f"Tax in {s['country_name']}: see this property on Zarpia's Tax page (not estimated here).")
 
     if not s["undated_income"].empty:
@@ -515,24 +515,24 @@ def _render_detail(s, rate):
                    "aren't counted in any year - add the dates in Zarpia.")
     with st.expander(f"Expense detail ({len(s['deductible_detail'])} items)"):
         st.dataframe(s["deductible_detail"][["expense_date", "Accountant category", "supplier", "concept", "unit",
-                                             "amount", "pdf_filename"]], use_container_width=True, hide_index=True)
+                                             "amount", "pdf_filename"]], width="stretch", hide_index=True)
     if not s["capital_items"].empty:
         with st.expander("Capital items (depreciate, not an immediate deduction)"):
             st.dataframe(s["capital_items"][["expense_date", "concept", "unit", "amount"]],
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
     if not s["excluded"].empty:
         with st.expander("Left out of deductions"):
             st.dataframe(s["excluded"][["expense_date", "category", "concept", "amount"]],
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
     if len(s["bookings"]):
         with st.expander(f"Agent bookings ({len(s['bookings'])})"):
             b = s["bookings"][["booking_ref", "arrival", "departure", "nights", "nights_fy", "income_total",
                                "agent_statement", "rented"]].rename(columns={"nights_fy": f"nights in {s['fy']}"})
-            st.dataframe(b, use_container_width=True, hide_index=True)
+            st.dataframe(b, width="stretch", hide_index=True)
     if len(s["manual_income"]):
         with st.expander(f"Other income ({len(s['manual_income'])})"):
             st.dataframe(s["manual_income"][["source", "checkin", "checkout", "nights", "amount", "amount in FY",
-                                             "nights in FY"]], use_container_width=True, hide_index=True)
+                                             "nights in FY"]], width="stretch", hide_index=True)
 
 
 def render_property_page(aud_avg_for_fy, pg=None):
@@ -581,7 +581,7 @@ def render_property_page(aud_avg_for_fy, pg=None):
             ignore_index=True)
     money = {c: "{:,.2f}" for c in ("Rent", "Deductible expenses", "Net before depreciation", "Rent A$",
                                     "Expenses A$", "Net A$")}
-    st.dataframe(pt.style.format(money, na_rep=""), use_container_width=True, hide_index=True)
+    st.dataframe(pt.style.format(money, na_rep=""), width="stretch", hide_index=True)
     st.caption(md("Rent / expenses / net in each property's own currency; A$ at the ATO's average rate for the "
                   "year. Net is before depreciation and before foreign tax."))
 

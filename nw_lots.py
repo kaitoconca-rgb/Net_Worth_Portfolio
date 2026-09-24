@@ -200,7 +200,7 @@ def render_lots_page(conn, accounts_df, aud_rate_on):
             st.dataframe(f[cols].style.format({
                 "Quantity": "{:,.4f}", "Cost": "{:,.2f}", "Cost FX": "{:.4f}", "Cost A$": "{:,.2f}",
                 "Proceeds": "{:,.2f}", "Proceeds FX": "{:.4f}", "Proceeds A$": "{:,.2f}",
-                "Gain / (loss) A$": "{:,.2f}"}, na_rep="-"), use_container_width=True, hide_index=True)
+                "Gain / (loss) A$": "{:,.2f}"}, na_rep="-"), width="stretch", hide_index=True)
             if f["How acquired"].str.startswith("UNKNOWN").any():
                 st.warning("Some sales have no matching purchase in the app - add the purchase so the cost is known.")
             if (f["How acquired"] == "Inherited").any() or f["ISIN"].fillna("").str.startswith("IT").any():
@@ -226,7 +226,7 @@ def render_lots_page(conn, accounts_df, aud_rate_on):
                                 "currency": "Ccy", "acquired_on": "Acquired", "cost_native": "Cost",
                                 "fx_rate_to_aud": "AUD rate", "notes": "Notes"}).style.format(
                 {"Quantity / face": "{:,.2f}", "Cost": "{:,.2f}", "AUD rate": "{:.4f}", "Cost A$": "{:,.2f}"},
-                na_rep="-"), use_container_width=True, hide_index=True)
+                na_rep="-"), width="stretch", hide_index=True)
 
     inv_accounts = accounts_df[accounts_df["category"].isin(("bonds", "investment", "cash", "savings"))]
     acc_names = list(inv_accounts["name"])

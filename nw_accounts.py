@@ -189,7 +189,7 @@ def render_accounts_manager(conn, balances, on_change):
         view,
         key="acct_editor",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         disabled=["id", "balance"],
         column_config={
             "id": None,
