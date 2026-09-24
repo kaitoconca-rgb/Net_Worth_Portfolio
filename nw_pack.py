@@ -172,9 +172,8 @@ def _property_sheet(wb, prop, fy_year, prop_src, rate, points):
                 else f"Source: {prop_src}. {ccy} amounts.")
     ws["A2"].font = NOTE
     r = 4
-    rows = [("Weeks available for rent", prop["weeks_available"], None,
-             f"{prop['owner_nights']} owner-use nights excluded"),
-            ("Weeks rented", prop["weeks_rented"], None, f"{prop['rented_nights']} booked nights ÷ 7"),
+    rows = [("Weeks available for rent", prop["weeks_available"], None, prop["weeks_available_note"]),
+            ("Weeks rented", prop["weeks_rented"], None, f"{prop['rented_nights']} booked nights ÷ 7 (max 52)"),
             ("Gross rent", prop["rent"], "A$", "Bookings, for nights stayed in the year"),
             ("Deductible expenses", prop["expenses_total"], "A$", "By category below")]
     for j, h in enumerate(["Item", f"Value ({ccy} / weeks)", "A$", "Note"], 1):
@@ -410,7 +409,8 @@ def build_workbook(fy_year, props, prop_src, rate_of, income, gains, rates_used)
                 continue
             ccy_note = (lambda v: f"{prop['currency']} {v:,.2f}") if prop["currency"] != "AUD" else (lambda v: "")
             line(f"{prop['name']} ({prop['country_name']})", sheet=prop["sheet"], bold=True,
-                 note=f"{prop['weeks_rented']} weeks rented of {prop['weeks_available']} available")
+                 note=f"{prop['weeks_rented']:g} weeks rented of {prop['weeks_available']:g} available"
+                 + ("" if prop["owner_use_known"] else " (assumed - owner use not recorded)"))
             line("Gross rent", prop["rent"] * rt, sheet=prop["sheet"], note=ccy_note(prop["rent"]))
             line("Deductible expenses", -prop["expenses_total"] * rt, sheet=prop["sheet"],
                  note=ccy_note(prop["expenses_total"]))

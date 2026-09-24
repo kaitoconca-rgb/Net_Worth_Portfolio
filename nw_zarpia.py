@@ -386,9 +386,18 @@ def property_fy_summary(feed, fy_year, property_id=None):
         "property_id": property_id, "name": str(prow["name"]), "country": country,
         "country_name": COUNTRY_NAMES.get(country, country), "currency": prow["currency"],
         "fy": f"FY{str(fy_year)[-2:]}", "fy_year": fy_year, "start": start, "end": end,
-        "weeks_available": round((fy_days - owner_nights) / 7, 1),
-        "weeks_rented": round(rented_nights / 7, 1),
+        # The ATO rental schedule counts a full year as 52 weeks (365 / 7 =
+        # 52.14 would read as "more than a year"), so both are capped at 52.
+        "weeks_available": min(52.0, round((fy_days - owner_nights) / 7, 1)),
+        "weeks_rented": min(52.0, round(rented_nights / 7, 1)),
         "owner_nights": owner_nights, "rented_nights": rented_nights,
+        # Owner-use nights are only known from agent (icnea) bookings; a
+        # property with manual income only is assumed available all year.
+        "owner_use_known": bool(len(bk)),
+        "weeks_available_note": (f"{owner_nights} owner-use nights excluded (from the agent's bookings); "
+                                 "a full year counts as 52 weeks" if len(bk) else
+                                 "Assumed available all year: owner use isn't recorded in Zarpia for this "
+                                 "property (only agent bookings carry it) - adjust if you used it yourself"),
         "rent": rent, "rent_icnea": rent_icnea, "rent_manual": rent_manual,
         "rent_h2": rent_h2, "rent_h1": rent_h1,
         "expenses_by_cat": by_cat, "expenses_total": float(by_cat.sum()),
@@ -461,8 +470,9 @@ def _render_detail(s, rate):
     show_aud = bool(rate) and ccy != "AUD"
     aud = lambda v: f"A${v * rate:,.0f}" if show_aud else None
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Weeks available", f"{s['weeks_available']}", help=f"{s['owner_nights']} owner-use nights excluded")
-    c2.metric("Weeks rented", f"{s['weeks_rented']}", help=f"{s['rented_nights']} booked nights ÷ 7")
+    c1.metric("Weeks available" + ("" if s["owner_use_known"] else " (assumed)"), f"{s['weeks_available']:g}",
+              help=s["weeks_available_note"])
+    c2.metric("Weeks rented", f"{s['weeks_rented']:g}", help=f"{s['rented_nights']} booked nights ÷ 7 (max 52)")
     c3.metric("Rent (gross)", f"{cur}{s['rent']:,.2f}", aud(s["rent"]), delta_color="off")
     c4.metric("Deductible expenses", f"{cur}{s['expenses_total']:,.2f}", aud(s["expenses_total"]),
               delta_color="off")
