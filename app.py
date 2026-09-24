@@ -1840,6 +1840,7 @@ _PAGES = [
     "📝 Data Entry",
     "🧾 Cost base & gains",
     "🏠 Benalmadena (Zarpia)",
+    "📦 Accountant pack",
 ]
 
 # Used by the Diagnostics and Forecast pages as well as the Dashboard.
@@ -4912,15 +4913,19 @@ if _page == _PAGES[11]:
 if _page == _PAGES[12]:
     render_lots_page(get_pg(), ACCOUNTS_DF, aud_rate_on)
 
+def _aud_avg_for_fy(fy_year):
+    """Average Reserve Bank AUD-per-EUR rate over the Australian financial year."""
+    _s = RBA.get("EUR")
+    if _s is None or _s.empty:
+        return None
+    _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
+    return float(_w.mean()) if not _w.empty else None
+
+
 if _page == _PAGES[13]:
     from nw_zarpia import render_property_page
-
-    def _aud_avg_for_fy(fy_year):
-        """Average Reserve Bank AUD-per-EUR rate over the Australian financial year."""
-        _s = RBA.get("EUR")
-        if _s is None or _s.empty:
-            return None
-        _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
-        return float(_w.mean()) if not _w.empty else None
-
     render_property_page(_aud_avg_for_fy, get_pg())
+
+if _page == _PAGES[14]:
+    from nw_pack import render_pack_page
+    render_pack_page(get_pg(), aud_rate_on, _aud_avg_for_fy)
