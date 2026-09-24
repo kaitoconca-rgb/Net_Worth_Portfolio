@@ -4923,4 +4923,4 @@ if _page == _PAGES[13]:
         _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
         return float(_w.mean()) if not _w.empty else None
 
-    render_property_page(_aud_avg_for_fy)
+    render_property_page(_aud_avg_for_fy, get_pg())

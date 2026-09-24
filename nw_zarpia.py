@@ -7,8 +7,13 @@ financial-year summary your accountant asks for: weeks available / rented,
 rent, expenses in the accountant's categories, capital items, and the
 Spanish non-resident tax on the rent.
 
-Connection string goes in Streamlit secrets as ZARPIA_FEED_CONN_STRING.
+Two ways to get the data:
+  * live: a connection string in Streamlit secrets (ZARPIA_FEED_CONN_STRING);
+  * snapshot (what's used today): a copy of the same views stored in this
+    app's own database, table public.zarpia_snapshot (one JSON row per copy;
+    the newest row is used). Claude refreshes it on request.
 """
+import json
 from datetime import date
 
 import pandas as pd
@@ -69,6 +74,37 @@ def _conn():
                          pool_pre_ping=True)
 
 
+FEED_COLS = {
+    "property": ["id", "name", "country", "municipality", "acquisition_cost"],
+    "units": ["id", "name", "unit_type", "cadastral_value_total", "imputation_rate_pct",
+              "income_allocation_pct", "disposal_date"],
+    "bookings": ["booking_ref", "arrival", "departure", "nights", "included_in_tax_calc", "income_total",
+                 "agent_statement", "statement_date"],
+    "accruals": ["booking_ref", "accrual_basis", "tax_year", "nights_in_year", "accrued_amount", "is_estimate"],
+    "expenses": ["id", "expense_date", "category", "treatment", "supplier", "concept", "amount", "currency",
+                 "unit", "included_in_tax_calc", "pdf_filename", "source"],
+    "statements": ["statement", "settlement_date", "gross_amount", "owner_amount", "net_amount", "currency"],
+}
+SORT = {"bookings": "arrival", "expenses": "expense_date", "statements": "settlement_date"}
+
+
+def load_snapshot(_pg):
+    """Newest copy from public.zarpia_snapshot, or None if there isn't one."""
+    try:
+        df = _pg.query("SELECT copied_at, data::text AS data FROM public.zarpia_snapshot "
+                       "ORDER BY id DESC LIMIT 1", ttl=0)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    data = json.loads(df.iloc[0]["data"])
+    feed = {k: pd.DataFrame(data.get(k) or [], columns=cols) for k, cols in FEED_COLS.items()}
+    for k, col in SORT.items():
+        feed[k] = feed[k].sort_values(col, kind="stable").reset_index(drop=True)
+    feed["copied_at"] = pd.to_datetime(df.iloc[0]["copied_at"])
+    return _typed(feed)
+
+
 @st.cache_data(ttl=3600, show_spinner="Reading Benalmadena from Zarpia…")
 def load_feed():
     c = _conn()
@@ -81,6 +117,10 @@ def load_feed():
         "expenses": q("SELECT * FROM nw_feed.expenses ORDER BY expense_date"),
         "statements": q("SELECT * FROM nw_feed.agent_statements ORDER BY settlement_date"),
     }
+    return _typed(feed)
+
+
+def _typed(feed):
     for k in ("bookings", "expenses", "statements"):
         for col in feed[k].columns:
             if col in ("arrival", "departure", "expense_date", "settlement_date", "statement_date"):
@@ -89,6 +129,9 @@ def load_feed():
         feed["bookings"][col] = pd.to_numeric(feed["bookings"][col], errors="coerce").astype(float)
     feed["expenses"]["amount"] = pd.to_numeric(feed["expenses"]["amount"], errors="coerce").astype(float)
     feed["accruals"]["accrued_amount"] = pd.to_numeric(feed["accruals"]["accrued_amount"], errors="coerce").astype(float)
+    for col in ("tax_year", "nights_in_year"):
+        feed["accruals"][col] = pd.to_numeric(feed["accruals"][col], errors="coerce")
+    feed["bookings"]["nights"] = pd.to_numeric(feed["bookings"]["nights"], errors="coerce")
     return feed
 
 
@@ -144,7 +187,7 @@ def property_fy_summary(feed, fy_year):
 
 
 SETUP_HELP = """
-**Connect Zarpia (one-off):**
+**Optional - live link instead of the copy:**
 
 1. In the **Zarpia** Supabase project, open the SQL editor and run (choose your own password):
    ```sql
@@ -161,21 +204,26 @@ To switch it off later: `ALTER ROLE nw_feed_reader NOLOGIN;`
 """
 
 
-def render_property_page(aud_avg_for_fy):
+def render_property_page(aud_avg_for_fy, pg=None):
     st.header("🏠 Benalmadena (from Zarpia)")
-    if not feed_configured():
-        st.info("Zarpia isn't connected yet.")
-        st.markdown(SETUP_HELP)
-        return
-    try:
-        feed = load_feed()
-    except Exception as e:
-        st.error(f"Couldn't read from Zarpia: {e}")
-        st.markdown(SETUP_HELP)
-        return
-    if st.button("🔄 Refresh from Zarpia", key="zf_refresh"):
-        load_feed.clear()
-        st.rerun()
+    if feed_configured():
+        try:
+            feed = load_feed()
+        except Exception as e:
+            st.error(f"Couldn't read from Zarpia: {e}")
+            st.markdown(SETUP_HELP)
+            return
+        if st.button("🔄 Refresh from Zarpia", key="zf_refresh"):
+            load_feed.clear()
+            st.rerun()
+    else:
+        feed = load_snapshot(pg) if pg is not None else None
+        if feed is None:
+            st.info("No Benalmadena data yet - ask Claude to copy it from Zarpia.")
+            return
+        st.caption(f"Copied from Zarpia on {feed['copied_at']:%d %b %Y %H:%M} UTC. "
+                   "Ask Claude to refresh it when new bookings or expenses are in Zarpia "
+                   "(e.g. before the accountant pack).")
 
     years = sorted({int(y) for y in feed["accruals"].loc[feed["accruals"]["accrual_basis"] == "au_fy", "tax_year"]},
                    reverse=True)
