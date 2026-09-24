@@ -1,13 +1,14 @@
 """Accountant pack: one Excel workbook per Australian financial year.
 
 Sep 2026. Pulls together what the tax agent asks for each year:
-  * the Benalmadena rental property (from Zarpia, live or the saved copy)
+  * every rental property in Zarpia (live or the saved copy): one sheet each,
+    plus portfolio totals on the overview
   * foreign investment income: interest, dividends, bond coupons (income ledger)
   * realised gains and losses: sales and maturities (Cost base & gains)
   * the Reserve Bank exchange rates used
 All A$ figures use Reserve Bank of Australia rates: the payment/sale date
-rate for single items, the financial-year average for the rental property
-(income and costs spread through the year).
+rate for single items, the ATO financial-year average (in each property's own
+currency) for rental properties (income and costs spread through the year).
 """
 import io
 from datetime import date, datetime
@@ -83,21 +84,32 @@ def gains_for_fy(conn, fy_year, aud_rate_on):
 
 
 def property_for_fy(pg, fy_year):
-    """(summary, source text) or (None, reason)."""
+    """([summary per property with activity in the FY], source text) or ([], reason)."""
     try:
         if nw_zarpia.feed_configured():
             feed, src = nw_zarpia.load_feed(), f"Zarpia (live, read {datetime.now():%d %b %Y})"
         else:
             feed = nw_zarpia.load_snapshot(pg)
             if feed is None:
-                return None, "Zarpia not connected"
+                return [], "Zarpia not connected"
             src = f"Zarpia (copy of {feed['copied_at']:%d %b %Y})"
     except Exception as e:
-        return None, f"Couldn't read Zarpia: {e}"
-    acc = feed["accruals"]
-    if not ((acc["accrual_basis"] == "au_fy") & (acc["tax_year"] == fy_year)).any():
-        return None, f"No Zarpia bookings for {fy_name(fy_year)}"
-    return nw_zarpia.property_fy_summary(feed, fy_year), src
+        return [], f"Couldn't read Zarpia: {e}"
+    props = nw_zarpia.portfolio_fy_summaries(feed, fy_year)
+    if not props:
+        return [], f"No Zarpia rent or expenses for {fy_name(fy_year)}"
+    return props, src
+
+
+def _sheet_title(name, used):
+    """Excel sheet name: <= 31 chars, no []:*?/\ , unique in the workbook."""
+    base = "".join(ch for ch in f"Rental - {name}" if ch not in '[]:*?/\\')[:31]
+    t, i = base, 2
+    while t in used:
+        t = f"{base[:28]} {i}"
+        i += 1
+    used.add(t)
+    return t
 
 
 # ─────────────────────────── writing the workbook ───────────────────────────
@@ -150,51 +162,48 @@ def _table(ws, r, df, cols, fmts=None, total_cols=(), total_label="Total"):
     return r
 
 
-def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
+def _property_sheet(wb, prop, fy_year, prop_src, rate, points):
     fy = fy_name(fy_year)
-    start, end = fy_bounds(fy_year)
-    wb = Workbook()
-    ov = wb.active
-    ov.title = "Overview"
-    points = []
-
-    # ── Property ──
-    if prop is not None:
-        ws = wb.create_sheet("Rental property")
-        ws["A1"] = f"Rental property - Benalmadena, Spain - {fy}"
-        ws["A1"].font = TITLE
-        ws["A2"] = (f"Source: {prop_src}. EUR amounts; A$ at the ATO's {fy} average rate "
-                    f"({1 / eur_avg:.4f} EUR per A$, i.e. {eur_avg:.4f} A$ per EUR)." if eur_avg else f"Source: {prop_src}.")
-        ws["A2"].font = NOTE
-        r = 4
-        rows = [("Weeks available for rent", prop["weeks_available"], None,
-                 f"{prop['owner_nights']} owner-use nights excluded"),
-                ("Weeks rented", prop["weeks_rented"], None, f"{prop['rented_nights']} booked nights ÷ 7"),
-                ("Gross rent", prop["rent"], "A$", "Bookings, for nights stayed in the year"),
-                ("Deductible expenses", prop["expenses_total"], "A$", "By category below")]
-        for j, h in enumerate(["Item", "Value (EUR / weeks)", "A$", "Note"], 1):
-            _w(ws, r, j, h, font=HEAD, fill=HEAD_FILL)
+    ccy = prop["currency"]
+    show_aud = bool(rate) and ccy != "AUD"
+    eur_avg = rate if show_aud else None
+    ws = wb.create_sheet(prop["sheet"])
+    ws["A1"] = f"Rental property - {prop['name']}, {prop['country_name']} - {fy}"
+    ws["A1"].font = TITLE
+    ws["A2"] = (f"Source: {prop_src}. {ccy} amounts; A$ at the ATO's {fy} average rate "
+                f"({1 / eur_avg:.4f} {ccy} per A$, i.e. {eur_avg:.4f} A$ per {ccy})." if eur_avg
+                else f"Source: {prop_src}. {ccy} amounts.")
+    ws["A2"].font = NOTE
+    r = 4
+    rows = [("Weeks available for rent", prop["weeks_available"], None,
+             f"{prop['owner_nights']} owner-use nights excluded"),
+            ("Weeks rented", prop["weeks_rented"], None, f"{prop['rented_nights']} booked nights ÷ 7"),
+            ("Gross rent", prop["rent"], "A$", "Bookings, for nights stayed in the year"),
+            ("Deductible expenses", prop["expenses_total"], "A$", "By category below")]
+    for j, h in enumerate(["Item", f"Value ({ccy} / weeks)", "A$", "Note"], 1):
+        _w(ws, r, j, h, font=HEAD, fill=HEAD_FILL)
+    r += 1
+    for label, v, aud, note in rows:
+        _w(ws, r, 1, label)
+        _w(ws, r, 2, v, "0.0" if aud is None else MONEY)
+        if aud and eur_avg:
+            _w(ws, r, 3, f"=B{r}*{round(eur_avg, 6)}", MONEY)
+        _w(ws, r, 4, note)
         r += 1
-        for label, v, aud, note in rows:
-            _w(ws, r, 1, label)
-            _w(ws, r, 2, v, "0.0" if aud is None else MONEY)
-            if aud and eur_avg:
-                _w(ws, r, 3, f"=B{r}*{round(eur_avg, 6)}", MONEY)
-            _w(ws, r, 4, note)
-            r += 1
-        _w(ws, r, 1, "Net rent before depreciation", font=BOLD)
-        _w(ws, r, 2, f"=B{r - 2}-B{r - 1}", MONEY, BOLD)
-        if eur_avg:
-            _w(ws, r, 3, f"=C{r - 2}-C{r - 1}", MONEY, BOLD)
-        r += 2
+    _w(ws, r, 1, "Net rent before depreciation", font=BOLD)
+    _w(ws, r, 2, f"=B{r - 2}-B{r - 1}", MONEY, BOLD)
+    if eur_avg:
+        _w(ws, r, 3, f"=C{r - 2}-C{r - 1}", MONEY, BOLD)
+    r += 2
 
-        _w(ws, r, 1, "Expenses by category", font=BOLD)
-        r += 1
-        cat = prop["expenses_by_cat"].reset_index()
-        cat.columns = ["Category", "EUR"]
-        cat["A$"] = cat["EUR"] * eur_avg if eur_avg else None
-        r = _table(ws, r, cat, ["Category", "EUR", "A$"], {"EUR": MONEY, "A$": MONEY}, ("EUR", "A$")) + 1
+    _w(ws, r, 1, "Expenses by category", font=BOLD)
+    r += 1
+    cat = prop["expenses_by_cat"].reset_index()
+    cat.columns = ["Category", ccy]
+    cat["A$"] = cat[ccy] * eur_avg if eur_avg else None
+    r = _table(ws, r, cat, ["Category", ccy, "A$"], {ccy: MONEY, "A$": MONEY}, (ccy, "A$")) + 1
 
+    if prop["spanish_tax"]:
         _w(ws, r, 1, "Spanish non-resident tax on the rent (24% of gross, Modelo 210)", font=BOLD)
         r += 1
         sp = pd.DataFrame([
@@ -209,45 +218,89 @@ def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
         _w(ws, r, 1, "Calculated on gross rent. Tax on deemed income for owner-use days and the amounts actually "
                      "paid come from the Modelo 210 filings.", font=NOTE)
         r += 2
-
-        det = prop["deductible_detail"].rename(columns={
-            "expense_date": "Date", "supplier": "Supplier", "concept": "Description", "unit": "Unit",
-            "amount": "EUR", "pdf_filename": "Document"})
-        _w(ws, r, 1, "Expense detail", font=BOLD)
+    else:
+        _w(ws, r, 1, f"Rent by calendar half ({prop['country_name']} taxes by calendar year)", font=BOLD)
         r += 1
-        r = _table(ws, r, det, ["Date", "Accountant category", "Supplier", "Description", "Unit", "EUR", "Document"],
-                   {"EUR": MONEY}, ("EUR",)) + 1
-        cap = prop["capital_items"]
-        if not cap.empty:
-            _w(ws, r, 1, "Capital items (depreciate - not an immediate deduction)", font=BOLD)
-            r += 1
-            c2 = cap.rename(columns={"expense_date": "Date", "concept": "Description", "unit": "Unit", "amount": "EUR"})
-            r = _table(ws, r, c2, ["Date", "Description", "Unit", "EUR"], {"EUR": MONEY}, ("EUR",)) + 1
-            points.append(f"Rental: {len(cap)} capital item(s) (€{cap['amount'].sum():,.2f}) - decline in value to "
-                          "be calculated.")
-        exc = prop["excluded"]
-        if not exc.empty:
-            _w(ws, r, 1, "Left out of deductions (private or not claimable)", font=BOLD)
-            r += 1
-            e2 = exc.rename(columns={"expense_date": "Date", "category": "Category", "concept": "Description",
-                                     "amount": "EUR"})
-            r = _table(ws, r, e2, ["Date", "Category", "Description", "EUR"], {"EUR": MONEY}, ("EUR",)) + 1
+        hh = pd.DataFrame([
+            {"Period": f"Jul-Dec {fy_year - 1}", f"Rent ({ccy})": prop["rent_h2"],
+             "Rent A$": prop["rent_h2"] * eur_avg if eur_avg else None},
+            {"Period": f"Jan-Jun {fy_year}", f"Rent ({ccy})": prop["rent_h1"],
+             "Rent A$": prop["rent_h1"] * eur_avg if eur_avg else None}])
+        r = _table(ws, r, hh, ["Period", f"Rent ({ccy})", "Rent A$"], {f"Rent ({ccy})": MONEY, "Rent A$": MONEY},
+                   (f"Rent ({ccy})", "Rent A$"))
+        _w(ws, r, 1, f"Tax paid in {prop['country_name']}: from the local returns (see Zarpia's Tax page).",
+           font=NOTE)
+        r += 2
+
+    det = prop["deductible_detail"].rename(columns={
+        "expense_date": "Date", "supplier": "Supplier", "concept": "Description", "unit": "Unit",
+        "amount": ccy, "pdf_filename": "Document"})
+    _w(ws, r, 1, "Expense detail", font=BOLD)
+    r += 1
+    r = _table(ws, r, det, ["Date", "Accountant category", "Supplier", "Description", "Unit", ccy, "Document"],
+               {ccy: MONEY}, (ccy,)) + 1
+    cap = prop["capital_items"]
+    if not cap.empty:
+        _w(ws, r, 1, "Capital items (depreciate - not an immediate deduction)", font=BOLD)
+        r += 1
+        c2 = cap.rename(columns={"expense_date": "Date", "concept": "Description", "unit": "Unit", "amount": ccy})
+        r = _table(ws, r, c2, ["Date", "Description", "Unit", ccy], {ccy: MONEY}, (ccy,)) + 1
+        points.append(f"{prop['name']}: {len(cap)} capital item(s) ({ccy} {cap['amount'].sum():,.2f}) - decline in "
+                      "value to be calculated.")
+    exc = prop["excluded"]
+    if not exc.empty:
+        _w(ws, r, 1, "Left out of deductions (private or not claimable)", font=BOLD)
+        r += 1
+        e2 = exc.rename(columns={"expense_date": "Date", "category": "Category", "concept": "Description",
+                                 "amount": ccy})
+        r = _table(ws, r, e2, ["Date", "Category", "Description", ccy], {ccy: MONEY}, (ccy,)) + 1
+    if len(prop["bookings"]):
         bk = prop["bookings"].rename(columns={"booking_ref": "Booking", "arrival": "Arrival",
                                               "departure": "Departure", "nights": "Nights",
-                                              "nights_fy": f"Nights in {fy}", "income_total": "Rent (EUR)",
+                                              "nights_fy": f"Nights in {fy}", "income_total": f"Rent ({ccy})",
                                               "agent_statement": "Agent statement"})
         bk["Owner use"] = bk["rented"].map({True: "", False: "Owner use"})
         _w(ws, r, 1, "Bookings", font=BOLD)
         r += 1
-        _table(ws, r, bk, ["Booking", "Arrival", "Departure", "Nights", f"Nights in {fy}", "Rent (EUR)",
-                           "Agent statement", "Owner use"], {"Rent (EUR)": MONEY})
-        _widths(ws, [30, 24, 22, 40, 20, 14, 30, 12])
-        levy = float(prop["expenses_by_cat"].get("Strata special levy", 0) or 0)
-        if levy:
-            points.append(f"Rental: special levies (derrama) €{levy:,.2f} included in expenses - purpose to confirm "
-                          "(capital if they fund improvements).")
-        points.append("Rental: Spanish tax is paid by calendar year - the Jan-Jun part is paid the following "
-                      "January; foreign income tax offset timing to confirm.")
+        r = _table(ws, r, bk, ["Booking", "Arrival", "Departure", "Nights", f"Nights in {fy}", f"Rent ({ccy})",
+                               "Agent statement", "Owner use"], {f"Rent ({ccy})": MONEY})
+        r += 1
+    mi = prop["manual_income"]
+    if len(mi):
+        m2 = mi.rename(columns={"source": "Source", "checkin": "Check-in", "checkout": "Check-out",
+                                "nights": "Nights", "amount": f"Amount ({ccy})",
+                                "amount in FY": f"In {fy} ({ccy})", "nights in FY": f"Nights in {fy}"})
+        _w(ws, r, 1, "Other income (manual / email)", font=BOLD)
+        r += 1
+        r = _table(ws, r, m2, ["Source", "Check-in", "Check-out", "Nights", f"Amount ({ccy})", f"In {fy} ({ccy})",
+                               f"Nights in {fy}"], {f"Amount ({ccy})": MONEY, f"In {fy} ({ccy})": MONEY},
+                   (f"In {fy} ({ccy})",)) + 1
+    if len(prop["undated_income"]):
+        points.append(f"{prop['name']}: {len(prop['undated_income'])} income entry(ies) in Zarpia have no dates "
+                      "and are not counted - add dates in Zarpia.")
+    _widths(ws, [30, 24, 22, 40, 20, 14, 30, 12])
+    levy = float(prop["expenses_by_cat"].get("Strata special levy", 0) or 0)
+    if levy:
+        points.append(f"{prop['name']}: special levies (derrama) {ccy} {levy:,.2f} included in expenses - purpose "
+                      "to confirm (capital if they fund improvements).")
+    if prop["spanish_tax"]:
+        points.append(f"{prop['name']}: Spanish tax is paid by calendar year - the Jan-Jun part is paid the "
+                      "following January; foreign income tax offset timing to confirm.")
+
+
+def build_workbook(fy_year, props, prop_src, rate_of, income, gains, rates_used):
+    fy = fy_name(fy_year)
+    start, end = fy_bounds(fy_year)
+    wb = Workbook()
+    ov = wb.active
+    ov.title = "Overview"
+    points = []
+
+    # ── Rental properties (one sheet each) ──
+    used = set()
+    for prop in props:
+        prop["sheet"] = _sheet_title(prop["name"], used)
+        _property_sheet(wb, prop, fy_year, prop_src, rate_of(prop["currency"]), points)
 
     # ── Income ──
     if income is not None and not income.empty:
@@ -347,18 +400,36 @@ def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
         _w(ov, r, 6, note, wrap=len(note) > 60)
         r += 1
 
-    sec("1. Rental property - Benalmadena, Spain")
-    if prop is not None and eur_avg:
-        line("Weeks available for rent", prop["weeks_available"], sheet="Rental property", fmt="0.0",
-             note="(weeks, not A$)")
-        line("Weeks rented", prop["weeks_rented"], sheet="Rental property", fmt="0.0", note="(weeks, not A$)")
-        line("Gross rent", prop["rent"] * eur_avg, sheet="Rental property", note=f"€{prop['rent']:,.2f}")
-        line("Deductible expenses", -prop["expenses_total"] * eur_avg, sheet="Rental property",
-             note=f"€{prop['expenses_total']:,.2f}")
-        line("Net rent before depreciation", (prop["rent"] - prop["expenses_total"]) * eur_avg, bold=True)
-        line("Spanish non-resident tax on this year's rent", None,
-             (prop["spanish_tax_h2"] + prop["spanish_tax_h1"]) * eur_avg, "Rental property",
-             "24% of gross rent - see calendar split")
+    sec("1. Rental properties")
+    if props:
+        tot_rent = tot_exp = tot_tax = 0.0
+        missing_rate = False
+        for prop in props:
+            rt = rate_of(prop["currency"])
+            if not rt:
+                missing_rate = True
+                line(f"{prop['name']} ({prop['country_name']})", sheet=prop["sheet"],
+                     note=f"No ATO average rate for {prop['currency']} - see sheet ({prop['currency']} amounts)")
+                continue
+            ccy_note = (lambda v: f"{prop['currency']} {v:,.2f}") if prop["currency"] != "AUD" else (lambda v: "")
+            line(f"{prop['name']} ({prop['country_name']})", sheet=prop["sheet"], bold=True,
+                 note=f"{prop['weeks_rented']} weeks rented of {prop['weeks_available']} available")
+            line("Gross rent", prop["rent"] * rt, sheet=prop["sheet"], note=ccy_note(prop["rent"]))
+            line("Deductible expenses", -prop["expenses_total"] * rt, sheet=prop["sheet"],
+                 note=ccy_note(prop["expenses_total"]))
+            tax = None
+            if prop["spanish_tax"]:
+                tax = (prop["spanish_tax_h2"] + prop["spanish_tax_h1"]) * rt
+                tot_tax += tax
+            line("Net rent before depreciation", (prop["rent"] - prop["expenses_total"]) * rt, tax, prop["sheet"],
+                 "Foreign tax: Spanish 24% of gross rent - see calendar split" if tax is not None
+                 else ("" if prop["country"] == "AU" else f"Foreign tax: from the {prop['country_name']} returns"))
+            tot_rent += prop["rent"] * rt
+            tot_exp += prop["expenses_total"] * rt
+        if len(props) > 1:
+            line("All rental properties - net before depreciation", tot_rent - tot_exp, tot_tax or None, bold=True,
+                 note=f"Rent A${tot_rent:,.2f} less expenses A${tot_exp:,.2f}"
+                 + (" (excludes properties with no rate)" if missing_rate else ""))
     else:
         line(prop_src or "Not available", note="Property figures not included")
 
@@ -402,11 +473,14 @@ def build_workbook(fy_year, prop, prop_src, eur_avg, income, gains, rates_used):
     return buf.getvalue(), points
 
 
-def rates_used_list(fy_year, eur_avg, income, gains):
+def rates_used_list(fy_year, props, rate_of, income, gains):
     rows = []
-    if eur_avg:
-        rows.append((f"{fy_name(fy_year)} average", "EUR", eur_avg, "Rental property - ATO annual average "
-                     f"({1 / eur_avg:.4f} EUR per A$ = average of the Reserve Bank daily rates)"))
+    for ccy in sorted({p["currency"] for p in props} - {"AUD"}):
+        rt = rate_of(ccy)
+        if rt:
+            names = ", ".join(p["name"] for p in props if p["currency"] == ccy)
+            rows.append((f"{fy_name(fy_year)} average", ccy, rt, f"Rental: {names} - ATO annual average "
+                         f"({1 / rt:.4f} {ccy} per A$ = average of the Reserve Bank daily rates)"))
     if income is not None and not income.empty:
         for _, x in income[income["currency"].str.upper() != "AUD"].iterrows():
             payer = x["payer"] if isinstance(x["payer"], str) and x["payer"] else (x["portfolio"] or "")
@@ -438,7 +512,7 @@ def rates_used_list(fy_year, eur_avg, income, gains):
 
 def render_pack_page(pg, aud_rate_on, aud_avg_for_fy):
     st.header("📦 Accountant pack")
-    st.caption("One Excel workbook per Australian financial year: rental property, foreign interest, dividends "
+    st.caption("One Excel workbook per Australian financial year: rental properties, foreign interest, dividends "
                "and coupons, sales and maturities, and the exchange rates used.")
     cur = current_fy()
     years = list(range(cur, cur - 6, -1))
@@ -446,16 +520,24 @@ def render_pack_page(pg, aud_rate_on, aud_avg_for_fy):
                            format_func=lambda y: f"{fy_name(y)} (1 Jul {y - 1} - 30 Jun {y})"
                            + (" - in progress" if y == cur else ""), key="pack_fy")
     with st.spinner("Gathering figures…"):
-        prop, prop_src = property_for_fy(pg, fy_year)
-        eur_avg = aud_avg_for_fy(fy_year)
-        eur_avg = round(eur_avg, 6) if eur_avg else None
+        props, prop_src = property_for_fy(pg, fy_year)
+        _rates = {}
+
+        def rate_of(ccy):
+            if ccy not in _rates:
+                rt = nw_zarpia.rate_for(aud_avg_for_fy, fy_year, ccy)
+                _rates[ccy] = round(rt, 6) if rt else None
+            return _rates[ccy]
         income = income_for_fy(pg, fy_year, aud_rate_on)
         gains = gains_for_fy(pg, fy_year, aud_rate_on)
 
     c1, c2, c3 = st.columns(3)
-    if prop is not None and eur_avg:
-        c1.metric("Net rent (A$)", f"{(prop['rent'] - prop['expenses_total']) * eur_avg:,.0f}",
-                  help=f"€{prop['rent']:,.2f} rent less €{prop['expenses_total']:,.2f} expenses")
+    priced = [p for p in props if rate_of(p["currency"])]
+    if priced:
+        net = sum((p["rent"] - p["expenses_total"]) * rate_of(p["currency"]) for p in priced)
+        c1.metric("Net rent (A$)", f"{net:,.0f}",
+                  help=f"{len(priced)} propert{'y' if len(priced) == 1 else 'ies'}: "
+                  + ", ".join(p["name"] for p in priced))
     else:
         c1.metric("Net rent (A$)", "-", help=prop_src)
     foreign = income[income["Country"] != "AU"] if not income.empty else income
@@ -463,15 +545,15 @@ def render_pack_page(pg, aud_rate_on, aud_avg_for_fy):
               help=f"{len(foreign)} payment(s)")
     c3.metric("Net gain / (loss) (A$)", f"{gains['Gain / (loss) A$'].sum():,.0f}" if not gains.empty else "0",
               help=f"{len(gains)} disposal(s)")
-    if prop is None:
-        st.caption(f"Rental property: {prop_src}.")
-    elif prop_src:
-        st.caption(f"Rental property from {prop_src}.")
+    if not props:
+        st.caption(f"Rental properties: {prop_src}.")
+    else:
+        st.caption(f"Rental properties from {prop_src}: " + ", ".join(p["name"] for p in props) + ".")
     if fy_year == cur:
         st.warning("This financial year isn't over yet - the pack shows figures to date.")
 
-    data, points = build_workbook(fy_year, prop, prop_src, eur_avg, income, gains,
-                                  rates_used_list(fy_year, eur_avg, income, gains))
+    data, points = build_workbook(fy_year, props, prop_src, rate_of, income, gains,
+                                  rates_used_list(fy_year, props, rate_of, income, gains))
     st.download_button(f"⬇️ Download {fy_name(fy_year)} accountant pack (Excel)", data,
                        file_name=f"Claudio_Conca_{fy_name(fy_year)}_accountant_pack.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

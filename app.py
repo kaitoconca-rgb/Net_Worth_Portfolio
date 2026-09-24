@@ -1839,7 +1839,7 @@ _PAGES = [
     "📈 Forecast",
     "📝 Data Entry",
     "🧾 Cost base & gains",
-    "🏠 Benalmadena (Zarpia)",
+    "🏠 Properties (Zarpia)",
     "📦 Accountant pack",
 ]
 
@@ -4913,16 +4913,20 @@ if _page == _PAGES[11]:
 if _page == _PAGES[12]:
     render_lots_page(get_pg(), ACCOUNTS_DF, aud_rate_on)
 
-def _aud_avg_for_fy(fy_year):
-    """A$ per EUR for an Australian financial year, the ATO way.
+def _aud_avg_for_fy(fy_year, ccy="EUR"):
+    """A$ per unit of `ccy` (default EUR) for an Australian financial year, the ATO way.
 
     The ATO's published annual rate (e.g. FY26: 0.5817 EUR per A$) is the
     average of the Reserve Bank's daily EUR-per-A$ rates, rounded to 4
     decimals. Sep 2026 fix: this used to average the inverted A$-per-EUR
     figures instead (FY26: 1.7215), which is not the same number - now
     averages EUR-per-A$ like the ATO, then inverts (FY26: 1.7191).
+    Any currency in the RBA table works the same way (one rate per property
+    currency in the Properties page and the accountant pack); AUD is 1.
     """
-    _s = RBA.get("EUR")
+    if str(ccy).upper() == "AUD":
+        return 1.0
+    _s = RBA.get(str(ccy).upper())
     if _s is None or _s.empty:
         return None
     _w = _s[(_s.index >= pd.Timestamp(fy_year - 1, 7, 1)) & (_s.index <= pd.Timestamp(fy_year, 6, 30))]
