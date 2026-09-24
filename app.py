@@ -323,6 +323,36 @@ def _refresh_rba_daily(day_str):
 
 
 _ensure_fx_schema_once()
+
+from nw_income import render_income_section, ensure_income_ledger_schema
+
+
+@st.cache_resource
+def _ensure_income_ledger_once():
+    try:
+        ensure_income_ledger_schema(get_pg())
+        return True
+    except Exception as e:
+        st.warning(f"Could not update the income table: {e}")
+        return False
+
+
+_ensure_income_ledger_once()
+
+from nw_lots import render_lots_page, ensure_lots_schema
+
+
+@st.cache_resource
+def _ensure_lots_schema_once():
+    try:
+        ensure_lots_schema(get_pg())
+        return True
+    except Exception as e:
+        st.warning(f"Could not create the cost-base table: {e}")
+        return False
+
+
+_ensure_lots_schema_once()
 RBA_STATUS = _refresh_rba_daily(date.today().isoformat())
 RBA = load_rba_series(get_pg(), str(RBA_STATUS.get("latest")))
 FX_WARNINGS = []   # currencies valued with a rough fallback rate this run
@@ -1268,7 +1298,9 @@ def save_net_worth_snapshot(total, force=False):
                         div_date_val = pd.to_datetime(drow['div_date'])
                         amt_aud = amt * aud_rate_on(cur[:3], div_date_val)
                         port = str(drow['portfolio']).upper()
-                        if str(drow['income_type']).lower() == 'coupon':
+                        if str(drow['income_type']).lower() == 'interest':
+                            pass  # cash interest is already estimated above from account rates
+                        elif str(drow['income_type']).lower() == 'coupon':
                             bond_coupons += amt_aud
                         elif 'N26' in port:
                             n26_dividends += amt_aud
@@ -1805,7 +1837,8 @@ _PAGES = [
     "🏦 Cash",
     "🛠️ Diagnostics",
     "📈 Forecast",
-    "📝 Data Entry"
+    "📝 Data Entry",
+    "🧾 Cost base & gains",
 ]
 
 # Used by the Diagnostics and Forecast pages as well as the Dashboard.
@@ -4638,7 +4671,7 @@ if _page == _PAGES[11]:
     st.caption("Add, edit, or delete rows directly. Changes save to Postgres when you click Save.")
     st.warning("⚠️ New feature — test with a dummy row first before relying on it for real entries.")
 
-    _de_section = st.radio("Section", ["💰 Dividends & coupons", "🇪🇺 N26 transactions", "🌱 Raiz transactions"],
+    _de_section = st.radio("Section", ["💰 Income (interest, dividends, coupons)", "🇪🇺 N26 transactions", "🌱 Raiz transactions"],
                            horizontal=True, key="de_section")
     if _de_section == "🇪🇺 N26 transactions":
         st.markdown("### 🇪🇺 N26 Transactions")
@@ -4803,250 +4836,8 @@ if _page == _PAGES[11]:
 
         st.divider()
 
-    if _de_section == "💰 Dividends & coupons":
-        @st.cache_data(ttl=0)
-        def load_dividends_for_editor():
-            conn = get_pg()
-            return conn.query(
-                """
-            SELECT id,
-                   div_date AS "Date",
-                   CASE WHEN COALESCE(income_type, 'dividend') = 'coupon' THEN 'BTP coupon' ELSE 'Dividend' END AS "Type",
-                   portfolio AS "Portfolio",
-                   security AS "Security",
-                   gross_amount AS "Gross",
-                   tax_withheld AS "Tax withheld",
-                   amount AS "Net received",
-                   currency AS "Currency",
-                   processed AS "Counted in Snapshot",
-                   (transaction_id IS NOT NULL) AS "Linked to Cash"
-            FROM dividends
-            ORDER BY div_date DESC
-            """,
-                ttl=0,
-            )
+    if _de_section == "💰 Income (interest, dividends, coupons)":
+        render_income_section(get_pg(), ACCOUNTS_DF, CASH_ACCOUNTS, aud_rate_on, refresh_balance_caches)
 
-        # BTP coupons (Sep 2026): BPM "bonds" are Italian BTPs paying coupons
-        # (cedole). They used to be entered here as N26 dividends, which put them
-        # in the wrong bucket. Each entry now has a type, and gross / tax
-        # withheld / net, which is what an accountant needs.
-        BTP_DEFAULT_TAX_PCT = 0.0  # Registered with AIRE (Italians resident abroad): BPM applies no withholding on BTP coupons
-
-        st.markdown("### 💰 Record Dividend or BTP Coupon")
-        st.caption(
-            "Recording income does two things at once: adds the NET amount to the chosen "
-            "cash account immediately, and logs it for Net Worth attribution so it shows as "
-            "'Dividends' or 'BTP Coupons' rather than a Contribution on your next snapshot."
-        )
-
-        inc_type = st.radio("Type", options=["Dividend", "BTP coupon"], horizontal=True, key="inc_type")
-        is_coupon = inc_type == "BTP coupon"
-
-        div_col1, div_col2, div_col3 = st.columns(3)
-        with div_col1:
-            div_date = st.date_input("Payment Date", value=date.today(), key="div_date_input")
-            if is_coupon:
-                div_portfolio = "BPM"
-                st.text_input("Source", value="BPM (BTP)", disabled=True, key="div_portfolio_fixed")
-            else:
-                div_portfolio = st.selectbox("Source Portfolio", options=["N26", "CommSec"], key="div_portfolio")
-            div_security = st.text_input(
-                "BTP name / ISIN" if is_coupon else "Fund / share (optional)",
-                placeholder="e.g. BTP 3.85% 2029 – IT0005…" if is_coupon else "e.g. VHYL",
-                key="div_security",
-            )
-        with div_col2:
-            div_currency = "EUR" if is_coupon else st.selectbox("Currency", options=["EUR", "AUD", "USD"], key="div_currency")
-            div_gross = st.number_input(f"Gross amount ({div_currency})", min_value=0.0, step=1.0,
-                                        format="%.2f", key=f"div_gross_{inc_type}")
-            default_tax = round(div_gross * BTP_DEFAULT_TAX_PCT / 100, 2) if is_coupon else 0.0
-            div_tax = st.number_input(
-                f"Tax withheld ({div_currency})", min_value=0.0, step=0.01, format="%.2f",
-                value=default_tax, key=f"div_tax_{inc_type}_{div_gross}",
-                help="As an AIRE-registered non-resident, BPM withholds no tax on your BTP coupons – leave at 0 unless a coupon advice shows otherwise.",
-            )
-            div_amount = round(max(div_gross - div_tax, 0.0), 2)
-            st.metric("Net received", f"{div_amount:,.2f} {div_currency}")
-        with div_col3:
-            div_dest_options = list(CASH_ACCOUNTS.keys())
-            if is_coupon:
-                default_dest = "BPM Cash"
-            else:
-                default_dest = "N26 Cash" if div_portfolio == "N26" else div_dest_options[0]
-            div_dest_account = st.selectbox(
-                "Deposited Into", options=div_dest_options,
-                index=div_dest_options.index(default_dest) if default_dest in div_dest_options else 0,
-                key=f"div_dest_account_{inc_type}"
-            )
-
-        if st.button("💾 Record " + ("Coupon" if is_coupon else "Dividend"), type="primary", key="save_dividend_btn"):
-            if div_gross <= 0:
-                st.warning("Enter a gross amount greater than zero.")
-            elif div_tax > div_gross:
-                st.warning("Tax withheld can't be more than the gross amount.")
-            else:
-                try:
-                    dest_acc_id, dest_currency = CASH_ACCOUNTS[div_dest_account]
-                    div_fx = aud_rate_on(div_currency, div_date)     # AUD per unit, RBA rate that day
-                    dest_fx = aud_rate_on(dest_currency, div_date)
-                    if div_currency == dest_currency:
-                        amount_in_dest_ccy = div_amount
-                    else:
-                        amount_in_dest_ccy = div_amount * div_fx / dest_fx
-
-                    tag = "coupon" if is_coupon else "dividend"
-                    label = f" {div_security.strip()}" if div_security.strip() else ""
-                    conn = get_pg()
-                    with conn.session as s:
-                        tx_result = s.execute(
-                            sql_text("""
-                            INSERT INTO transactions
-                                (account_id, tx_date, tx_type, amount, fx_rate_to_aud, notes, processed)
-                            VALUES
-                                (:account_id, :tx_date, 'deposit', :amount, :fx_rate, :notes, true)
-                            RETURNING id
-                        """),
-                            {
-                                "account_id": dest_acc_id,
-                                "tx_date": div_date,
-                                "amount": amount_in_dest_ccy,
-                                "fx_rate": dest_fx,
-                                "notes": f"[{tag}:{div_portfolio}]{label} {div_amount:.2f} {div_currency} net received",
-                            }
-                        )
-                        new_tx_id = tx_result.fetchone()[0]
-
-                        s.execute(
-                            sql_text("""
-                            INSERT INTO dividends
-                                (div_date, portfolio, amount, currency, processed, transaction_id, account_id,
-                                 income_type, gross_amount, tax_withheld, security, fx_rate_to_aud)
-                            VALUES
-                                (:div_date, :portfolio, :amount, :currency, false, :transaction_id, :account_id,
-                                 :income_type, :gross_amount, :tax_withheld, :security, :fx_rate_to_aud)
-                        """),
-                            {
-                                "div_date": div_date,
-                                "portfolio": div_portfolio,
-                                "amount": div_amount,
-                                "currency": div_currency,
-                                "transaction_id": new_tx_id,
-                                "account_id": dest_acc_id,
-                                "income_type": tag,
-                                "gross_amount": div_gross,
-                                "tax_withheld": div_tax,
-                                "security": div_security.strip() or None,
-                                "fx_rate_to_aud": div_fx,
-                            }
-                        )
-                        s.commit()
-
-                    st.success(f"✅ {inc_type} recorded: {div_amount:.2f} {div_currency} net from {div_portfolio} → {div_dest_account}")
-                    refresh_balance_caches()
-                    load_dividends_for_editor.clear()
-                    st.rerun()
-                except Exception as e:
-                    import traceback
-                    st.error(f"Could not record {inc_type.lower()}: {traceback.format_exc()}")
-
-        st.divider()
-        st.markdown("### 📋 Dividends & Coupons Entered")
-        st.caption(
-            "You can correct Type, Security, Gross and Tax withheld here – e.g. to reclassify an old "
-            "'N26 dividend' that was really a BTP coupon. Net received and the cash account are not changed."
-        )
-
-        df_div_view = load_dividends_for_editor()
-        if df_div_view.empty:
-            st.info("Nothing recorded yet.")
-        else:
-            df_div_edit_src = df_div_view.copy()
-            df_div_edit_src["Date"] = pd.to_datetime(df_div_edit_src["Date"]).dt.date
-            edited_div = st.data_editor(
-                df_div_edit_src,
-                key="div_editor",
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "id": None,  # hidden
-                    "Type": st.column_config.SelectboxColumn("Type", options=["Dividend", "BTP coupon"], required=True),
-                    "Security": st.column_config.TextColumn("Security"),
-                    "Gross": st.column_config.NumberColumn("Gross", format="%.2f", min_value=0.0),
-                    "Tax withheld": st.column_config.NumberColumn("Tax withheld", format="%.2f", min_value=0.0),
-                    "Net received": st.column_config.NumberColumn("Net received", format="%.2f"),
-                },
-                disabled=["Date", "Portfolio", "Net received", "Currency", "Counted in Snapshot", "Linked to Cash"],
-            )
-            if st.button("💾 Save corrections", key="save_div_corrections"):
-                changed = 0
-                try:
-                    conn = get_pg()
-                    with conn.session as s:
-                        for (_, before), (_, after) in zip(df_div_edit_src.iterrows(), edited_div.iterrows()):
-                            cols = ["Type", "Security", "Gross", "Tax withheld"]
-                            if all((pd.isna(before[c]) and pd.isna(after[c])) or before[c] == after[c] for c in cols):
-                                continue
-                            new_type = "coupon" if after["Type"] == "BTP coupon" else "dividend"
-                            s.execute(
-                                sql_text("""
-                                UPDATE dividends
-                                SET income_type = :t,
-                                    security = :sec,
-                                    gross_amount = :g,
-                                    tax_withheld = :tx,
-                                    portfolio = CASE WHEN :t = 'coupon' THEN 'BPM' ELSE portfolio END
-                                WHERE id = :id
-                            """),
-                                {
-                                    "t": new_type,
-                                    "sec": (str(after["Security"]).strip() or None) if pd.notna(after["Security"]) else None,
-                                    "g": float(after["Gross"]) if pd.notna(after["Gross"]) else None,
-                                    "tx": float(after["Tax withheld"]) if pd.notna(after["Tax withheld"]) else None,
-                                    "id": str(after["id"]),
-                                },
-                            )
-                            changed += 1
-                        s.commit()
-                    load_dividends_for_editor.clear()
-                    st.success(f"✅ Saved {changed} correction(s).")
-                    st.rerun()
-                except Exception:
-                    import traceback
-                    st.error(f"Could not save corrections: {traceback.format_exc()}")
-
-            total_unprocessed = df_div_view[~df_div_view["Counted in Snapshot"]]
-            if not total_unprocessed.empty:
-                st.caption(
-                    f"⏳ {len(total_unprocessed)} entr(y/ies) not yet counted in a snapshot — "
-                    f"they'll be picked up next time you click 'Save Snapshot Now' on the Dashboard."
-                )
-
-            # ── Tax summary by Australian financial year (1 Jul – 30 Jun) ──────
-            st.divider()
-            st.markdown("### 🧾 For your accountant – by Australian financial year")
-            _d = df_div_view.copy()
-            _d["Date"] = pd.to_datetime(_d["Date"])
-            _d["FY"] = _d["Date"].apply(lambda x: f"FY{str(x.year + 1 if x.month >= 7 else x.year)[-2:]}")
-            fy_options = sorted(_d["FY"].unique(), reverse=True)
-            sel_fy = st.selectbox("Financial year", fy_options, key="div_fy_sel")
-            _f = _d[_d["FY"] == sel_fy].copy()
-            _f["Gross (or net if unknown)"] = _f["Gross"].fillna(_f["Net received"])
-            _f["Tax withheld"] = _f["Tax withheld"].fillna(0.0)
-            summary = (_f.groupby(["Type", "Portfolio", "Currency"], dropna=False)
-                         .agg(Payments=("Net received", "size"),
-                              Gross=("Gross (or net if unknown)", "sum"),
-                              Tax_withheld=("Tax withheld", "sum"),
-                              Net=("Net received", "sum"))
-                         .reset_index()
-                         .rename(columns={"Tax_withheld": "Tax withheld"}))
-            st.dataframe(summary.style.format({"Gross": "{:,.2f}", "Tax withheld": "{:,.2f}", "Net": "{:,.2f}"}),
-                         use_container_width=True, hide_index=True)
-            if _f["Gross"].isna().any():
-                st.caption("⚠️ Some entries have no gross/tax recorded (older entries) – their net amount is shown as gross. "
-                           "Add the gross and tax in the table above for an accurate figure.")
-            st.download_button(
-                f"⬇️ Download {sel_fy} detail (CSV)",
-                _f[["Date", "Type", "Portfolio", "Security", "Gross", "Tax withheld", "Net received", "Currency"]]
-                  .assign(Date=lambda x: x["Date"].dt.strftime("%Y-%m-%d"))
-                  .to_csv(index=False).encode("utf-8"),
-                file_name=f"dividends_coupons_{sel_fy}.csv", mime="text/csv", key="div_fy_csv",
-            )
+if _page == _PAGES[12]:
+    render_lots_page(get_pg(), ACCOUNTS_DF, aud_rate_on)
