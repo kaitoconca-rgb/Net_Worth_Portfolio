@@ -40,6 +40,22 @@ ticker_map = {
 # Bank / savings accounts and platform account IDs now come from the
 # `accounts` table (see nw_accounts.py) -- set up just below get_pg().
 
+# st.connection's .query() opens a database connection and never closes it,
+# leaving sessions "idle in transaction". Those held locks, blocked schema
+# changes and piled up. This version closes the connection after each read.
+# (Every query in this app already used ttl=0, i.e. no Streamlit caching.)
+from streamlit.connections import SQLConnection as _SQLConnection
+
+
+def _query_and_close(self, sql, *, show_spinner=None, ttl=None, index_col=None,
+                     chunksize=None, params=None, **kwargs):
+    with self._instance.connect() as _c:
+        return pd.read_sql(sql_text(sql), _c, index_col=index_col, params=params, **kwargs)
+
+
+_SQLConnection.query = _query_and_close
+
+
 def get_pg():
     return st.connection("postgresql", type="sql", url=st.secrets["PG_CONN_STRING"],pool_pre_ping=True)
 
