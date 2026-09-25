@@ -159,8 +159,21 @@ def lot_disposals(lots, aud_rate_on):
 
 
 def realised_gains(conn, aud_rate_on):
-    df = pd.concat([fifo_disposals(load_trades(conn), aud_rate_on),
-                    lot_disposals(load_lots(conn), aud_rate_on)], ignore_index=True)
+    """Sep 2026: overseas gains come from Zarpia (nw_zarpia.overseas_gains) -
+    N26 trades, BTP maturities, inherited BTPs. Local parcels are kept only
+    for assets Zarpia doesn't have. Without Zarpia data, this app's own
+    trades and parcels are used as before."""
+    import nw_zarpia
+    feed, _src = nw_zarpia.investment_feed(conn)
+    if feed is not None:
+        lots = load_lots(conn)
+        z_isins = set(feed["inv_trades"]["isin"].dropna())
+        lots = lots[~lots["isin"].isin(z_isins) & ~lots["asset"].fillna("").str.upper().str.contains("BTP")]
+        parts = [nw_zarpia.overseas_gains(feed), lot_disposals(lots, aud_rate_on)]
+    else:
+        parts = [fifo_disposals(load_trades(conn), aud_rate_on), lot_disposals(load_lots(conn), aud_rate_on)]
+    parts = [p for p in parts if p is not None and not p.empty]
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
     if df.empty:
         return df
     df["Gain / (loss) A$"] = df["Proceeds A$"] - df["Cost A$"]
@@ -176,9 +189,9 @@ def realised_gains(conn, aud_rate_on):
 def render_lots_page(conn, accounts_df, aud_rate_on):
     st.header("🧾 Cost base & capital gains")
     st.caption("What each holding cost you in AUD, and the AUD gain or loss when it's sold or matures - "
-               "at Reserve Bank rates on each date. Trades in N26 are matched automatically (first in, first "
-               "out). Holdings without a trade history - BTPs at BPM, inherited or gifted assets - are "
-               "recorded here as parcels.")
+               "at Reserve Bank rates on each date. Overseas trades (N26, the BTPs at BPM, inherited "
+               "holdings) now come from Zarpia's Worldwide page: record or forward them there. Parcels "
+               "added here are only used for assets Zarpia doesn't have.")
     tab_g, tab_h, tab_add, tab_disp = st.tabs(
         ["Realised gains by year", "Parcels held", "➕ Add a parcel", "✅ Record a sale / maturity"])
 

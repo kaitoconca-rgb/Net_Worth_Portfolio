@@ -45,6 +45,27 @@ def load_income(_conn, version=0):
     return df
 
 
+def _is_australian(df):
+    """Local rows that stay local: Australian payers (e.g. CommSec dividends)."""
+    country = df["country"].fillna("").astype(str).str.upper()
+    return (country == "AU") | ((country == "") & (df["currency"].fillna("").str.upper() == "AUD")
+                                & ~df["portfolio"].fillna("").str.lower().str.contains("bunq"))
+
+
+def load_income_for_reports(conn):
+    """Sep 2026: overseas income (N26, Banco BPM, bunq, Trade Republic...) comes
+    from Zarpia; Australian income stays in this app. Falls back to this app's
+    own ledger when Zarpia's data isn't available."""
+    local = load_income(conn)
+    import nw_zarpia
+    feed, _src = nw_zarpia.investment_feed(conn)
+    if feed is None:
+        return local
+    z = nw_zarpia.overseas_income(feed)
+    parts = [x for x in (local[_is_australian(local)], z) if not x.empty]
+    return pd.concat(parts, ignore_index=True) if parts else local
+
+
 def _v(x):
     try:
         if pd.isna(x):
@@ -63,6 +84,9 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
     st.markdown("### 💰 Record income")
     st.caption("Interest, dividends and bond coupons, with gross, tax withheld and the payer's country - "
                "what your accountant needs. The Reserve Bank AUD rate for the payment date is stored with it.")
+    st.info("Overseas income (N26, Banco BPM, bunq, Trade Republic) now comes from Zarpia's Worldwide page - "
+            "forward the statements there. Record only Australian income here; overseas entries made here are "
+            "ignored in the accountant pack and the net worth breakdown.")
 
     inc_label = st.radio("Type", list(TYPE_LABELS.values()), horizontal=True, key="inc_type_v2")
     itype = LABEL_TO_TYPE[inc_label]

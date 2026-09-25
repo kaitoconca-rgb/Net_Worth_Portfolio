@@ -1,4 +1,10 @@
-"""Investment properties, read live from Zarpia.
+"""Investment properties AND overseas investments, read live from Zarpia.
+
+Sep 2026 (Zarpia migration 157): Zarpia is also the source for the overseas
+investments - N26 ETF trades (the holdings shown in the portfolio), overseas
+income (dividends, coupons, interest) and capital gains (sales, bond
+maturities, inherited BTPs). Only confirmed rows. See the "Overseas
+investments" section at the end of this file.
 
 Sep 2026. Zarpia holds the financials of every investment property; this app
 reads them and builds the Australian financial-year view the accountant asks
@@ -123,7 +129,15 @@ FEED_COLS = {
                    "property_id"],
     "manual_income": ["income_ref", "source", "checkin", "checkout", "nights", "amount", "currency",
                       "accrual_date", "tax_year", "included_in_tax_calc", "property_id"],
+    # Overseas investments (Zarpia migration 157). Older saved copies don't
+    # have these: they load as empty and callers fall back to local data.
+    "inv_accounts": ["id", "name", "institution", "country", "currency", "account_type", "opened_on", "closed_on"],
+    "inv_income": ["id", "account_id", "paid_on", "income_type", "payer", "payer_country", "security", "isin",
+                   "currency", "gross_amount", "tax_withheld", "fx_rate_to_aud"],
+    "inv_trades": ["id", "account_id", "trade_date", "trade_type", "acquisition_type", "security", "isin",
+                   "quantity", "amount", "fees", "currency", "fx_rate_to_aud"],
 }
+INVESTMENT_KEYS = ("inv_accounts", "inv_income", "inv_trades")
 SORT = {"bookings": "arrival", "expenses": "expense_date", "statements": "settlement_date",
         "manual_income": "checkin"}
 
@@ -134,7 +148,7 @@ def _single_property_ids(feed):
         return
     pid = str(feed["property"].iloc[0]["id"])
     for k in FEED_COLS:
-        if k != "property" and len(feed[k]):
+        if k != "property" and k not in INVESTMENT_KEYS and len(feed[k]):
             feed[k]["property_id"] = feed[k]["property_id"].where(feed[k]["property_id"].notna(), pid)
 
 
@@ -178,6 +192,9 @@ FEED_QUERIES = {
     "expenses": "SELECT * FROM nw_feed.expenses ORDER BY expense_date",
     "statements": "SELECT * FROM nw_feed.agent_statements ORDER BY settlement_date",
     "manual_income": "SELECT * FROM nw_feed.manual_income ORDER BY checkin",
+    "inv_accounts": "SELECT * FROM nw_feed.investment_accounts ORDER BY name",
+    "inv_income": "SELECT * FROM nw_feed.investment_income ORDER BY paid_on",
+    "inv_trades": "SELECT * FROM nw_feed.investment_trades ORDER BY trade_date",
 }
 
 
@@ -264,8 +281,17 @@ def _typed(feed):
                        "checkin", "checkout", "accrual_date"):
                 feed[k][col] = pd.to_datetime(feed[k][col]).dt.date
     for k in FEED_COLS:
-        if k != "property":
+        if k != "property" and k not in INVESTMENT_KEYS:
             feed[k]["property_id"] = feed[k]["property_id"].astype(str)
+    for k, dcol in (("inv_income", "paid_on"), ("inv_trades", "trade_date")):
+        feed[k][dcol] = pd.to_datetime(feed[k][dcol]).dt.date
+        for col in ("id", "account_id"):
+            feed[k][col] = feed[k][col].astype(str)
+    feed["inv_accounts"]["id"] = feed["inv_accounts"]["id"].astype(str)
+    for col in ("gross_amount", "tax_withheld", "fx_rate_to_aud"):
+        feed["inv_income"][col] = pd.to_numeric(feed["inv_income"][col], errors="coerce").astype(float)
+    for col in ("quantity", "amount", "fees", "fx_rate_to_aud"):
+        feed["inv_trades"][col] = pd.to_numeric(feed["inv_trades"][col], errors="coerce").astype(float)
     feed["property"]["id"] = feed["property"]["id"].astype(str)
     feed["bookings"]["income_total"] = pd.to_numeric(feed["bookings"]["income_total"], errors="coerce").astype(float)
     feed["bookings"]["nights"] = pd.to_numeric(feed["bookings"]["nights"], errors="coerce")
@@ -591,3 +617,147 @@ def render_property_page(aud_avg_for_fy, pg=None):
            if len(summaries) > 1 else summaries[0]["property_id"])
     s = next(x for x in summaries if x["property_id"] == pid)
     _render_detail(s, rate_of(s["currency"]))
+
+
+# ─────────────────────────── Overseas investments ───────────────────────────
+# Zarpia (Worldwide module) is the source for overseas accounts: trades,
+# income and capital gains. These helpers return None when the feed has no
+# investment data (Zarpia unreachable with no saved copy, or an old copy), so
+# callers can fall back to this app's own tables.
+
+def investment_feed(pg):
+    """(feed, source text) when Zarpia's investment views are available, else (None, reason)."""
+    try:
+        feed, status = get_feed(pg)
+    except Exception as e:
+        return None, str(e)
+    if feed["inv_accounts"].empty:
+        return None, "Zarpia has no overseas investment data (migration 157 not applied, or an old saved copy)"
+    src = status_text(status)
+    if status["error"]:
+        src += f" - live read failed: {status['error']}"
+    return feed, src
+
+
+def _account_lookup(feed):
+    a = feed["inv_accounts"]
+    return {str(r["id"]): r for _, r in a.iterrows()}
+
+
+def n26_transactions(feed):
+    """N26 trades in the shape the portfolio page uses: tx_date, isin, tx_type,
+    quantity (negative on a sale), price, amount (positive)."""
+    accs = _account_lookup(feed)
+    t = feed["inv_trades"]
+    t = t[[str(accs.get(a, {}).get("institution") or "").strip().lower() == "n26" for a in t["account_id"]]]
+    if t.empty:
+        return pd.DataFrame(columns=["tx_date", "isin", "tx_type", "quantity", "price", "amount"])
+    out = pd.DataFrame({
+        "tx_date": t["trade_date"],
+        "isin": t["isin"].fillna(t["security"]),
+        "tx_type": ["sell" if x in ("sell", "maturity") else "buy" for x in t["trade_type"]],
+        "quantity": [(-q if x in ("sell", "maturity") else q) for q, x in zip(t["quantity"], t["trade_type"])],
+        "amount": t["amount"].abs(),
+    })
+    out["price"] = out["amount"] / out["quantity"].abs()
+    return out.sort_values("tx_date").reset_index(drop=True)
+
+
+INCOME_TYPE_TO_LOCAL = {"interest": "interest", "dividend": "dividend", "distribution": "dividend",
+                        "coupon": "coupon", "other": "dividend"}
+
+
+def overseas_income(feed):
+    """Zarpia's confirmed overseas income in the columns of this app's income
+    ledger (nw_income.load_income), so reports can use either source."""
+    accs = _account_lookup(feed)
+    i = feed["inv_income"]
+    if i.empty:
+        return pd.DataFrame()
+    acc = [accs.get(a, {}) for a in i["account_id"]]
+    return pd.DataFrame({
+        "id": "zarpia:" + i["id"].astype(str),
+        "div_date": i["paid_on"],
+        "income_type": [INCOME_TYPE_TO_LOCAL.get(str(x), "dividend") for x in i["income_type"]],
+        "portfolio": [str(a.get("name") or a.get("institution") or "") for a in acc],
+        "payer": i["payer"],
+        "country": i["payer_country"].where(i["payer_country"].notna(),
+                                             pd.Series([a.get("country") for a in acc], index=i.index)),
+        "security": i["security"].where(i["security"].notna(), i["isin"]),
+        "gross_amount": i["gross_amount"],
+        "tax_withheld": i["tax_withheld"].fillna(0.0),
+        "amount": i["gross_amount"] - i["tax_withheld"].fillna(0.0),
+        "currency": i["currency"],
+        "fx_rate_to_aud": i["fx_rate_to_aud"],
+        "processed": True,
+        "linked": False,
+        "institution": [str(a.get("institution") or "") for a in acc],
+        "source": "Zarpia",
+    })
+
+
+def _held_over_12_months(acquired, disposed):
+    try:
+        anniversary = acquired.replace(year=acquired.year + 1)
+    except ValueError:                      # 29 Feb
+        anniversary = acquired.replace(year=acquired.year + 1, day=28)
+    return disposed > anniversary
+
+
+def overseas_gains(feed):
+    """Realised gains from Zarpia's trades, with the same rules as Zarpia
+    (apps/web/lib/worldwide-gains.ts): disposals matched to acquisitions of
+    the same security (by ISIN, across accounts) first in first out; cost in
+    AUD at the rate on the acquisition date (for an inheritance, the market
+    value at the date of death), proceeds at the rate on the disposal date.
+    Columns match nw_lots.realised_gains()."""
+    accs = _account_lookup(feed)
+    t = feed["inv_trades"].copy()
+    rows = []
+    if t.empty:
+        return pd.DataFrame(rows)
+    norm = lambda x: " ".join(str(x or "").lower().split())
+    isin_by_name = {norm(s): i for s, i in zip(t["security"], t["isin"]) if pd.notna(i) and pd.notna(s)}
+    t["key"] = [i if pd.notna(i) else isin_by_name.get(norm(s), "name:" + norm(s)) for i, s in zip(t["isin"], t["security"])]
+    t["order"] = [0 if x == "buy" else 1 for x in t["trade_type"]]
+    acq_label = {"purchase": "Bought", "inheritance": "Inherited", "gift": "Gift", "other": "Other"}
+    disp_label = {"sell": "Sold", "maturity": "Matured / redeemed"}
+    for _, g in t.sort_values(["trade_date", "order"]).groupby("key", sort=False):
+        parcels = []                       # [row, units left]
+        for _, r in g.iterrows():
+            if r["trade_type"] == "buy":
+                parcels.append([r, float(r["quantity"])])
+                continue
+            name = r["security"] if pd.notna(r["security"]) else r["isin"]
+            unit_proceeds = (r["amount"] - (r["fees"] or 0)) / r["quantity"]
+            left = float(r["quantity"])
+            while left > 1e-9 and parcels:
+                p, p_left = parcels[0]
+                take = min(p_left, left)
+                cost = (p["amount"] + (p["fees"] or 0)) / p["quantity"] * take
+                proceeds = unit_proceeds * take
+                rows.append({
+                    "Source": f"Zarpia - {accs.get(r['account_id'], {}).get('name', '')}",
+                    "Asset": name, "ISIN": r["isin"] if pd.notna(r["isin"]) else p["isin"],
+                    "Acquired": p["trade_date"], "How acquired": acq_label.get(p["acquisition_type"], "Other"),
+                    "Disposed": r["trade_date"], "How disposed": disp_label.get(r["trade_type"], "Other"),
+                    "Quantity": take, "Currency": r["currency"],
+                    "Cost": cost, "Cost FX": p["fx_rate_to_aud"], "Cost A$": cost * float(p["fx_rate_to_aud"]),
+                    "Proceeds": proceeds, "Proceeds FX": r["fx_rate_to_aud"],
+                    "Proceeds A$": proceeds * float(r["fx_rate_to_aud"]),
+                    "Notes": None,
+                })
+                parcels[0][1] -= take
+                left -= take
+                if parcels[0][1] <= 1e-9:
+                    parcels.pop(0)
+            if left > 1e-6:
+                rows.append({
+                    "Source": "Zarpia", "Asset": name, "ISIN": r["isin"], "Acquired": None,
+                    "How acquired": "UNKNOWN - no matching purchase", "Disposed": r["trade_date"],
+                    "How disposed": disp_label.get(r["trade_type"], "Other"), "Quantity": left, "Currency": r["currency"],
+                    "Cost": None, "Cost FX": None, "Cost A$": None, "Proceeds": unit_proceeds * left,
+                    "Proceeds FX": r["fx_rate_to_aud"], "Proceeds A$": unit_proceeds * left * r["fx_rate_to_aud"],
+                    "Notes": "Record the purchase in Zarpia",
+                })
+    return pd.DataFrame(rows)

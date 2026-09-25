@@ -466,8 +466,22 @@ N26_ACCOUNT_ID = role_id(ACCOUNTS_DF, "n26_etf")
 
 @st.cache_data(ttl=0)
 def load_n26_transactions():
+    """Sep 2026: N26 trades come from Zarpia (Worldwide), the source of truth
+    for overseas investments; column "src" says where they came from. This
+    app's own N26 transactions are used only when Zarpia can't be read and
+    has no saved copy."""
     conn = get_pg()
-    return conn.query(
+    try:
+        import nw_zarpia
+        feed, _src = nw_zarpia.investment_feed(conn)
+        if feed is not None:
+            z = nw_zarpia.n26_transactions(feed)
+            if not z.empty:
+                z["src"] = "zarpia"
+                return z
+    except Exception:
+        pass
+    df = conn.query(
         """
         SELECT t.tx_date, i.symbol AS isin, t.tx_type, t.quantity, t.price, t.amount
         FROM transactions t
@@ -478,6 +492,8 @@ def load_n26_transactions():
         params={"acc_id": N26_ACCOUNT_ID},
         ttl=0,
     )
+    df["src"] = "local"
+    return df
 
 df_input = load_n26_transactions()
 
@@ -1317,19 +1333,28 @@ def save_net_worth_snapshot(total, force=False):
 
             # ── 2. DIVIDENDS — read unprocessed rows from Postgres ─────────
             processed_ids = []
+            zarpia_processed_ids = []
             try:
                 df_div_unprocessed = pg_conn.query(
                     """
                     SELECT id, div_date, portfolio, amount, currency,
-                           COALESCE(income_type, 'dividend') AS income_type
+                           COALESCE(income_type, 'dividend') AS income_type, country
                     FROM dividends
                     WHERE processed = false
                     ORDER BY div_date
                     """,
                     ttl=0,
                 )
+                # Sep 2026: overseas income comes from Zarpia (below); local
+                # overseas rows are only marked processed, not counted twice.
+                import nw_zarpia
+                _zfeed, _ = nw_zarpia.investment_feed(pg_conn)
                 if not df_div_unprocessed.empty:
                     for _, drow in df_div_unprocessed.iterrows():
+                        _ctry = str(drow.get('country') or '').upper()
+                        if _zfeed is not None and _ctry and _ctry != 'AU':
+                            processed_ids.append(str(drow['id']))
+                            continue
                         amt = float(drow['amount']) if pd.notnull(drow['amount']) else 0.0
                         cur = str(drow['currency']).upper().strip()
                         div_date_val = pd.to_datetime(drow['div_date'])
@@ -1344,8 +1369,35 @@ def save_net_worth_snapshot(total, force=False):
                         else:
                             shares_dividends += amt_aud
                         processed_ids.append(str(drow['id']))
+                # Zarpia income not yet counted in a snapshot. The first time,
+                # everything already in Zarpia is taken as counted (it was
+                # recorded here before), so only new income is added.
+                if _zfeed is not None:
+                    with pg_conn.session as _s:
+                        _s.execute(sql_text("CREATE TABLE IF NOT EXISTS zarpia_income_processed "
+                                            "(id text PRIMARY KEY, processed_at timestamptz NOT NULL DEFAULT now())"))
+                        _s.commit()
+                    _zi = nw_zarpia.overseas_income(_zfeed)
+                    _done = set(pg_conn.query("SELECT id FROM zarpia_income_processed", ttl=0)["id"])
+                    if not _done and not _zi.empty:
+                        zarpia_processed_ids = list(_zi["id"])        # baseline, not counted
+                    elif not _zi.empty:
+                        _new = _zi[~_zi["id"].isin(_done) & (pd.to_datetime(_zi["div_date"]).dt.date <= today)]
+                        for _, zr in _new.iterrows():
+                            _rate = zr["fx_rate_to_aud"] if pd.notna(zr["fx_rate_to_aud"]) else aud_rate_on(
+                                str(zr["currency"])[:3], pd.to_datetime(zr["div_date"]))
+                            _aud = float(zr["amount"] or 0.0) * float(_rate)
+                            if zr["income_type"] == "coupon":
+                                bond_coupons += _aud
+                            elif zr["income_type"] == "dividend":
+                                if str(zr["institution"]).lower() == "n26":
+                                    n26_dividends += _aud
+                                else:
+                                    shares_dividends += _aud
+                            zarpia_processed_ids.append(str(zr["id"]))
             except:
                 processed_ids = []
+                zarpia_processed_ids = []
 
             # ── 3. MARKET GAINS ─────────────────────────────────────────────
             curr_investments = n26_aud + raiz_aud + vanguard_aud + shares_aud + commodities_aud + super_aud
@@ -1380,6 +1432,10 @@ def save_net_worth_snapshot(total, force=False):
                 s.execute(sql_text(
                     f"UPDATE dividends SET processed = true WHERE id IN ({placeholders})"
                 ))
+            if 'zarpia_processed_ids' in dir() and zarpia_processed_ids:
+                for _zid in zarpia_processed_ids:
+                    s.execute(sql_text("INSERT INTO zarpia_income_processed (id) VALUES (:i) ON CONFLICT DO NOTHING"),
+                              {"i": _zid})
             s.execute(
                 sql_text("""
                     INSERT INTO net_worth_snapshots
@@ -4783,33 +4839,40 @@ if _page == _PAGES[11]:
                            horizontal=True, key="de_section")
     if _de_section == "🇪🇺 N26 transactions":
         st.markdown("### 🇪🇺 N26 Transactions")
-        df_n26_edit_orig = load_transactions_for_editor(N26_ACCOUNT_ID, symbol_prefix="")
-        if df_n26_edit_orig.empty:
-            df_n26_edit_orig = pd.DataFrame(columns=['id', 'Date', 'Symbol', 'Type', 'Quantity', 'Price', 'Amount', 'Notes'])
-        df_n26_edited = st.data_editor(
-            df_n26_edit_orig,
-            column_config={
-                "id": None,
-                "Date": st.column_config.DateColumn("Date", required=True),
-                "Symbol": st.column_config.TextColumn("ISIN", required=True, help="e.g. IE00B3RBWM25"),
-                "Type": st.column_config.SelectboxColumn("Type", options=["BUY", "SELL"], required=True),
-                "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, format="%.6f", required=True),
-                "Price": st.column_config.NumberColumn("Price (€)", min_value=0.0, format="%.4f"),
-                "Amount": st.column_config.NumberColumn("Amount (€)", min_value=0.0, format="%.2f",
-                                                          help="Leave blank to auto-calculate as Quantity × Price"),
-                "Notes": st.column_config.TextColumn("Notes"),
-            },
-            num_rows="dynamic", width="stretch", hide_index=True, key="n26_editor",
-        )
-        if st.button("💾 Save N26 Changes", type="primary", key="save_n26_edits"):
-            ok, err = sync_transaction_edits(N26_ACCOUNT_ID, "", "EUR", "ETF", df_n26_edit_orig, df_n26_edited)
-            if ok:
-                st.success("✅ N26 transactions saved.")
-                load_transactions_for_editor.clear()
-                load_n26_transactions.clear()
-                st.rerun()
-            else:
-                st.error(f"Could not save: {err}")
+        if "src" in df_input.columns and (df_input["src"] == "zarpia").any():
+            st.info("N26 trades now come from Zarpia (Worldwide > Capital gains): forward N26 buy/sell "
+                    "confirmations with a subject starting 'Investment', or record them there. "
+                    "The portfolio below is built from them; this list is read-only.")
+            st.dataframe(df_input.drop(columns=["src"]).sort_values("tx_date", ascending=False),
+                         width="stretch", hide_index=True)
+        else:
+            df_n26_edit_orig = load_transactions_for_editor(N26_ACCOUNT_ID, symbol_prefix="")
+            if df_n26_edit_orig.empty:
+                df_n26_edit_orig = pd.DataFrame(columns=['id', 'Date', 'Symbol', 'Type', 'Quantity', 'Price', 'Amount', 'Notes'])
+            df_n26_edited = st.data_editor(
+                df_n26_edit_orig,
+                column_config={
+                    "id": None,
+                    "Date": st.column_config.DateColumn("Date", required=True),
+                    "Symbol": st.column_config.TextColumn("ISIN", required=True, help="e.g. IE00B3RBWM25"),
+                    "Type": st.column_config.SelectboxColumn("Type", options=["BUY", "SELL"], required=True),
+                    "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, format="%.6f", required=True),
+                    "Price": st.column_config.NumberColumn("Price (€)", min_value=0.0, format="%.4f"),
+                    "Amount": st.column_config.NumberColumn("Amount (€)", min_value=0.0, format="%.2f",
+                                                              help="Leave blank to auto-calculate as Quantity × Price"),
+                    "Notes": st.column_config.TextColumn("Notes"),
+                },
+                num_rows="dynamic", width="stretch", hide_index=True, key="n26_editor",
+            )
+            if st.button("💾 Save N26 Changes", type="primary", key="save_n26_edits"):
+                ok, err = sync_transaction_edits(N26_ACCOUNT_ID, "", "EUR", "ETF", df_n26_edit_orig, df_n26_edited)
+                if ok:
+                    st.success("✅ N26 transactions saved.")
+                    load_transactions_for_editor.clear()
+                    load_n26_transactions.clear()
+                    st.rerun()
+                else:
+                    st.error(f"Could not save: {err}")
 
         st.divider()
 

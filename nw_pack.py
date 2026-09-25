@@ -20,7 +20,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import nw_zarpia
-from nw_income import TYPE_LABELS, load_income
+from nw_income import TYPE_LABELS, load_income_for_reports
 from nw_lots import realised_gains
 
 F = "Arial"
@@ -53,7 +53,7 @@ def current_fy():
 # ─────────────────────────── gathering the data ─────────────────────────────
 
 def income_for_fy(conn, fy_year, aud_rate_on):
-    df = load_income(conn)
+    df = load_income_for_reports(conn)
     start, end = fy_bounds(fy_year)
     d = df.copy()
     d["div_date"] = pd.to_datetime(d["div_date"]).dt.date
