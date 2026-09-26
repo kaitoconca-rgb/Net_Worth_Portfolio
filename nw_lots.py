@@ -177,9 +177,12 @@ def realised_gains(conn, aud_rate_on):
     if df.empty:
         return df
     df["Gain / (loss) A$"] = df["Proceeds A$"] - df["Cost A$"]
+    # Inherited parcels from Zarpia may count the 12 months from when the person
+    # who died acquired them ("Discount from"); everything else from "Acquired".
+    start = df["Discount from"].where(df["Discount from"].notna(), df["Acquired"]) if "Discount from" in df else df["Acquired"]
     df["Held > 12 months"] = [
         (pd.Timestamp(dsp) - pd.Timestamp(acq)).days > 365 if acq is not None and pd.notna(acq) else None
-        for acq, dsp in zip(df["Acquired"], df["Disposed"])]
+        for acq, dsp in zip(start, df["Disposed"])]
     df["FY"] = df["Disposed"].map(fy_label)
     return df.sort_values("Disposed")
 

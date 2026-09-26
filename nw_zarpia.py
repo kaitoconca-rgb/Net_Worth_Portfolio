@@ -131,11 +131,12 @@ FEED_COLS = {
                       "accrual_date", "tax_year", "included_in_tax_calc", "property_id"],
     # Overseas investments (Zarpia migration 157). Older saved copies don't
     # have these: they load as empty and callers fall back to local data.
-    "inv_accounts": ["id", "name", "institution", "country", "currency", "account_type", "opened_on", "closed_on"],
+    "inv_accounts": ["id", "name", "institution", "country", "currency", "account_type", "opened_on", "closed_on",
+                     "ownership_pct"],
     "inv_income": ["id", "account_id", "paid_on", "income_type", "payer", "payer_country", "security", "isin",
                    "currency", "gross_amount", "tax_withheld", "fx_rate_to_aud"],
     "inv_trades": ["id", "account_id", "trade_date", "trade_type", "acquisition_type", "security", "isin",
-                   "quantity", "amount", "fees", "currency", "fx_rate_to_aud"],
+                   "quantity", "amount", "fees", "currency", "fx_rate_to_aud", "discount_from"],
 }
 INVESTMENT_KEYS = ("inv_accounts", "inv_income", "inv_trades")
 SORT = {"bookings": "arrival", "expenses": "expense_date", "statements": "settlement_date",
@@ -287,6 +288,7 @@ def _typed(feed):
         feed[k][dcol] = pd.to_datetime(feed[k][dcol]).dt.date
         for col in ("id", "account_id"):
             feed[k][col] = feed[k][col].astype(str)
+    feed["inv_trades"]["discount_from"] = pd.to_datetime(feed["inv_trades"]["discount_from"]).dt.date
     feed["inv_accounts"]["id"] = feed["inv_accounts"]["id"].astype(str)
     for col in ("gross_amount", "tax_withheld", "fx_rate_to_aud"):
         feed["inv_income"][col] = pd.to_numeric(feed["inv_income"][col], errors="coerce").astype(float)
@@ -644,23 +646,58 @@ def _account_lookup(feed):
     return {str(r["id"]): r for _, r in a.iterrows()}
 
 
+def _share(accs, account_id):
+    """Owner's share of a joint account (Zarpia migration 158), 0-1; 1 when not set."""
+    try:
+        v = float(accs.get(account_id, {}).get("ownership_pct"))
+        return min(1.0, max(0.0, v / 100.0)) if v == v else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _scaled_trades(feed):
+    """Trades at the owner's share of each account (a split's quantity is a ratio: left as is)."""
+    accs = _account_lookup(feed)
+    t = feed["inv_trades"].copy()
+    if t.empty:
+        return t
+    f = [_share(accs, a) for a in t["account_id"]]
+    t["quantity"] = [q if tt == "split" else q * x for q, tt, x in zip(t["quantity"], t["trade_type"], f)]
+    t["amount"] = t["amount"] * f
+    t["fees"] = t["fees"].fillna(0) * f
+    return t
+
+
 def n26_transactions(feed):
     """N26 trades in the shape the portfolio page uses: tx_date, isin, tx_type,
     quantity (negative on a sale), price, amount (positive)."""
     accs = _account_lookup(feed)
-    t = feed["inv_trades"]
+    t = _scaled_trades(feed)
+    if t.empty:
+        return pd.DataFrame(columns=["tx_date", "isin", "tx_type", "quantity", "price", "amount"])
     t = t[[str(accs.get(a, {}).get("institution") or "").strip().lower() == "n26" for a in t["account_id"]]]
     if t.empty:
         return pd.DataFrame(columns=["tx_date", "isin", "tx_type", "quantity", "price", "amount"])
-    out = pd.DataFrame({
-        "tx_date": t["trade_date"],
-        "isin": t["isin"].fillna(t["security"]),
-        "tx_type": ["sell" if x in ("sell", "maturity") else "buy" for x in t["trade_type"]],
-        "quantity": [(-q if x in ("sell", "maturity") else q) for q, x in zip(t["quantity"], t["trade_type"])],
-        "amount": t["amount"].abs(),
-    })
-    out["price"] = out["amount"] / out["quantity"].abs()
-    return out.sort_values("tx_date").reset_index(drop=True)
+    t = t.assign(isin=t["isin"].fillna(t["security"])).sort_values(["trade_date"], kind="stable")
+    rows, held = [], {}
+    for _, r in t.iterrows():
+        k, tt, q = r["isin"], r["trade_type"], float(r["quantity"])
+        if tt == "split":
+            extra = held.get(k, 0.0) * (q - 1.0)       # new units, no cost
+            if abs(extra) > 1e-9:
+                rows.append({"tx_date": r["trade_date"], "isin": k, "tx_type": "buy" if extra > 0 else "sell",
+                             "quantity": extra, "amount": 0.0})
+                held[k] = held.get(k, 0.0) + extra
+            continue
+        if tt == "return_of_capital":
+            continue                                    # cash back, units unchanged
+        sign = -1.0 if tt in ("sell", "maturity") else 1.0
+        held[k] = held.get(k, 0.0) + sign * q
+        rows.append({"tx_date": r["trade_date"], "isin": k, "tx_type": "sell" if sign < 0 else "buy",
+                     "quantity": sign * q, "amount": abs(float(r["amount"]))})
+    out = pd.DataFrame(rows, columns=["tx_date", "isin", "tx_type", "quantity", "amount"])
+    out["price"] = [a / abs(q) if abs(q) > 1e-12 else 0.0 for a, q in zip(out["amount"], out["quantity"])]
+    return out.sort_values("tx_date", kind="stable").reset_index(drop=True)
 
 
 INCOME_TYPE_TO_LOCAL = {"interest": "interest", "dividend": "dividend", "distribution": "dividend",
@@ -675,6 +712,8 @@ def overseas_income(feed):
     if i.empty:
         return pd.DataFrame()
     acc = [accs.get(a, {}) for a in i["account_id"]]
+    f = pd.Series([_share(accs, a) for a in i["account_id"]], index=i.index)
+    i = i.assign(gross_amount=i["gross_amount"] * f, tax_withheld=i["tax_withheld"].fillna(0.0) * f)
     return pd.DataFrame({
         "id": "zarpia:" + i["id"].astype(str),
         "div_date": i["paid_on"],
@@ -707,57 +746,84 @@ def _held_over_12_months(acquired, disposed):
 def overseas_gains(feed):
     """Realised gains from Zarpia's trades, with the same rules as Zarpia
     (apps/web/lib/worldwide-gains.ts): disposals matched to acquisitions of
-    the same security (by ISIN, across accounts) first in first out; cost in
-    AUD at the rate on the acquisition date (for an inheritance, the market
-    value at the date of death), proceeds at the rate on the disposal date.
-    Columns match nw_lots.realised_gains()."""
+    the same security (by ISIN, across accounts) first in first out; each
+    parcel carries its remaining cost in EUR and AUD (AUD at the rate on the
+    acquisition date; for an inheritance, the market value at the date of
+    death). A split changes units, not cost; a return of capital lowers the
+    cost (AUD at the rate on its date). Amounts at the owner's share of joint
+    accounts. Columns match nw_lots.realised_gains()."""
     accs = _account_lookup(feed)
-    t = feed["inv_trades"].copy()
+    t = _scaled_trades(feed)
     rows = []
     if t.empty:
         return pd.DataFrame(rows)
     norm = lambda x: " ".join(str(x or "").lower().split())
     isin_by_name = {norm(s): i for s, i in zip(t["security"], t["isin"]) if pd.notna(i) and pd.notna(s)}
     t["key"] = [i if pd.notna(i) else isin_by_name.get(norm(s), "name:" + norm(s)) for i, s in zip(t["isin"], t["security"])]
-    t["order"] = [0 if x == "buy" else 1 for x in t["trade_type"]]
+    t["order"] = [0 if x == "buy" else (1 if x in ("split", "return_of_capital") else 2) for x in t["trade_type"]]
     acq_label = {"purchase": "Bought", "inheritance": "Inherited", "gift": "Gift", "other": "Other"}
     disp_label = {"sell": "Sold", "maturity": "Matured / redeemed"}
-    for _, g in t.sort_values(["trade_date", "order"]).groupby("key", sort=False):
-        parcels = []                       # [row, units left]
+    for _, g in t.sort_values(["trade_date", "order"], kind="stable").groupby("key", sort=False):
+        parcels = []                       # dicts: row, left, cost (local), cost_aud
         for _, r in g.iterrows():
-            if r["trade_type"] == "buy":
-                parcels.append([r, float(r["quantity"])])
+            tt = r["trade_type"]
+            if tt == "buy":
+                cost = float(r["amount"]) + float(r["fees"] or 0)
+                fx = r["fx_rate_to_aud"]
+                parcels.append({"r": r, "left": float(r["quantity"]), "cost": cost,
+                                "cost_aud": cost * float(fx) if pd.notna(fx) else None})
+                continue
+            if tt == "split":
+                for p in parcels:
+                    p["left"] *= float(r["quantity"])
+                continue
+            if tt == "return_of_capital":
+                held = sum(p["left"] for p in parcels)
+                if held > 1e-9 and pd.notna(r["fx_rate_to_aud"]):
+                    for p in parcels:
+                        part = float(r["amount"]) * p["left"] / held
+                        p["cost"] = max(0.0, p["cost"] - part)
+                        if p["cost_aud"] is not None:
+                            p["cost_aud"] = max(0.0, p["cost_aud"] - part * float(r["fx_rate_to_aud"]))
                 continue
             name = r["security"] if pd.notna(r["security"]) else r["isin"]
-            unit_proceeds = (r["amount"] - (r["fees"] or 0)) / r["quantity"]
+            unit_proceeds = (float(r["amount"]) - float(r["fees"] or 0)) / float(r["quantity"])
             left = float(r["quantity"])
             while left > 1e-9 and parcels:
-                p, p_left = parcels[0]
-                take = min(p_left, left)
-                cost = (p["amount"] + (p["fees"] or 0)) / p["quantity"] * take
+                p = parcels[0]
+                take = min(p["left"], left)
+                frac = take / p["left"]
+                cost, cost_aud = p["cost"] * frac, (p["cost_aud"] * frac if p["cost_aud"] is not None else None)
                 proceeds = unit_proceeds * take
+                pr = p["r"]
+                disc = pr["discount_from"] if pr["acquisition_type"] == "inheritance" and pd.notna(pr.get("discount_from")) else None
                 rows.append({
                     "Source": f"Zarpia - {accs.get(r['account_id'], {}).get('name', '')}",
-                    "Asset": name, "ISIN": r["isin"] if pd.notna(r["isin"]) else p["isin"],
-                    "Acquired": p["trade_date"], "How acquired": acq_label.get(p["acquisition_type"], "Other"),
-                    "Disposed": r["trade_date"], "How disposed": disp_label.get(r["trade_type"], "Other"),
+                    "Asset": name, "ISIN": r["isin"] if pd.notna(r["isin"]) else pr["isin"],
+                    "Acquired": pr["trade_date"], "How acquired": acq_label.get(pr["acquisition_type"], "Other"),
+                    "Disposed": r["trade_date"], "How disposed": disp_label.get(tt, "Other"),
                     "Quantity": take, "Currency": r["currency"],
-                    "Cost": cost, "Cost FX": p["fx_rate_to_aud"], "Cost A$": cost * float(p["fx_rate_to_aud"]),
+                    "Cost": cost, "Cost FX": (cost_aud / cost if cost_aud is not None and cost > 0 else pr["fx_rate_to_aud"]),
+                    "Cost A$": cost_aud,
                     "Proceeds": proceeds, "Proceeds FX": r["fx_rate_to_aud"],
                     "Proceeds A$": proceeds * float(r["fx_rate_to_aud"]),
-                    "Notes": None,
+                    "Notes": f"12 months counted from {disc} (when the person who died acquired it)" if disc else None,
+                    "Discount from": disc if disc else pr["trade_date"],
                 })
-                parcels[0][1] -= take
+                p["cost"] -= cost
+                if p["cost_aud"] is not None:
+                    p["cost_aud"] -= cost_aud
+                p["left"] -= take
                 left -= take
-                if parcels[0][1] <= 1e-9:
+                if p["left"] <= 1e-9:
                     parcels.pop(0)
             if left > 1e-6:
                 rows.append({
                     "Source": "Zarpia", "Asset": name, "ISIN": r["isin"], "Acquired": None,
                     "How acquired": "UNKNOWN - no matching purchase", "Disposed": r["trade_date"],
-                    "How disposed": disp_label.get(r["trade_type"], "Other"), "Quantity": left, "Currency": r["currency"],
+                    "How disposed": disp_label.get(tt, "Other"), "Quantity": left, "Currency": r["currency"],
                     "Cost": None, "Cost FX": None, "Cost A$": None, "Proceeds": unit_proceeds * left,
-                    "Proceeds FX": r["fx_rate_to_aud"], "Proceeds A$": unit_proceeds * left * r["fx_rate_to_aud"],
+                    "Proceeds FX": r["fx_rate_to_aud"], "Proceeds A$": unit_proceeds * left * float(r["fx_rate_to_aud"]),
                     "Notes": "Record the purchase in Zarpia",
                 })
     return pd.DataFrame(rows)
