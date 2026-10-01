@@ -1271,6 +1271,7 @@ def save_net_worth_snapshot(total, force=False):
         n26_dividends         = 0.0
         shares_dividends      = 0.0
         bond_coupons          = 0.0
+        eur_other_dividends   = 0.0   # non-N26 dividends paid in EUR (N26 dividends and BTP coupons are always EUR)
         contribution_breakdown = ""
 
         df_today_existing = pg_conn.query(
@@ -1368,6 +1369,8 @@ def save_net_worth_snapshot(total, force=False):
                             n26_dividends += amt_aud
                         else:
                             shares_dividends += amt_aud
+                            if cur[:3] == 'EUR':
+                                eur_other_dividends += amt_aud
                         processed_ids.append(str(drow['id']))
                 # Zarpia income not yet counted in a snapshot. The first time,
                 # everything already in Zarpia is taken as counted (it was
@@ -1394,6 +1397,8 @@ def save_net_worth_snapshot(total, force=False):
                                     n26_dividends += _aud
                                 else:
                                     shares_dividends += _aud
+                                    if str(zr["currency"]).upper()[:3] == "EUR":
+                                        eur_other_dividends += _aud
                             zarpia_processed_ids.append(str(zr["id"]))
             except:
                 processed_ids = []
@@ -1408,7 +1413,12 @@ def save_net_worth_snapshot(total, force=False):
             # ── 4. FX IMPACT ─────────────────────────────────────────────
             eur_cash_change_aud = eur_cash_aud - prev_eur_cash_aud
             eur_deposits_from_tx = -breakdown_dict.get('N26', 0.0)
-            fx_impact = eur_cash_change_aud - eur_deposits_from_tx - eur_cash_interest
+            # Oct 2026: EUR dividends and BTP coupons land in EUR cash accounts
+            # (N26, Banco BPM). They are already attributed to Dividends /
+            # Coupons, so take them out here too - otherwise they were counted
+            # again as FX impact and contributions came out too low by the same amount.
+            eur_income_aud = n26_dividends + bond_coupons + eur_other_dividends
+            fx_impact = eur_cash_change_aud - eur_deposits_from_tx - eur_cash_interest - eur_income_aud
             eur_cash_deposits_aud = eur_deposits_from_tx
 
             # ── 5. CONTRIBUTIONS — residual ────────────────────────────────
