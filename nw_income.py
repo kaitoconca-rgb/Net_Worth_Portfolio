@@ -198,14 +198,36 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
     st.divider()
     st.markdown("### 📋 Income entered")
     st.caption("Correct the type, payer, country, security, gross or tax here. The net amount and any "
-               "cash entry aren't changed.")
-    df = load_income(conn)
+               "cash entry aren't changed. Overseas income (rows marked Zarpia) is read from Zarpia's "
+               "Worldwide page, confirmed lines only - edit those in Zarpia.")
+    local = load_income(conn)
+    import nw_zarpia
+    feed, zsrc = nw_zarpia.investment_feed(conn)
+    z = nw_zarpia.overseas_income(feed) if feed is not None else pd.DataFrame()
+    if feed is None:
+        st.caption(f"⚠️ Zarpia's income isn't shown: {zsrc}")
+    else:
+        zc1, zc2 = st.columns([4, 1])
+        zc1.caption(f"Zarpia rows: {zsrc}. Zarpia's data is kept for up to an hour.")
+        if zc2.button("🔄 Re-read Zarpia", key="zarpia_income_refresh"):
+            nw_zarpia.fetch_live_raw.clear()
+            st.rerun()
+    local = local.assign(origin="Entered here")
+    if not z.empty:
+        z = z.assign(origin="Zarpia")
+        # Overseas income comes from Zarpia; only Australian income is entered here.
+        df = pd.concat([local[_is_australian(local)], z[[c for c in local.columns if c in z.columns]]],
+                       ignore_index=True)
+    else:
+        df = local
     if df.empty:
         st.info("Nothing recorded yet.")
         return
+    df = df.assign(counts=True)
 
     view = pd.DataFrame({
         "id": df["id"],
+        "From": df["origin"],
         "Date": pd.to_datetime(df["div_date"]).dt.date,
         "Type": df["income_type"].map(TYPE_LABELS).fillna("Dividend"),
         "Source": df["portfolio"],
@@ -217,7 +239,8 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
         "Net": df["amount"],
         "Currency": df["currency"],
         "AUD rate": df["fx_rate_to_aud"],
-    })
+        "counts": df["counts"],
+    }).sort_values("Date", ascending=False, kind="stable")
     f1, f2 = st.columns(2)
     fy_opts = ["All"] + sorted({fy_label(d) for d in view["Date"]}, reverse=True)
     fy_filter = f1.selectbox("Financial year", fy_opts, key="inc_fy_filter")
@@ -229,9 +252,10 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
 
     edited = st.data_editor(
         shown, key="income_editor", hide_index=True, width="stretch",
-        disabled=["Date", "Source", "Net", "Currency", "AUD rate"],
+        disabled=["From", "Date", "Source", "Net", "Currency", "AUD rate"],
         column_config={
             "id": None,
+            "counts": None,
             "Type": st.column_config.SelectboxColumn("Type", options=list(TYPE_LABELS.values()), required=True),
             "Country": st.column_config.SelectboxColumn("Country", options=COUNTRIES),
             "Gross": st.column_config.NumberColumn("Gross", format="%.2f", min_value=0.0),
@@ -247,6 +271,8 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
         changed = 0
         with conn.session as s:
             for _, row in edited.iterrows():
+                if str(row["id"]).startswith("zarpia:"):
+                    continue                     # read from Zarpia: edit it there
                 b = before.loc[row["id"]]
                 if all(_v(b[c]) == _v(row[c]) for c in cols):
                     continue
@@ -267,7 +293,7 @@ def render_income_section(conn, accounts_df, cash_accounts, aud_rate_on, on_bala
     # ── Summary by financial year ────────────────────────────────────────────
     st.divider()
     st.markdown("### 🧾 For your accountant - by Australian financial year")
-    d = view.copy()
+    d = view[view["counts"]].copy()
     d["FY"] = d["Date"].map(fy_label)
     fy_list = sorted(d["FY"].unique(), reverse=True)
     sel = st.selectbox("Financial year", fy_list, key="inc_fy_summary")
